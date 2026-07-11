@@ -1,0 +1,49 @@
+{
+  "name": "kangentic-relay",
+  "version": "0.1.0",
+  "description": "Blind WebSocket rendezvous relay for the Kangentic mobile companion: forwards only opaque ciphertext frames between two peers that dial out to it, reading nothing.",
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kangentic/kangentic-relay.git"
+  },
+  "keywords": [
+    "kangentic",
+    "relay",
+    "websocket",
+    "rendezvous"
+  ],
+  "author": {
+    "name": "Kangentic",
+    "url": "https://github.com/Kangentic"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:all": "vitest run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@kangentic/protocol": "^0.1.1",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "@typescript-eslint/eslint-plugin": "^8.18.0",
+    "@typescript-eslint/parser": "^8.18.0",
+    "eslint": "^9.17.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

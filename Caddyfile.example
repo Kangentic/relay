@@ -1,0 +1,11 @@
+# Copy to Caddyfile, replace relay.example.com, and uncomment the caddy
+# service in docker-compose.yml. Only needed if you are NOT using
+# Cloudflare's proxy in front of this box (Cloudflare already terminates
+# TLS for you in that case, and this file is unnecessary).
+#
+# Caddy gets a certificate automatically via Let's Encrypt and reverse
+# proxies WebSocket upgrades to the relay container transparently.
+
+relay.example.com {
+	reverse_proxy relay:8080
+}

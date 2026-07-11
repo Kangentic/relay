@@ -1,0 +1,32 @@
+services:
+  relay:
+    build: .
+    image: ghcr.io/kangentic/kangentic-relay:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  # Uncomment this service, and set TRUST_PROXY=false in .env, if you are
+  # NOT putting Cloudflare's proxy in front of this box and need TLS
+  # terminated locally instead. Caddy gets automatic certificates for the
+  # hostname in Caddyfile.example.
+  #
+  # caddy:
+  #   image: caddy:2
+  #   restart: unless-stopped
+  #   ports:
+  #     - "443:443"
+  #     - "80:80"
+  #   volumes:
+  #     - ./Caddyfile.example:/etc/caddy/Caddyfile:ro
+  #     - caddy_data:/data
+
+# volumes:
+#   caddy_data: {}
