@@ -15,34 +15,53 @@
       "color": "#8b5cf6",
       "autoSpawn": true,
       "permissionMode": "plan",
+      "modelOverride": "claude-opus-4-8",
+      "effortOverride": "xhigh",
       "planExitTarget": "Executing"
     },
     {
       "id": "7f8f21cc-9c6b-4377-9b16-6dc630411a0b",
       "name": "Executing",
       "icon": "square-terminal",
-      "autoSpawn": true
+      "autoSpawn": true,
+      "permissionMode": "auto",
+      "modelOverride": "claude-sonnet-5",
+      "effortOverride": "high"
     },
     {
       "id": "f9a52261-564e-4f56-ade1-6bc651ed472d",
       "name": "Code Review",
       "icon": "code",
       "color": "#f59e0b",
-      "autoSpawn": true
+      "autoSpawn": true,
+      "permissionMode": "auto",
+      "autoCommand": "/code-review {{baseBranch}}",
+      "modelOverride": "claude-opus-4-8",
+      "effortOverride": "high",
+      "sessionTarget": "isolated",
+      "sessionSpawnStrategy": "always_spawn_new"
     },
     {
       "id": "1af21c24-d084-488b-a5af-6fb3be2c8d66",
-      "name": "Tests",
+      "name": "Testing",
       "icon": "flask-conical",
       "color": "#06b6d4",
-      "autoSpawn": true
+      "autoSpawn": true,
+      "permissionMode": "auto",
+      "autoCommand": "/pull-request",
+      "modelOverride": "claude-sonnet-5",
+      "effortOverride": "high"
     },
     {
       "id": "89d4eb55-77e9-4cc6-9c45-a8bdad88579a",
-      "name": "Ship It",
-      "icon": "sailboat",
-      "color": "#F97316",
-      "autoSpawn": true
+      "name": "Merge",
+      "icon": "merge",
+      "color": "#f97316",
+      "autoSpawn": true,
+      "permissionMode": "auto",
+      "autoCommand": "/merge-pull-request",
+      "modelOverride": "claude-sonnet-5",
+      "effortOverride": "high"
     },
     {
       "id": "c9949f18-97f4-41aa-94a6-eeb30c0fe58a",
@@ -64,6 +83,7 @@
       "name": "Start Planning Agent",
       "type": "spawn_agent",
       "config": {
+        "agent": "claude",
         "promptTemplate": "{{task_xml}}{{attachments}}"
       }
     }
@@ -71,17 +91,17 @@
   "transitions": [
     {
       "from": "*",
-      "to": "Done",
-      "actions": [
-        "Kill Session"
-      ]
-    },
-    {
-      "from": "*",
       "to": "Planning",
       "actions": [
         "Kill Session",
         "Start Planning Agent"
+      ]
+    },
+    {
+      "from": "*",
+      "to": "Done",
+      "actions": [
+        "Kill Session"
       ]
     }
   ],

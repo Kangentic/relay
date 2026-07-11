@@ -51,6 +51,15 @@ relay itself ever parsing a frame. If you touch anything under `src/rendezvous.t
 - New guards, config, or behavior changes should come with a test and, where relevant, an update to
   `.env.example` and the README's config table.
 
+## How maintainers land contributions
+
+You do not need to run any of this; it is just so the flow is not a mystery. Maintainers drive
+a PR to green and merge it through an internal Kanban board: a Testing column runs
+`/pull-request` (pushes the branch and drives the CI checks to green, auto-fixing along the
+way), and a Merge column runs `/merge-pull-request` (merges the green PR and pulls the result
+back into the local `main` checkout). The board mechanics, git worktrees, and agent skills are
+documented in [CLAUDE.md](CLAUDE.md) and are not something a contributor is expected to set up.
+
 ## Reporting a security issue
 
 Do not open a public issue. See `SECURITY.md`.
