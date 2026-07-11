@@ -4,23 +4,27 @@ Thanks for your interest in contributing. This project is small and deliberately
 (a blind byte-forwarder), so the bar for new code is high: prefer fixing a real bug, hardening a
 guard, or improving deploy tooling over adding features that widen what the relay knows or does.
 
-## Before your first pull request: CLA and DCO
+## Before your first pull request: sign the CLA
 
 Because this relay is part of an open-core product (see the README's "Open-core and licensing"
 section), Kangentic needs the ability to relicense or dual-license contributed code later, alongside
-keeping the project genuinely open under AGPL-3.0-only today. To preserve that, every external
-contributor must:
+keeping the project genuinely open under AGPL-3.0-only today. To preserve that, **all contributors
+must sign a CLA before their first pull request can be merged.**
 
-1. **Sign the Contributor License Agreement (CLA)** before a pull request can be merged. A CLA
-   Assistant bot will comment on your first pull request with instructions; it only needs to be
-   signed once.
-2. **Sign off every commit** with the Developer Certificate of Origin, certifying you wrote the code
-   or otherwise have the right to submit it:
-   ```
-   git commit -s -m "fix: description of the change"
-   ```
+When you open your first PR, the CLA Assistant bot will post a comment asking you to sign. You sign
+by adding a comment to the PR with the exact text it asks for. It takes about 30 seconds and only
+needs to be done once.
 
-Pull requests missing either will be blocked from merging until resolved.
+**What the CLA says (in plain language):**
+
+- You grant VORPAHL LLC a perpetual, worldwide, non-exclusive, royalty-free license to use, modify,
+  sublicense, and distribute your contribution under any license.
+- You retain full copyright to your contribution. You can use it however you want.
+- You confirm you have the right to make this grant (you wrote the code yourself or have permission).
+- If your contribution includes third-party code, you must identify it and its license in the PR
+  description.
+
+The full text is in [CLA.md](CLA.md).
 
 ## Development setup
 
