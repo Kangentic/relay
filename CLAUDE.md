@@ -1,4 +1,4 @@
-# kangentic-relay
+# @kangentic/relay
 
 A tiny, stateless, blind WebSocket rendezvous relay for the Kangentic mobile companion. It
 forwards only opaque ciphertext frames between two peers that both dial out to it. It

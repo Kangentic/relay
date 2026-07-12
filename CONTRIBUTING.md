@@ -1,4 +1,4 @@
-# Contributing to kangentic-relay
+# Contributing to @kangentic/relay
 
 Thanks for your interest in contributing. This project is small and deliberately narrow in scope
 (a blind byte-forwarder), so the bar for new code is high: prefer fixing a real bug, hardening a

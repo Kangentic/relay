@@ -1,6 +1,6 @@
 # Security Policy
 
-kangentic-relay is a security-sensitive component: it is the network-facing rendezvous point for
+@kangentic/relay is a security-sensitive component: it is the network-facing rendezvous point for
 the Kangentic mobile companion's end-to-end encrypted channel. We take vulnerability reports
 seriously and ask that you report them responsibly.
 

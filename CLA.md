@@ -2,7 +2,7 @@
 
 **Version 1.0, July 2026**
 
-Thank you for your interest in contributing to kangentic-relay, part of the Kangentic project family maintained by VORPAHL LLC ("We" or "Us").
+Thank you for your interest in contributing to @kangentic/relay, part of the Kangentic project family maintained by VORPAHL LLC ("We" or "Us").
 
 This Contributor License Agreement ("Agreement") documents the rights granted by contributors to Us. This is a legally binding document, so please read it carefully before agreeing to it.
 
@@ -10,7 +10,7 @@ This Contributor License Agreement ("Agreement") documents the rights granted by
 
 **"You"** means the individual who submits a Contribution to Us.
 
-**"Contribution"** means any work of authorship, including any modifications or additions to an existing work, that is intentionally submitted by You to Us for inclusion in kangentic-relay. "Submitted" means code, documentation, or configuration sent via pull requests or patches on GitHub. For the avoidance of doubt, issues, comments, discussion posts, and other communications that do not contain code or documentation intended for inclusion are not Contributions under this Agreement.
+**"Contribution"** means any work of authorship, including any modifications or additions to an existing work, that is intentionally submitted by You to Us for inclusion in @kangentic/relay. "Submitted" means code, documentation, or configuration sent via pull requests or patches on GitHub. For the avoidance of doubt, issues, comments, discussion posts, and other communications that do not contain code or documentation intended for inclusion are not Contributions under this Agreement.
 
 ## 2. Grant of Copyright License
 
@@ -35,7 +35,7 @@ You represent that:
 
 ## 6. Third-Party Work
 
-If any part of Your Contribution is not Your original creation, You must clearly identify it in the pull request description, including the original author, source, and license. You represent that such third-party work is licensed under terms that permit its inclusion in kangentic-relay, and You must not submit third-party work under this Agreement without such identification.
+If any part of Your Contribution is not Your original creation, You must clearly identify it in the pull request description, including the original author, source, and license. You represent that such third-party work is licensed under terms that permit its inclusion in @kangentic/relay, and You must not submit third-party work under this Agreement without such identification.
 
 ## 7. No Support Obligation
 
@@ -47,4 +47,4 @@ This Agreement is governed by the laws of the State of Washington, United States
 
 ## 9. Agreement
 
-By signing this Agreement (via the CLA Assistant bot on GitHub), You accept and agree to the terms and conditions of this Agreement for Your present and future Contributions submitted to kangentic-relay.
+By signing this Agreement (via the CLA Assistant bot on GitHub), You accept and agree to the terms and conditions of this Agreement for Your present and future Contributions submitted to @kangentic/relay.

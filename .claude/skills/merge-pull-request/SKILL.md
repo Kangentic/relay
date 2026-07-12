@@ -12,7 +12,7 @@ PR and drove its CI checks to all-green.
 **Branch protection note:** this repo currently has no branch protection configured on `main`
 (unlike the sibling `kangentic` repo, which requires an approving review and uses `--admin` to
 waive it for a maintainer's own PR). This skill therefore merges without `--admin`. If branch
-protection is added to `kangentic-relay` later, revisit this skill with the user before adding
+protection is added to `@kangentic/relay` later, revisit this skill with the user before adding
 any review-bypass flag - that is a deliberate decision, not something to silently mirror from
 another repo.
 
