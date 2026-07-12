@@ -91,17 +91,17 @@
   "transitions": [
     {
       "from": "*",
-      "to": "Planning",
+      "to": "Done",
       "actions": [
-        "Kill Session",
-        "Start Planning Agent"
+        "Kill Session"
       ]
     },
     {
       "from": "*",
-      "to": "Done",
+      "to": "Planning",
       "actions": [
-        "Kill Session"
+        "Kill Session",
+        "Start Planning Agent"
       ]
     }
   ],

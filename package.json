@@ -1,5 +1,5 @@
 {
-  "name": "kangentic-relay",
+  "name": "@kangentic/relay",
   "version": "0.1.0",
   "description": "Blind WebSocket rendezvous relay for the Kangentic mobile companion: forwards only opaque ciphertext frames between two peers that dial out to it, reading nothing.",
   "type": "module",
@@ -10,7 +10,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Kangentic/kangentic-relay.git"
+    "url": "git+https://github.com/Kangentic/relay.git"
   },
   "keywords": [
     "kangentic",

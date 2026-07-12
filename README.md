@@ -42,8 +42,8 @@ even though the payloads that cross it never are.
 ## Quickstart: self-hosting
 
 ```
-git clone https://github.com/Kangentic/kangentic-relay.git
-cd kangentic-relay
+git clone https://github.com/Kangentic/relay.git
+cd relay
 cp .env.example .env
 docker compose up -d
 curl http://127.0.0.1:8080/healthz
