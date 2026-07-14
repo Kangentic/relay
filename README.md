@@ -86,7 +86,7 @@ All configuration is environment variables, documented fully in `.env.example`. 
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `8080` | Port for both the HTTP health/metrics routes and the WebSocket upgrade. |
-| `SLOT_ID_PATTERN` | `^[0-9a-f]{64}$` | Format the relay requires of a slot id before it will even try to rendezvous it. |
+| `SLOT_ID_PATTERN` | `^([0-9a-f]{32}\|[0-9a-f]{64})$` | Format the relay requires of a slot id before it will even try to rendezvous it. Accepts the 64-hex pairing slot and the 32-hex ongoing-session slot. |
 | `MAX_CONNECTIONS` / `MAX_CONNECTIONS_PER_IP` / `MAX_CONNECTIONS_PER_SLOT` | `10000` / `20` / `2` | Connection caps: global, per resolved IP, and per slot. |
 | `RATE_LIMIT_IP_PER_MIN` / `RATE_LIMIT_SLOT_PER_MIN` | `120` / `60` | New-connection rate limits, per IP and per pairing. |
 | `MAX_MESSAGE_BYTES` | `1114112` | Per-WebSocket-message size ceiling (must exceed the inner protocol's 1 MiB plaintext cap plus Noise/AEAD overhead). |
