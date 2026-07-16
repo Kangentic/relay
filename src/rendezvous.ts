@@ -1,11 +1,11 @@
 import type { WebSocket } from 'ws';
 import { CLOSE_CODE } from './closeCodes.js';
 import type { RejectReason } from './closeCodes.js';
-import type { Conn, SlotState } from './types.js';
+import type { Conn, PairedSlotState, SlotState } from './types.js';
 import type { Metrics } from './http/metrics.js';
 import type { Logger } from './logging.js';
 import type { SlotConnectionCaps } from './guards/caps.js';
-import { byteLengthOfRawData } from './wireData.js';
+import { byteLengthOfRawData, BINARY_SEND_OPTIONS, TEXT_SEND_OPTIONS } from './wireData.js';
 
 export interface RendezvousDeps {
   readonly slotCaps: SlotConnectionCaps;
@@ -111,7 +111,10 @@ export class SlotTable {
       if (state?.status === 'paired') {
         this.slots.delete(conn.slot);
         this.deps.metrics.onUnpair();
+        this.deps.metrics.onPeerClosed();
       }
+      conn.pairState = null;
+      partner.pairState = null;
       closeIfOpen(partner.socket, CLOSE_CODE.PEER_CLOSED, 'peer_closed');
     }
   }
@@ -123,18 +126,12 @@ export class SlotTable {
     this.slots.delete(slot);
     this.deps.metrics.onUnpair();
     this.deps.metrics.onReject(reason);
+    state.a.pairState = null;
+    state.b.pairState = null;
     clearTimer(state.a, 'sessionTimer');
     clearTimer(state.b, 'sessionTimer');
     closeIfOpen(state.a.socket, closeCode, reason);
     closeIfOpen(state.b.socket, closeCode, reason);
-  }
-
-  /** Adds to a paired slot's running byte total and returns the new total (0 if not paired). */
-  addSessionBytes(slot: string, size: number): number {
-    const state = this.slots.get(slot);
-    if (!state || state.status !== 'paired') return 0;
-    state.sessionBytes += size;
-    return state.sessionBytes;
   }
 
   private rejectBusy(conn: Conn): void {
@@ -170,7 +167,10 @@ export class SlotTable {
     waiting.partner = incoming;
     incoming.partner = waiting;
 
-    this.slots.set(waiting.slot, { status: 'paired', a: waiting, b: incoming, sessionBytes: 0 });
+    const pairState: PairedSlotState = { status: 'paired', a: waiting, b: incoming, sessionBytes: 0 };
+    this.slots.set(waiting.slot, pairState);
+    waiting.pairState = pairState;
+    incoming.pairState = pairState;
     this.deps.metrics.onPair();
 
     if (this.deps.maxSessionMs > 0) {
@@ -188,7 +188,7 @@ export class SlotTable {
     // own connection handler, before its 'message' listener can fire.
     for (const frame of waiting.pending) {
       if (incoming.socket.readyState === incoming.socket.OPEN) {
-        incoming.socket.send(frame.data, { binary: frame.isBinary });
+        incoming.socket.send(frame.data, frame.isBinary ? BINARY_SEND_OPTIONS : TEXT_SEND_OPTIONS);
         this.deps.metrics.onForward(byteLengthOfRawData(frame.data));
       }
     }

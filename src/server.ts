@@ -3,7 +3,7 @@ import type { Socket } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Config, Conn } from './types.js';
 import { createLogger, type Logger } from './logging.js';
-import { createMetrics, handleMetricsRequest, type Metrics } from './http/metrics.js';
+import { createMetrics, handleMetricsRequest, handleMetriczRequest, type Metrics } from './http/metrics.js';
 import { handleHealthzRequest, handleReadyzRequest, type HealthState } from './http/health.js';
 import { resolveClientIp, bucketIp } from './net/clientIp.js';
 import { isValidSlotId } from './guards/slotFormat.js';
@@ -84,11 +84,20 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
       handleMetricsRequest(request, response, metrics, config);
       return;
     }
+    if (url.pathname === '/metricz') {
+      handleMetriczRequest(request, response, metrics, config);
+      return;
+    }
     response.writeHead(404).end();
   }
 
   const httpServer = createServer(handleHttpRequest);
-  const wss = new WebSocketServer({ noServer: true, maxPayload: config.maxMessageBytes });
+  // permessage-deflate is explicitly disabled (not just left to the `ws`
+  // default): every frame this relay carries is ciphertext, which is
+  // incompressible, so compression would burn CPU per frame, add latency,
+  // and pin a zlib context's worth of memory to every connection for zero
+  // byte savings. Frames pass through byte-for-byte, uncompressed.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: config.maxMessageBytes, perMessageDeflate: false });
 
   function onWebSocketConnection(ws: WebSocket, slotId: string, ip: string, releaseCapReservation: () => void): void {
     const conn = createConn(ws, slotId, ip);

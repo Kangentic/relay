@@ -5,7 +5,7 @@ import type { Conn, Config } from './types.js';
 import type { SlotTable } from './rendezvous.js';
 import type { Metrics } from './http/metrics.js';
 import type { Logger } from './logging.js';
-import { byteLengthOfRawData } from './wireData.js';
+import { byteLengthOfRawData, BINARY_SEND_OPTIONS, TEXT_SEND_OPTIONS } from './wireData.js';
 
 export interface ConnectionDeps {
   readonly slotTable: SlotTable;
@@ -31,6 +31,7 @@ export function createConn(socket: WebSocket, slot: string, ip: string): Conn {
     parkTimer: null,
     sessionTimer: null,
     torndown: false,
+    pairState: null,
   };
 }
 
@@ -92,13 +93,19 @@ function forward(conn: Conn, partner: Conn, data: RawData, isBinary: boolean, de
     return;
   }
 
+  // Session-byte accounting reads the pair state cached on the connection
+  // (set at pair time, cleared at teardown) instead of a per-frame slot
+  // table lookup, keeping the hot path free of map hashing on a 64-char key.
   const size = byteLengthOfRawData(data);
-  const sessionTotal = deps.slotTable.addSessionBytes(conn.slot, size);
-  if (sessionTotal > deps.config.maxSessionBytes) {
-    deps.slotTable.enforceGuardTeardown(conn.slot, CLOSE_CODE.SESSION_BYTE_CAP, 'session_byte_cap');
-    return;
+  const pairState = conn.pairState;
+  if (pairState) {
+    pairState.sessionBytes += size;
+    if (pairState.sessionBytes > deps.config.maxSessionBytes) {
+      deps.slotTable.enforceGuardTeardown(conn.slot, CLOSE_CODE.SESSION_BYTE_CAP, 'session_byte_cap');
+      return;
+    }
   }
 
-  partner.socket.send(data, { binary: isBinary });
+  partner.socket.send(data, isBinary ? BINARY_SEND_OPTIONS : TEXT_SEND_OPTIONS);
   deps.metrics.onForward(size);
 }
