@@ -57,11 +57,27 @@ export interface Conn {
   parkTimer: ReturnType<typeof setTimeout> | null;
   sessionTimer: ReturnType<typeof setTimeout> | null;
   torndown: boolean;
+  /**
+   * The shared paired-slot state, set while this connection is half of a
+   * live pair and cleared on teardown. Kept directly on the connection so
+   * the per-frame forwarding hot path never does a slot-table lookup.
+   */
+  pairState: PairedSlotState | null;
 }
 
-export type SlotState =
-  | { readonly status: 'waiting'; readonly peer: Conn }
-  | { readonly status: 'paired'; readonly a: Conn; readonly b: Conn; sessionBytes: number };
+export interface WaitingSlotState {
+  readonly status: 'waiting';
+  readonly peer: Conn;
+}
+
+export interface PairedSlotState {
+  readonly status: 'paired';
+  readonly a: Conn;
+  readonly b: Conn;
+  sessionBytes: number;
+}
+
+export type SlotState = WaitingSlotState | PairedSlotState;
 
 export interface RejectDeps {
   metricsOnReject(reason: RejectReason): void;
