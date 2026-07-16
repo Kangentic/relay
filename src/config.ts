@@ -73,7 +73,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port: readInt(env, 'PORT', 8080),
     bindAddress: readString(env, 'BIND_ADDRESS', '0.0.0.0'),
     wsPath: readString(env, 'WS_PATH', '/'),
-    slotIdPattern: readRegExp(env, 'SLOT_ID_PATTERN', '^[0-9a-f]{64}$'),
+    slotIdPattern: readRegExp(env, 'SLOT_ID_PATTERN', '^([0-9a-f]{32}|[0-9a-f]{64})$'),
     maxConnections: readInt(env, 'MAX_CONNECTIONS', 10_000),
     maxConnectionsPerIp: readInt(env, 'MAX_CONNECTIONS_PER_IP', 20),
     maxConnectionsPerSlot: readInt(env, 'MAX_CONNECTIONS_PER_SLOT', 2),

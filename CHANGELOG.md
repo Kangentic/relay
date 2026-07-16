@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Changed
+
+- Default `SLOT_ID_PATTERN` now accepts the 32-hex ongoing-session slot
+  (`^([0-9a-f]{32}|[0-9a-f]{64})$`) in addition to the 64-hex pairing slot. The old default
+  (`^[0-9a-f]{64}$`) let pairing succeed but rejected every session rendezvous at upgrade time,
+  because `@kangentic/protocol`'s `deriveSessionSlotId` produces a 16-byte (32-hex) slot.
+  Deployments that pinned `SLOT_ID_PATTERN` explicitly should widen it the same way.
+
 ### Added
 
 - Initial relay implementation: slot-based WebSocket rendezvous, runaway-bill guards (slot-id
