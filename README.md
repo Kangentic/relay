@@ -89,14 +89,78 @@ All configuration is environment variables, documented fully in `.env.example`. 
 | `SLOT_ID_PATTERN` | `^[0-9a-f]{64}$` | Format the relay requires of a slot id before it will even try to rendezvous it. |
 | `MAX_CONNECTIONS` / `MAX_CONNECTIONS_PER_IP` / `MAX_CONNECTIONS_PER_SLOT` | `10000` / `20` / `2` | Connection caps: global, per resolved IP, and per slot. |
 | `RATE_LIMIT_IP_PER_MIN` / `RATE_LIMIT_SLOT_PER_MIN` | `120` / `60` | New-connection rate limits, per IP and per pairing. |
-| `MAX_MESSAGE_BYTES` | `1114112` | Per-WebSocket-message size ceiling (must exceed the inner protocol's 1 MiB plaintext cap plus Noise/AEAD overhead). |
+| `MAX_MESSAGE_BYTES` | `1114112` | Per-WebSocket-message size ceiling, enforced at the `ws` layer (must exceed the inner protocol's 1 MiB plaintext cap plus Noise/AEAD overhead). |
 | `MAX_SESSION_BYTES` | `1073741824` | Total bytes forwarded across a paired tunnel before it is torn down. |
+| `MAX_BUFFERED_BYTES` | `4194304` | Per-connection outbound buffer cap: when a slow consumer's socket backlog exceeds this, the tunnel is torn down with close code `4431` and both clients reconnect. Bounds worst-case per-connection memory. |
 | `PING_INTERVAL_MS` | `30000` | WS-level ping/pong cadence used to reap half-open sockets. Invisible to the client; there is no application-level heartbeat. |
 | `TRUST_PROXY` | `false` | Trust `CF-Connecting-IP` / `X-Forwarded-For` for the real client IP. Only enable this behind a proxy you control. |
-| `METRICS_ENABLED` / `METRICS_TOKEN` | `true` / unset | Prometheus-format `/metrics`, optionally behind a bearer token. |
+| `METRICS_ENABLED` / `METRICS_TOKEN` | `true` / unset | Prometheus-format `/metrics` and its JSON twin `/metricz`, optionally behind a bearer token. |
 | `ADMISSION_WEBHOOK_URL` | unset | The open-core seam. See below. |
 
 See `.env.example` for the complete list.
+
+## Performance and vertical scaling
+
+The relay is a single Node process moving opaque buffers between sockets, and it is deliberately
+kept that way:
+
+- **permessage-deflate is explicitly disabled.** Every frame is ciphertext, which does not
+  compress; the extension would cost CPU per frame, add latency, and hold a zlib context's worth
+  of memory per connection for zero savings.
+- **The frame path does no parsing.** A received message is counted and written to the partner
+  socket as the same buffer; there is no JSON, no string conversion, no copy, and no per-frame
+  allocation beyond what `ws` itself does. Session-byte accounting reads pair state cached on the
+  connection rather than a per-frame table lookup.
+- **TCP_NODELAY is on** (the `ws` default; it calls `setNoDelay()` on every socket), and nothing
+  batches or delays forwarding, so small interactive frames leave the box immediately.
+- **Slow consumers cannot balloon memory.** A paired tunnel is torn down (close code `4431`) when
+  one side's outbound socket backlog exceeds `MAX_BUFFERED_BYTES` (4 MiB default), and a parked
+  peer may buffer at most `MAX_PARKED_BUFFER_BYTES` (1 MiB default), so worst-case memory per
+  connection is bounded at roughly the two caps plus one max-size message.
+- **Dead phones are reaped.** The WS ping/pong keepalive terminates a socket that misses a pong
+  for a full `PING_INTERVAL_MS` round (30 s default), so devices that vanish without a FIN (doze,
+  network switch) release their file descriptor and slot within about a minute.
+
+Measured on a development machine (relay and test clients sharing one Windows box over loopback,
+Node 22, `scripts/loadTest.mjs`; client-side scheduling is included in the numbers, so treat them
+as conservative):
+
+| Scenario | Pairs | Frame size | Offered rate | p50 / p95 / p99 latency | Aggregate throughput | Relay RSS |
+|---|---|---|---|---|---|---|
+| Paced, interactive | 50 | 512 B | 20 frames/s per pair | 0.79 / 1.60 / 1.98 ms | 1,000 frames/s | ~80 MB |
+| Paced, interactive | 500 | 512 B | 10 frames/s per pair | 1.33 / 2.83 / 28.8 ms | 5,000 frames/s | ~93 MB |
+| Flood, small frames | 500 | 512 B | max (64-frame window) | queueing-bound | 25 MB/s, ~51,600 frames/s | ~140 MB |
+| Flood, large frames | 1 | 64 KiB | max (32-frame window) | 3.2 / 13.1 / 18.7 ms | 283 MB/s single tunnel | ~134 MB |
+| Flood, large frames | 50 | 64 KiB | max (8-frame window) | 33.8 / 60.7 / 70.1 ms | 393 MB/s (~3.1 Gbit/s) | ~122 MB |
+| Connection count | 2,500 | 512 B | 1 frame/s per pair | 1.7 ms p50 | 5,000 concurrent sockets | ~8 KB per socket |
+
+Two practical readings of that table for a small VPS (the Hetzner CX23 class):
+
+- Interactive traffic is nowhere near any limit: thousands of concurrent phone/desktop pairs
+  exchanging chat-sized frames cost single-digit milliseconds of relay-added latency and tens of
+  megabytes of RSS. The box's real ceilings are bandwidth and file descriptors, not this process.
+- Make sure the file-descriptor limit comfortably exceeds `MAX_CONNECTIONS`
+  (`LimitNOFILE`/`ulimit -n` on bare hosts; `ulimits` in docker-compose if your Docker daemon's
+  default is low). The relay's own `MAX_CONNECTIONS` cap rejects upgrades cleanly at 503 before
+  the process ever hits fd exhaustion, which is the failure mode you want.
+
+**The horizontal path, when one box is no longer enough:** the slot table is in-process memory,
+so peers of one slot must land on the same process. Run multiple relay processes (or hosts)
+behind a TCP load balancer with slot-affinity routing (hash the `slot` query parameter, e.g.
+HAProxy `balance uri` on the query string or any consistent-hash LB), or partition slots across
+instances at the DNS/config layer. `SO_REUSEPORT`-style kernel spreading does NOT work here
+because it is connection-random, not slot-aware. Nothing else in the process is shared state, so
+horizontal scaling needs no code changes, only slot-sticky routing in front.
+
+## Observability
+
+- `/healthz` is liveness, `/readyz` flips to 503 while draining for shutdown.
+- `/metrics` is Prometheus text; `/metricz` is the same counters as JSON plus process RSS and
+  uptime, including connections closed by cause (peer-closed, backpressure, heartbeat,
+  park-timeout, session caps). Neither surface ever contains a slot id, an IP, or frame content.
+- `scripts/loadTest.mjs` drives N concurrent pairs of M frames of S bytes against an instance and
+  reports latency percentiles, throughput, and the relay RSS delta (see the header comment; run
+  it only against a dedicated instance, never a live one).
 
 ## Open-core and licensing
 

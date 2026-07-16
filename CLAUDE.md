@@ -35,13 +35,15 @@ src/
   admission.ts        # AdmissionPolicy interface, allowAllPolicy, webhook policy
   guards/             # slot-id format, rate limiting, connection caps
   net/clientIp.ts     # real client IP behind a trusted proxy, IPv6 bucketing
-  http/               # /healthz, /readyz, /metrics
+  http/               # /healthz, /readyz, /metrics (Prometheus), /metricz (JSON + RSS)
   logging.ts          # structured JSON logs; slot ids hashed by default
 test/
   helpers/            # relayHarness.ts (real relay on an ephemeral port), wsClient.ts
   integration.protocol-handshake.test.ts   # real @kangentic/protocol handshake through the relay
   blindness.test.ts   # asserts src/** never imports @kangentic/protocol at runtime
   *.test.ts           # one file per module, matching src/ 1:1
+scripts/
+  loadTest.mjs        # load-test harness: N slot pairs x M frames x S bytes against a dedicated instance
 ```
 
 ## Commands
