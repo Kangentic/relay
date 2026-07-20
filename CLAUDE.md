@@ -14,7 +14,14 @@ project with its own board, worktrees, and skills - not a subdirectory of the de
 - **Language:** TypeScript, strict mode, ESM (`"type": "module"`)
 - **Runtime dependency:** `ws` only (production)
 - **Dev dependency:** `@kangentic/protocol` (used ONLY by the integration test, never at
-  runtime by `src/**` - see "The blindness guarantee" below)
+  runtime by `src/**` - see "The blindness guarantee" below). It is pinned to a published
+  `^x.y.z`; because the relay is blind, it almost never needs to track protocol changes (only
+  when the handshake or framing the integration test exercises changes). On the rare occasion it
+  does, follow the shared strategy the consumers use: `main` of the kangentic monorepo is the
+  protocol's source of truth, iterate by building and linking the sibling `packages/protocol`
+  into `node_modules` for local dev, and publish to npm only at a release milestone (the full
+  workflow lives in kangentic-mobile's `docs/developer-guide.md` and the desktop's
+  `docs/mobile-bridge.md`).
 - **Build:** `tsc` (no bundler)
 - **Tests:** Vitest, two workspace projects (`unit`, `integration`)
 - **Deploy:** Docker (multi-stage, non-root runtime), docker-compose, GitHub Actions CI
