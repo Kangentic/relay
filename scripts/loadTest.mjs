@@ -72,7 +72,11 @@ function parseArgs(argv) {
     const optionName = integerFlags.get(flag);
     if (!optionName) throw new Error(`Unknown flag: ${flag}`);
     const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${flag} needs a positive integer, got "${value}"`);
+    // --rate 0 is documented flood mode, so it alone accepts zero.
+    const minimumValue = flag === '--rate' ? 0 : 1;
+    if (!Number.isInteger(parsed) || parsed < minimumValue) {
+      throw new Error(`${flag} needs ${minimumValue === 0 ? 'a non-negative' : 'a positive'} integer, got "${value}"`);
+    }
     options[optionName] = parsed;
     argumentIndex += 1;
   }
