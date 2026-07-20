@@ -89,7 +89,7 @@ function forward(conn: Conn, partner: Conn, data: RawData, isBinary: boolean, de
   // stream, so a slow consumer tears the tunnel down instead of buffering
   // without limit.
   if (partner.socket.bufferedAmount > deps.config.maxBufferedBytes) {
-    deps.slotTable.enforceGuardTeardown(conn.slot, CLOSE_CODE.BACKPRESSURE, 'backpressure');
+    deps.slotTable.enforceGuardTeardown(conn, CLOSE_CODE.BACKPRESSURE, 'backpressure');
     return;
   }
 
@@ -101,7 +101,7 @@ function forward(conn: Conn, partner: Conn, data: RawData, isBinary: boolean, de
   if (pairState) {
     pairState.sessionBytes += size;
     if (pairState.sessionBytes > deps.config.maxSessionBytes) {
-      deps.slotTable.enforceGuardTeardown(conn.slot, CLOSE_CODE.SESSION_BYTE_CAP, 'session_byte_cap');
+      deps.slotTable.enforceGuardTeardown(conn, CLOSE_CODE.SESSION_BYTE_CAP, 'session_byte_cap');
       return;
     }
   }

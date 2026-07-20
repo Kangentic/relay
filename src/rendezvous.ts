@@ -108,7 +108,12 @@ export class SlotTable {
     if (conn.state === 'paired' && conn.partner) {
       const partner = conn.partner;
       const state = this.slots.get(conn.slot);
-      if (state?.status === 'paired') {
+      // Identity check, mirroring the waiting branch above: a ws close
+      // event can trail its teardown (up to ws's close timeout), by which
+      // time the slot may already belong to a brand-new pair. A stale
+      // close must never delete that new pair's entry or count a
+      // peer-closed teardown for it.
+      if (state?.status === 'paired' && (state.a === conn || state.b === conn)) {
         this.slots.delete(conn.slot);
         this.deps.metrics.onUnpair();
         this.deps.metrics.onPeerClosed();
@@ -119,19 +124,31 @@ export class SlotTable {
     }
   }
 
-  /** Tears down an established pair because a guard (byte cap, backpressure) tripped. */
-  enforceGuardTeardown(slot: string, closeCode: number, reason: RejectReason): void {
-    const state = this.slots.get(slot);
-    if (!state || state.status !== 'paired') return;
-    this.slots.delete(slot);
-    this.deps.metrics.onUnpair();
+  /**
+   * Tears down an established pair because a guard (byte cap, session cap,
+   * backpressure) tripped. Acts on the tripping connection's own pair,
+   * never on whatever currently owns the slot table entry: both of the
+   * pair's sockets are closed directly, and the slot entry is deleted only
+   * when it still points at this same pair, so a stale trip can never
+   * black-hole the pair or tear down an innocent new pair on the same
+   * slot. No-ops when the pair is already torn down.
+   */
+  enforceGuardTeardown(conn: Conn, closeCode: number, reason: RejectReason): void {
+    const pairState = conn.pairState;
+    if (!pairState) return;
+
+    const tableEntry = this.slots.get(conn.slot);
+    if (tableEntry === pairState) {
+      this.slots.delete(conn.slot);
+      this.deps.metrics.onUnpair();
+    }
     this.deps.metrics.onReject(reason);
-    state.a.pairState = null;
-    state.b.pairState = null;
-    clearTimer(state.a, 'sessionTimer');
-    clearTimer(state.b, 'sessionTimer');
-    closeIfOpen(state.a.socket, closeCode, reason);
-    closeIfOpen(state.b.socket, closeCode, reason);
+    pairState.a.pairState = null;
+    pairState.b.pairState = null;
+    clearTimer(pairState.a, 'sessionTimer');
+    clearTimer(pairState.b, 'sessionTimer');
+    closeIfOpen(pairState.a.socket, closeCode, reason);
+    closeIfOpen(pairState.b.socket, closeCode, reason);
   }
 
   private rejectBusy(conn: Conn): void {
@@ -175,7 +192,7 @@ export class SlotTable {
 
     if (this.deps.maxSessionMs > 0) {
       const timer = setTimeout(() => {
-        this.enforceGuardTeardown(waiting.slot, CLOSE_CODE.SESSION_TIME_CAP, 'session_time_cap');
+        this.enforceGuardTeardown(waiting, CLOSE_CODE.SESSION_TIME_CAP, 'session_time_cap');
       }, this.deps.maxSessionMs);
       timer.unref?.();
       waiting.sessionTimer = timer;

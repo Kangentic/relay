@@ -33,10 +33,13 @@ const silentLogger: Logger = {
   slotRef: (slotId) => slotId,
 };
 
-function createHarness(configOverrides: Partial<Pick<Config, 'maxParkedBufferBytes' | 'maxBufferedBytes' | 'maxSessionBytes'>> = {}): Harness {
+function createHarness(
+  configOverrides: Partial<Pick<Config, 'maxParkedBufferBytes' | 'maxBufferedBytes' | 'maxSessionBytes'>> = {},
+  maxConnectionsPerSlot = 2,
+): Harness {
   const metrics = createMetrics();
   const slotTable = new SlotTable({
-    slotCaps: new SlotConnectionCaps(2),
+    slotCaps: new SlotConnectionCaps(maxConnectionsPerSlot),
     metrics,
     logger: silentLogger,
     parkTimeoutMs: 60_000,
@@ -163,5 +166,79 @@ describe('forwarding hot path', () => {
     expect(harness.metrics.snapshot().peerClosedTotal).toBe(1);
     expect(a.conn.pairState).toBeNull();
     expect(b.conn.pairState).toBeNull();
+  });
+});
+
+describe('stale teardown races against a re-paired slot', () => {
+  // A ws close event can trail its teardown by up to ws's close timeout, so
+  // a slot can re-pair (with a raised MAX_CONNECTIONS_PER_SLOT) while the
+  // torn-down pair's sockets still linger in CLOSING. Nothing the old pair
+  // does after that point may touch the new pair.
+
+  it('a stale close from a torn-down pair leaves the new pair\'s slot entry and metrics untouched', () => {
+    const harness = createHarness({ maxSessionBytes: 100 }, 4);
+    const oldA = harness.connect(SLOT);
+    const oldB = harness.connect(SLOT);
+
+    // Trip the session byte cap: the guard tears the old pair down, but the
+    // old sockets' close events have not fired yet.
+    oldA.socket.emit('message', Buffer.alloc(128), true);
+    expect(oldA.socket.close).toHaveBeenCalledWith(4432, 'session_byte_cap');
+    expect(oldB.socket.close).toHaveBeenCalledWith(4432, 'session_byte_cap');
+    expect(harness.metrics.snapshot().pairedSlots).toBe(0);
+
+    // The slot re-pairs with two fresh connections.
+    const newA = harness.connect(SLOT);
+    const newB = harness.connect(SLOT);
+    newA.socket.emit('message', Buffer.from('fresh'), true);
+    expect(newB.socket.send).toHaveBeenCalledTimes(1);
+
+    // The OLD socket's close event finally fires.
+    oldA.socket.readyState = 3; // CLOSED
+    oldA.socket.emit('close');
+
+    expect(harness.metrics.snapshot().peerClosedTotal).toBe(0);
+    expect(harness.metrics.snapshot().pairedSlots).toBe(1);
+    expect(newA.conn.pairState).not.toBeNull();
+    expect(newA.socket.close).not.toHaveBeenCalled();
+    expect(newB.socket.close).not.toHaveBeenCalled();
+
+    // The new pair's slot entry survived: it still forwards, and a fifth
+    // connection is rejected busy instead of parking on a vacated slot.
+    newA.socket.emit('message', Buffer.from('still here'), true);
+    expect(newB.socket.send).toHaveBeenCalledTimes(2);
+    const fifth = harness.connect(SLOT);
+    expect(fifth.socket.close).toHaveBeenCalledWith(4409, 'slot_busy');
+  });
+
+  it('a guard trip from the torn-down pair closes only that pair, never the slot\'s new owner', () => {
+    const harness = createHarness({ maxSessionBytes: 100, maxBufferedBytes: 1000 }, 4);
+    const oldA = harness.connect(SLOT);
+    const oldB = harness.connect(SLOT);
+
+    oldA.socket.emit('message', Buffer.alloc(128), true);
+    expect(oldA.socket.close).toHaveBeenCalledWith(4432, 'session_byte_cap');
+    expect(oldB.socket.close).toHaveBeenCalledWith(4432, 'session_byte_cap');
+
+    const newA = harness.connect(SLOT);
+    const newB = harness.connect(SLOT);
+
+    // A late frame from the orphaned old pair trips the backpressure guard
+    // while the slot entry already belongs to the new pair.
+    oldB.socket.bufferedAmount = 1001;
+    oldA.socket.emit('message', Buffer.alloc(8), true);
+
+    expect(newA.socket.close).not.toHaveBeenCalled();
+    expect(newB.socket.close).not.toHaveBeenCalled();
+    expect(newA.conn.pairState).not.toBeNull();
+    expect(harness.metrics.snapshot().pairedSlots).toBe(1);
+    // The no-op stale trip is not counted as a backpressure teardown.
+    expect(harness.metrics.snapshot().rejectsByReason.backpressure).toBeUndefined();
+
+    // The old pair's sockets were both closed by its own teardown; the new
+    // pair keeps forwarding.
+    expect(oldB.socket.send).not.toHaveBeenCalled();
+    newA.socket.emit('message', Buffer.from('alive'), true);
+    expect(newB.socket.send).toHaveBeenCalledTimes(1);
   });
 });
