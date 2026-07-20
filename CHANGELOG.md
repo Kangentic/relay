@@ -16,8 +16,10 @@ All notable changes to this project are documented in this file. The format is b
 ### Added
 
 - `/metricz`: a JSON metrics endpoint mirroring `/metrics` (same enable/token gating) with
-  process RSS, uptime, and connections-closed-by-cause counters (peer-closed, backpressure,
-  heartbeat, park-timeout, session caps). Still aggregate-only: no slot ids, IPs, or content.
+  process RSS, uptime, and connections-closed-by-cause counters. Causes count in different
+  units: peer-closed, backpressure, and the session caps count pair teardowns (two sockets
+  each); parked-overflow, heartbeat, and park-timeout count single sockets. Still
+  aggregate-only: no slot ids, IPs, or content.
 - `relay_peer_closed_total` Prometheus counter for paired tunnels torn down by one half closing.
 - `scripts/loadTest.mjs`: a dependency-free load-test harness (N slot pairs x M frames x S bytes,
   paced or flooding with end-to-end windowing) reporting relay-added latency percentiles,

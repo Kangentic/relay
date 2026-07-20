@@ -73,7 +73,10 @@ function onMessage(conn: Conn, data: RawData, isBinary: boolean, deps: Connectio
   if (conn.state === 'waiting') {
     const size = byteLengthOfRawData(data);
     if (conn.pendingBytes + size > deps.config.maxParkedBufferBytes) {
-      deps.metrics.onReject('backpressure');
+      // Counted as 'parked_overflow' (a single parked socket closed), not
+      // 'backpressure' (a pair teardown), so /metricz never mixes units.
+      // The wire close code and reason are unchanged.
+      deps.metrics.onReject('parked_overflow');
       conn.socket.close(CLOSE_CODE.BACKPRESSURE, 'backpressure');
       return;
     }

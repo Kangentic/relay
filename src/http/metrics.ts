@@ -193,9 +193,15 @@ export function handleMetriczRequest(
     sessionsTotal: currentSnapshot.sessionsTotal,
     framesForwardedTotal: currentSnapshot.framesForwardedTotal,
     bytesForwardedTotal: currentSnapshot.bytesForwardedTotal,
+    // Counter units differ by cause. Pair teardowns, counted once per pair
+    // (two sockets each): peerClosed, backpressure, sessionByteCap,
+    // sessionTimeCap. Single-socket closes, counted once per socket:
+    // parkedOverflow (a parked socket overflowing its pre-pair buffer),
+    // heartbeat, parkTimeout.
     closedByCause: {
       peerClosed: currentSnapshot.peerClosedTotal,
       backpressure: currentSnapshot.rejectsByReason.backpressure ?? 0,
+      parkedOverflow: currentSnapshot.rejectsByReason.parked_overflow ?? 0,
       heartbeat: currentSnapshot.pongTimeoutsTotal,
       parkTimeout: currentSnapshot.rejectsByReason.park_timeout ?? 0,
       sessionByteCap: currentSnapshot.rejectsByReason.session_byte_cap ?? 0,
