@@ -84,7 +84,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxMessageBytes: readInt(env, 'MAX_MESSAGE_BYTES', 1_114_112),
     maxSessionBytes: readInt(env, 'MAX_SESSION_BYTES', 1_073_741_824),
     maxParkedBufferBytes: readInt(env, 'MAX_PARKED_BUFFER_BYTES', 1_048_576),
-    maxBufferedBytes: readInt(env, 'MAX_BUFFERED_BYTES', 4_194_304),
+    // 16 MiB: the desktop pushes multi-MiB transcript payloads to phones on
+    // slow links (max frame is ~1.1 MiB), so one realistic burst must fit
+    // under the teardown threshold. Still env-tunable.
+    maxBufferedBytes: readInt(env, 'MAX_BUFFERED_BYTES', 16_777_216),
     pingIntervalMs: readInt(env, 'PING_INTERVAL_MS', 30_000),
     parkTimeoutMs: readInt(env, 'PARK_TIMEOUT_MS', 60_000),
     maxSessionMs: readInt(env, 'MAX_SESSION_MS', 0),
