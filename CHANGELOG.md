@@ -29,9 +29,6 @@ All notable changes to this project are documented in this file. The format is b
 - permessage-deflate is now explicitly disabled on the WebSocket server rather than left to the
   `ws` default: ciphertext is incompressible, and the extension would cost CPU and per-connection
   zlib memory for nothing.
-- `MAX_BUFFERED_BYTES` default lowered from 16 MiB to 4 MiB, tightening the worst-case
-  per-connection memory bound; the teardown close code (`4431`) and reconnect semantics are
-  unchanged, and the old value remains available via the env var.
 - The per-frame forwarding hot path no longer does a slot-table lookup for session-byte
   accounting (pair state is cached on the connection) and no longer allocates a send-options
   object per frame.

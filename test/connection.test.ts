@@ -47,7 +47,7 @@ function createHarness(
   });
   const config = {
     maxParkedBufferBytes: 1_048_576,
-    maxBufferedBytes: 4_194_304,
+    maxBufferedBytes: 16_777_216,
     maxSessionBytes: 1_073_741_824,
     ...configOverrides,
   };

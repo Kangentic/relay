@@ -91,7 +91,7 @@ All configuration is environment variables, documented fully in `.env.example`. 
 | `RATE_LIMIT_IP_PER_MIN` / `RATE_LIMIT_SLOT_PER_MIN` | `120` / `60` | New-connection rate limits, per IP and per pairing. |
 | `MAX_MESSAGE_BYTES` | `1114112` | Per-WebSocket-message size ceiling, enforced at the `ws` layer (must exceed the inner protocol's 1 MiB plaintext cap plus Noise/AEAD overhead). |
 | `MAX_SESSION_BYTES` | `1073741824` | Total bytes forwarded across a paired tunnel before it is torn down. |
-| `MAX_BUFFERED_BYTES` | `4194304` | Per-connection outbound buffer cap: when a slow consumer's socket backlog exceeds this, the tunnel is torn down with close code `4431` and both clients reconnect. Bounds worst-case per-connection memory. |
+| `MAX_BUFFERED_BYTES` | `16777216` | Per-connection outbound buffer cap: when a slow consumer's socket backlog exceeds this, the tunnel is torn down with close code `4431` and both clients reconnect. Bounds worst-case per-connection memory; the 16 MiB default leaves room for one realistic multi-MiB transcript burst to a phone on a slow link. |
 | `PING_INTERVAL_MS` | `30000` | WS-level ping/pong cadence used to reap half-open sockets. Invisible to the client; there is no application-level heartbeat. |
 | `TRUST_PROXY` | `false` | Trust `CF-Connecting-IP` / `X-Forwarded-For` for the real client IP. Only enable this behind a proxy you control. |
 | `METRICS_ENABLED` / `METRICS_TOKEN` | `true` / unset | Prometheus-format `/metrics` and its JSON twin `/metricz`, optionally behind a bearer token. |
@@ -114,7 +114,7 @@ kept that way:
 - **TCP_NODELAY is on** (the `ws` default; it calls `setNoDelay()` on every socket), and nothing
   batches or delays forwarding, so small interactive frames leave the box immediately.
 - **Slow consumers cannot balloon memory.** A paired tunnel is torn down (close code `4431`) when
-  one side's outbound socket backlog exceeds `MAX_BUFFERED_BYTES` (4 MiB default), and a parked
+  one side's outbound socket backlog exceeds `MAX_BUFFERED_BYTES` (16 MiB default), and a parked
   peer may buffer at most `MAX_PARKED_BUFFER_BYTES` (1 MiB default), so worst-case memory per
   connection is bounded at roughly the two caps plus one max-size message.
 - **Dead phones are reaped.** The WS ping/pong keepalive terminates a socket that misses a pong
