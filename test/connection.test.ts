@@ -151,7 +151,8 @@ describe('forwarding hot path', () => {
     a.socket.emit('message', Buffer.alloc(60), true);
 
     expect(a.socket.close).toHaveBeenCalledWith(4431, 'backpressure');
-    expect(harness.metrics.snapshot().rejectsByReason.backpressure).toBe(1);
+    expect(harness.metrics.snapshot().rejectsByReason.parked_overflow).toBe(1);
+    expect(harness.metrics.snapshot().rejectsByReason.backpressure).toBeUndefined();
   });
 
   it('closes the partner with 4000 and counts a peer-closed teardown when one half closes', () => {

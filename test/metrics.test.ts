@@ -147,6 +147,7 @@ describe('GET /metricz over the live server', () => {
     expect(body['closedByCause']).toMatchObject({
       peerClosed: 0,
       backpressure: 0,
+      parkedOverflow: 0,
       heartbeat: 0,
       parkTimeout: 0,
     });

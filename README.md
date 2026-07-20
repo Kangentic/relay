@@ -156,8 +156,11 @@ horizontal scaling needs no code changes, only slot-sticky routing in front.
 
 - `/healthz` is liveness, `/readyz` flips to 503 while draining for shutdown.
 - `/metrics` is Prometheus text; `/metricz` is the same counters as JSON plus process RSS and
-  uptime, including connections closed by cause (peer-closed, backpressure, heartbeat,
-  park-timeout, session caps). Neither surface ever contains a slot id, an IP, or frame content.
+  uptime, including connections closed by cause. Mind the units: `peerClosed`, `backpressure`,
+  `sessionByteCap`, and `sessionTimeCap` count pair teardowns (two sockets each), while
+  `parkedOverflow` (a parked socket overflowing its pre-pair buffer), `heartbeat`, and
+  `parkTimeout` count single sockets. Neither surface ever contains a slot id, an IP, or frame
+  content.
 - `scripts/loadTest.mjs` drives N concurrent pairs of M frames of S bytes against an instance and
   reports latency percentiles, throughput, and the relay RSS delta (see the header comment; run
   it only against a dedicated instance, never a live one).

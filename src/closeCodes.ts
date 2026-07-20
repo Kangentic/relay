@@ -37,6 +37,7 @@ export type RejectReason =
   | 'shutting_down'
   | 'slot_busy'
   | 'park_timeout'
+  | 'parked_overflow'
   | 'backpressure'
   | 'session_byte_cap'
   | 'session_time_cap'
