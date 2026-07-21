@@ -15,7 +15,16 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-permissions: {}
+# contents: read, not {}: a caller job with NO permissions block of its own
+# (checks and deploy below) inherits this workflow-level default, and
+# GitHub needs at least contents: read to resolve a local reusable
+# workflow reference (uses: ./.github/workflows/X.yml) at all - an empty
+# default here causes that resolution to fail before any job runs
+# (a zero-job startup_failure), not a runtime permission error inside a
+# job. image and gh-release still declare their own broader overrides
+# below.
+permissions:
+  contents: read
 
 jobs:
   checks:
