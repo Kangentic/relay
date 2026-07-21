@@ -37,6 +37,18 @@ compose() {
   docker compose --env-file "$env_file" -f "$compose_file" "${drill_args[@]}" "$@"
 }
 
+# `docker inspect <container>` has no .RepoDigests field at all - that is
+# an IMAGE-level field, not a container one (docker inspect on a container
+# ID returns "map has no entry for key RepoDigests" if asked for it
+# directly). Resolving a container to its repo digest is two steps:
+# container -> image ID (.Image), then image ID -> .RepoDigests.
+container_digest() {
+  local container_id="$1" image_id
+  image_id="$(docker inspect "$container_id" --format '{{.Image}}' 2>/dev/null || echo "")"
+  [ -z "$image_id" ] && return 0
+  docker image inspect "$image_id" --format '{{index .RepoDigests 0}}' 2>/dev/null || true
+}
+
 install -d -m 0755 "$state_dir"
 
 # Reality is the source of truth for rollback, not a hand-maintained file:
@@ -47,7 +59,7 @@ install -d -m 0755 "$state_dir"
 prev_container_id="$(compose ps -q relay || true)"
 prev_digest=""
 if [ -n "$prev_container_id" ]; then
-  prev_digest="$(docker inspect "$prev_container_id" --format '{{index .RepoDigests 0}}' 2>/dev/null || echo "")"
+  prev_digest="$(container_digest "$prev_container_id")"
 fi
 prev_git_ref="$(git -C "$repo_root" rev-parse "HEAD@{1}" 2>/dev/null || echo "")"
 
@@ -101,7 +113,7 @@ wait_for_gate() {
   while [ "$waited" -lt 60 ]; do
     local current_id; current_id="$(compose ps -q relay || true)"
     if [ -n "$current_id" ] && [ "$current_id" != "$baseline_container_id" ]; then
-      local current_digest; current_digest="$(docker inspect "$current_id" --format '{{index .RepoDigests 0}}' 2>/dev/null || echo "")"
+      local current_digest; current_digest="$(container_digest "$current_id")"
       local health; health="$(docker inspect "$current_id" --format '{{.State.Health.Status}}' 2>/dev/null || echo "")"
       if [ "$current_digest" = "$want_digest" ] && [ "$health" = "healthy" ]; then
         if curl -sf http://127.0.0.1:8080/healthz | grep -q '"status":"ok"'; then
