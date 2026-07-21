@@ -2,11 +2,13 @@
 
 ## What this process does
 
-One Node.js process, one HTTP server (`src/server.ts`). It serves four fixed HTTP routes
-(`/healthz`, `/readyz`, `/metrics`, `/metricz`) and upgrades everything else at `config.wsPath`
-(default `/`) to a WebSocket, provided the request carries a `slot` query parameter that passes
-`isValidSlotId`. There is no other surface. No database, no session store, no request body is
-ever parsed.
+One Node.js process, one HTTP server (`src/server.ts`). It serves five fixed HTTP routes
+(`/healthz`, `/readyz`, `/metrics`, `/metricz`, and a static splash page at `/`) and upgrades
+WebSocket requests at `config.wsPath` (default `/`), provided the request carries a `slot` query
+parameter that passes `isValidSlotId`. The splash page has no config surface and never touches the
+upgrade path: WebSocket upgrades arrive on Node's separate `'upgrade'` event, so a plain `GET /`
+and a `GET /` with an `Upgrade: websocket` header are handled by entirely different code. There is
+no other surface. No database, no session store, no request body is ever parsed.
 
 Two connections that present the same slot id are paired and every binary message one sends is
 written to the other's socket, unmodified. That is the entire product.

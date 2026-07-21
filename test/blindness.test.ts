@@ -25,6 +25,7 @@ const SRC_FILES = [
   'guards/rateLimit.ts',
   'guards/slotFormat.ts',
   'http/health.ts',
+  'http/landing.ts',
   'http/metrics.ts',
   'net/clientIp.ts',
 ];

@@ -5,6 +5,7 @@ import type { Config, Conn } from './types.js';
 import { createLogger, type Logger } from './logging.js';
 import { createMetrics, handleMetricsRequest, handleMetriczRequest, type Metrics } from './http/metrics.js';
 import { handleHealthzRequest, handleReadyzRequest, type HealthState } from './http/health.js';
+import { handleLandingRequest } from './http/landing.js';
 import { resolveClientIp, bucketIp } from './net/clientIp.js';
 import { isValidSlotId } from './guards/slotFormat.js';
 import { RateLimiter } from './guards/rateLimit.js';
@@ -44,10 +45,11 @@ function destroySocket(socket: Socket, statusCode: number): void {
 
 /**
  * Builds the relay: one HTTP server handles /healthz, /readyz, /metrics,
- * and the WebSocket upgrade. All admission work (slot format, rate limits,
- * connection caps, the pluggable AdmissionPolicy) happens during the async
- * 'upgrade' handler; the rendezvous decision itself is synchronous inside
- * SlotTable.handleConnection, called from the 'connection' event.
+ * /metricz, a static splash page at /, and the WebSocket upgrade. All
+ * admission work (slot format, rate limits, connection caps, the pluggable
+ * AdmissionPolicy) happens during the async 'upgrade' handler; the
+ * rendezvous decision itself is synchronous inside SlotTable.handleConnection,
+ * called from the 'connection' event.
  */
 export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
   const logger = deps.logger ?? createLogger(config);
@@ -86,6 +88,10 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
     }
     if (url.pathname === '/metricz') {
       handleMetriczRequest(request, response, metrics, config);
+      return;
+    }
+    if (url.pathname === '/') {
+      handleLandingRequest(request, response);
       return;
     }
     response.writeHead(404).end();

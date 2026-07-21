@@ -182,6 +182,9 @@ horizontal scaling needs no code changes, only slot-sticky routing in front.
 ## Observability
 
 - `/healthz` is liveness, `/readyz` flips to 503 while draining for shutdown.
+- `GET /` serves a static splash page (the Kangentic mark and a one-line description) so visiting
+  the relay's hostname directly in a browser isn't blank. It makes no external requests and has no
+  config surface.
 - `/metrics` is Prometheus text; `/metricz` is the same counters as JSON plus process RSS and
   uptime, including connections closed by cause. Mind the units: `peerClosed`, `backpressure`,
   `sessionByteCap`, and `sessionTimeCap` count pair teardowns (two sockets each), while
