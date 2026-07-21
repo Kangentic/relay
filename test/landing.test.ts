@@ -32,18 +32,29 @@ describe('landing page', () => {
     expect(offHostUrls).toEqual([]);
   });
 
-  it('embeds the brandmark as a decodable inline SVG data URI', async () => {
+  it('embeds the mascot as three inline SVG frames with one accessible label', async () => {
     relay = await startTestRelay();
     const response = await fetch(`${relay.url.replace('ws://', 'http://')}/`);
     const body = await response.text();
-    const imageMatch = body.match(/<img src="data:image\/svg\+xml;base64,([^"]+)"/);
-    expect(imageMatch).not.toBeNull();
-    const decodedSvg = Buffer.from(imageMatch?.[1] ?? '', 'base64').toString('utf8');
-    expect(decodedSvg).toContain('<svg');
-    expect(decodedSvg).toContain('</svg>');
+    expect(body).toContain('aria-label="The Overseer, the Kangentic mascot"');
+    const frameCount = (body.match(/aria-label="Pixel-art Kangentic mascot"/g) ?? []).length;
+    expect(frameCount).toBe(3);
+    const svgCount = (body.match(/<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 18 12"/g) ?? []).length;
+    expect(svgCount).toBe(3);
+    // Each frame sits inside an aria-hidden wrapper so the three redundant
+    // upstream role="img" labels never reach assistive tech individually.
+    const hiddenWrapperCount = (body.match(/aria-hidden="true">\s*<svg/g) ?? []).length;
+    expect(hiddenWrapperCount).toBe(3);
   });
 
-  it('sets a favicon using the small-tier board glyph, not the card-K mark', async () => {
+  it('respects prefers-reduced-motion by disabling the mascot animations', async () => {
+    relay = await startTestRelay();
+    const response = await fetch(`${relay.url.replace('ws://', 'http://')}/`);
+    const body = await response.text();
+    expect(body).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
+  });
+
+  it('sets a favicon using the small-tier board glyph, built from rects not paths', async () => {
     relay = await startTestRelay();
     const response = await fetch(`${relay.url.replace('ws://', 'http://')}/`);
     const body = await response.text();
@@ -57,9 +68,6 @@ describe('landing page', () => {
     // 16-32px, so it must be the glyph tier.
     expect(decodedIcon).toContain('<rect');
     expect(decodedIcon).not.toContain('<path');
-
-    const imageMatch = body.match(/<img src="data:image\/svg\+xml;base64,([^"]+)"/);
-    expect(iconMatch?.[1]).not.toBe(imageMatch?.[1]);
   });
 
   it('a WebSocket upgrade at / still works alongside the HTML route', async () => {
