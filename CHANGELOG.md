@@ -50,11 +50,10 @@ All notable changes to this project are documented in this file. The format is b
   the README's fd-headroom guidance, and `stop_grace_period` is set to 20s, leaving margin beyond
   `SHUTDOWN_GRACE_MS`'s 10s default so the process drains on its own rather than being SIGKILLed
   mid-drain.
-- README: corrected the hosted-instance description from a Hetzner CX23 (EU-only 20 TB pricing) to
-  a CPX11 in Ashburn, VA (1 TB included, US pricing), and fixed the self-hosting deploy steps to
-  require `TRUSTED_PROXY_CIDRS` alongside `TRUST_PROXY=true` - setting `TRUST_PROXY=true` alone
-  trusts `CF-Connecting-IP` / `X-Forwarded-For` from any peer, which lets a client forge either
-  header and bypass every per-IP cap and rate limit.
+- README: updated the self-hosting deploy guidance from a Hetzner CX23 baseline to a CPX11, and
+  fixed the deploy steps to require `TRUSTED_PROXY_CIDRS` alongside `TRUST_PROXY=true` - setting
+  `TRUST_PROXY=true` alone trusts `CF-Connecting-IP` / `X-Forwarded-For` from any peer, which lets
+  a client forge either header and bypass every per-IP cap and rate limit.
 - Default `SLOT_ID_PATTERN` now accepts the 32-hex ongoing-session slot
   (`^([0-9a-f]{32}|[0-9a-f]{64})$`) in addition to the 64-hex pairing slot. The old default
   (`^[0-9a-f]{64}$`) let pairing succeed but rejected every session rendezvous at upgrade time,

@@ -10,7 +10,7 @@ changes if you are not Kangentic.
 client --wss--> Cloudflare (proxy, TLS, DDoS absorption)
                     |  restricted to Cloudflare's own IP ranges by the Hetzner firewall
                     v
-                Hetzner box (Ashburn, CPX11)
+                Hetzner box (CPX11)
                     |
                   Caddy (80/443, Origin CA TLS, header normalization)
                     |  internal `edge` bridge network only, 172.31.240.0/24
@@ -247,8 +247,9 @@ it alongside `uptimeSeconds` every 15-30 minutes, treat a decrease in `uptimeSec
 boundary, and sum deltas across boundaries for a month-to-date estimate. The counter is payload
 only (no TLS, WebSocket, or TCP framing), so real egress runs roughly 1.1-1.3x higher. Hetzner bills
 egress only; ingress is free. Cross-check monthly against the authoritative figure:
-`hcloud server describe relay-ashburn-us-east -o json` includes outgoing traffic for the billing period. At
-$1.20/TB overage past the 1 TB included allowance, an alert here is informational, not urgent.
+`hcloud server describe relay-ashburn-us-east -o json` includes outgoing traffic for the billing period.
+Overage is billed per GB past the plan's included allowance, so an alert here is informational, not
+urgent - check the Hetzner console for current plan limits and pricing.
 
 ## Cloudflare range rotation
 

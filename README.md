@@ -66,11 +66,9 @@ relay running directly on the host).
 
 ### Deploying for real: Hetzner + Cloudflare
 
-Kangentic's own hosted instance runs on a Hetzner CPX11 (about $20.49/mo, 1 TB of transfer
-included, $1.20/TB overage) in Ashburn, VA, behind Cloudflare's free proxy, because the relay's
-entire job is byte-forwarding and bandwidth pricing is what actually determines its cost under
-abuse. (Hetzner's 20 TB-included pricing is EU-only, on the CX line; US locations offer the CPX
-line, which scales from 1 TB on CPX11 to 5 TB on CPX51.)
+A Hetzner CPX11 (or equivalent) behind Cloudflare's free proxy is a solid baseline for this
+relay: bandwidth pricing is what actually determines cost for a service whose entire job is
+byte-forwarding, and Cloudflare's proxy absorbs volumetric DDoS for free at no extra cost.
 
 1. Provision a Hetzner CPX11 (or equivalent), Ubuntu 24.04 LTS or newer.
 2. Install Docker and the Docker Compose plugin.
