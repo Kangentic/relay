@@ -1,0 +1,31 @@
+{
+	servers {
+		# GENERATED list (infra/scripts/render-cloudflare-config.sh), so the
+		# weekly Cloudflare-range refresh has one place to land.
+		import /etc/caddy/trusted-proxies.caddy
+		client_ip_headers CF-Connecting-IP X-Forwarded-For
+	}
+}
+
+# {$RELAY_HOSTNAME}, not a literal hostname: this file is shared with any
+# future region's box, and the real hostname lives only in the box's own
+# environment, never committed. Strict Host matching (Caddy's default) is
+# itself a defense: a request for any other Host, e.g. from another
+# Cloudflare customer aiming their zone at this IP, gets a plain 404
+# instead of being routed to the relay.
+{$RELAY_HOSTNAME} {
+	tls /etc/caddy/origin/origin.crt /etc/caddy/origin/origin.key
+
+	reverse_proxy relay:8080 {
+		# header_up with no +/- prefix REPLACES the header outright. Both
+		# are set because the relay reads CF-Connecting-IP first and falls
+		# back to X-Forwarded-For, and Cloudflare APPENDS to XFF rather
+		# than replacing it - an unreplaced XFF is forgeable even behind
+		# Cloudflare. {client_ip} is Caddy's own trusted-proxy-aware real
+		# client address, resolved using the imported trusted_proxies list.
+		header_up CF-Connecting-IP {client_ip}
+		header_up X-Forwarded-For {client_ip}
+		header_up -X-Real-IP
+		header_up -Forwarded
+	}
+}

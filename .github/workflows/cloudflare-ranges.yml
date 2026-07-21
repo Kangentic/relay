@@ -1,0 +1,47 @@
+name: Refresh Cloudflare ranges
+
+# Cloudflare's published IP ranges change occasionally. This is what keeps
+# the Hetzner firewall and Caddy's trusted_proxies current without a human
+# remembering: it regenerates infra/hetzner/firewall-rules.json and
+# infra/cloudflare/trusted-proxies.caddy from the one source
+# (infra/cloudflare/ips.json) and opens a PR if anything changed.
+#
+# This workflow never applies anything itself. A cron silently running
+# `hcloud firewall replace-rules` is an outage or an exposure waiting to
+# happen; a human merging a two-line diff is the correct gate. Once
+# merged, infra/hetzner/provision.sh's unconditional replace-rules call
+# converges the live firewall on the next provisioning run.
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render Cloudflare config
+        run: bash infra/scripts/render-cloudflare-config.sh
+
+      - name: Open a PR if anything changed
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: 'chore(infra): refresh Cloudflare IP ranges'
+          title: 'chore(infra): refresh Cloudflare IP ranges'
+          body: |
+            Automated refresh of Cloudflare's published IP ranges
+            (https://api.cloudflare.com/client/v4/ips), regenerating the
+            Hetzner firewall rules and Caddy's trusted_proxies list from
+            that one source.
+
+            This does not apply anything by itself. Merge this PR, then run
+            `infra/hetzner/provision.sh` (it reconciles the firewall
+            unconditionally) and redeploy so Caddy picks up the new list.
+          branch: chore/cloudflare-ranges
+          labels: infra

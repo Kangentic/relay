@@ -7,3 +7,14 @@ coverage/
 .kangentic/
 .claude/settings.local.json
 kangentic.local.json
+
+# Public repo safety net: a self-hoster's real Caddyfile (copied from
+# Caddyfile.example) and any TLS key material must never be committed.
+# The Origin CA cert/key for the hosted instance never touch this repo at
+# all - see infra/README.md's "How secrets reach the box".
+/Caddyfile
+*.pem
+*.key
+relay-ci-deploy
+relay-ci-deploy.pub
+.secrets-local/

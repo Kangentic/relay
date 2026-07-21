@@ -49,19 +49,39 @@ docker compose up -d
 curl http://127.0.0.1:8080/healthz
 ```
 
+`docker compose up -d` pulls the published `ghcr.io/kangentic/relay` image, the same image the
+hosted instance runs - pin `IMAGE_TAG=vX.Y.Z` in `.env` for a specific release rather than tracking
+`latest`, which is the newest commit on `main` and not necessarily a tagged release. To build from
+source instead (for local development or when contributing a change to the Docker image itself),
+use the dev overlay: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`.
+
+Note that `docker-compose.yml`'s port 8080 is bound to `127.0.0.1` only, not the host's public
+interface. Testing from a phone on your local network needs an explicit override (e.g. a
+`docker-compose.override.yml` publishing `0.0.0.0:8080:8080`) or a reverse proxy in front - see
+`Caddyfile.example`.
+
 Then point the Kangentic desktop app's `mobileBridge.relayUrl` setting at your instance
 (`wss://your-host` once you have TLS in front, `ws://127.0.0.1:8080` for local development against a
 relay running directly on the host).
 
 ### Deploying for real: Hetzner + Cloudflare
 
-Kangentic's own hosted instance runs on a Hetzner CX23 (about EUR 5.49/mo, 20 TB of transfer
-included) behind Cloudflare's free proxy, because the relay's entire job is byte-forwarding and
-bandwidth pricing is what actually determines its cost under abuse.
+Kangentic's own hosted instance runs on a Hetzner CPX11 (about $20.49/mo, 1 TB of transfer
+included, $1.20/TB overage) in Ashburn, VA, behind Cloudflare's free proxy, because the relay's
+entire job is byte-forwarding and bandwidth pricing is what actually determines its cost under
+abuse. (Hetzner's 20 TB-included pricing is EU-only, on the CX line; US locations offer the CPX
+line, which scales from 1 TB on CPX11 to 5 TB on CPX51.)
 
-1. Provision a Hetzner CX23 (or equivalent), Ubuntu 22.04+.
+1. Provision a Hetzner CPX11 (or equivalent), Ubuntu 24.04 LTS or newer.
 2. Install Docker and the Docker Compose plugin.
-3. Clone this repo, copy `.env.example` to `.env`, and set `TRUST_PROXY=true`.
+3. Clone this repo, copy `.env.example` to `.env`, and set both `TRUST_PROXY=true` **and**
+   `TRUSTED_PROXY_CIDRS` to the address (or subnet) of whatever reverse proxy actually fronts this
+   box. **Setting `TRUST_PROXY=true` alone is not safe**: an empty `TRUSTED_PROXY_CIDRS` makes the
+   relay trust `CF-Connecting-IP` / `X-Forwarded-For` from *any* peer, so a client behind no real
+   proxy at all could forge either header and bypass every per-IP cap and rate limit. If you are
+   running Caddy in front (see below or `infra/compose/` for the hosted setup), the relay's socket
+   peer is Caddy's own address, not Cloudflare's - `TRUSTED_PROXY_CIDRS` must be Caddy's address or
+   its Docker network subnet, not Cloudflare's published ranges.
 4. `docker compose up -d`.
 5. Point a DNS `A` record (e.g. `relay.example.com`) at the server's IP.
 6. In Cloudflare, enable the proxy (the orange cloud) for that record. WebSockets are proxied by
@@ -71,7 +91,14 @@ bandwidth pricing is what actually determines its cost under abuse.
    and phone.
 
 If you are not putting Cloudflare in front, see `Caddyfile.example` and the commented `caddy` service
-in `docker-compose.yml` for a local-TLS alternative (automatic Let's Encrypt certificates).
+in `docker-compose.yml` for a local-TLS alternative (automatic Let's Encrypt certificates) -
+`Caddyfile.example` also documents the `TRUST_PROXY` and `TRUSTED_PROXY_CIDRS` values you need to
+set in `.env` for that topology.
+
+Kangentic's own hosted deploy is driven entirely by a GitHub Actions pipeline rather than by hand,
+with automatic rollback on a failed health check; see `infra/README.md` for the full runbook,
+including the reasoning behind every production config value and how the pipeline stays safe
+without a required manual approval on every deploy.
 
 ### A known limit: single instance
 
@@ -88,13 +115,15 @@ All configuration is environment variables, documented fully in `.env.example`. 
 | `PORT` | `8080` | Port for both the HTTP health/metrics routes and the WebSocket upgrade. |
 | `SLOT_ID_PATTERN` | `^([0-9a-f]{32}\|[0-9a-f]{64})$` | Format the relay requires of a slot id before it will even try to rendezvous it. Accepts the 64-hex pairing slot and the 32-hex ongoing-session slot. |
 | `MAX_CONNECTIONS` / `MAX_CONNECTIONS_PER_IP` / `MAX_CONNECTIONS_PER_SLOT` | `10000` / `20` / `2` | Connection caps: global, per resolved IP, and per slot. |
-| `RATE_LIMIT_IP_PER_MIN` / `RATE_LIMIT_SLOT_PER_MIN` | `120` / `60` | New-connection rate limits, per IP and per pairing. |
+| `RATE_LIMIT_IP_PER_MIN` / `RATE_LIMIT_IP_BURST` | `120` / `40` | New-connection rate limit per resolved IP, as a token bucket refilling per minute with a burst allowance. |
+| `RATE_LIMIT_SLOT_PER_MIN` / `RATE_LIMIT_SLOT_BURST` | `60` / `20` | Same, per slot rather than per IP. |
 | `MAX_MESSAGE_BYTES` | `1114112` | Per-WebSocket-message size ceiling, enforced at the `ws` layer (must exceed the inner protocol's 1 MiB plaintext cap plus Noise/AEAD overhead). |
 | `MAX_SESSION_BYTES` | `1073741824` | Total bytes forwarded across a paired tunnel before it is torn down. |
 | `MAX_BUFFERED_BYTES` | `16777216` | Per-connection outbound buffer cap: when a slow consumer's socket backlog exceeds this, the tunnel is torn down with close code `4431` and both clients reconnect. Bounds worst-case per-connection memory; the 16 MiB default leaves room for one realistic multi-MiB transcript burst to a phone on a slow link. |
 | `PING_INTERVAL_MS` | `30000` | WS-level ping/pong cadence used to reap half-open sockets. Invisible to the client; there is no application-level heartbeat. |
-| `TRUST_PROXY` | `false` | Trust `CF-Connecting-IP` / `X-Forwarded-For` for the real client IP. Only enable this behind a proxy you control. |
-| `METRICS_ENABLED` / `METRICS_TOKEN` | `true` / unset | Prometheus-format `/metrics` and its JSON twin `/metricz`, optionally behind a bearer token. |
+| `TRUST_PROXY` / `TRUSTED_PROXY_CIDRS` | `false` / empty | Trust `CF-Connecting-IP` / `X-Forwarded-For` for the real client IP, from peers in the given CIDR list only. **An empty list with `TRUST_PROXY=true` trusts every peer**, which lets any client forge either header and bypass per-IP caps and rate limits - always set both together. See "Deploying for real" above. |
+| `METRICS_ENABLED` / `METRICS_TOKEN` | `true` / unset | Prometheus-format `/metrics` and its JSON twin `/metricz`, optionally behind a bearer token. Set a token before exposing either on a public hostname. |
+| `SLOT_LOG_SALT` | random per process | Salt for hashed slot ids in logs (`LOG_SLOT_HASHING=true`). Pin this in production: the default regenerates on every restart, which breaks cross-restart correlation of the hashes. |
 | `ADMISSION_WEBHOOK_URL` | unset | The open-core seam. See below. |
 
 See `.env.example` for the complete list.
@@ -134,7 +163,7 @@ as conservative):
 | Flood, large frames | 50 | 64 KiB | max (8-frame window) | 33.8 / 60.7 / 70.1 ms | 393 MB/s (~3.1 Gbit/s) | ~122 MB |
 | Connection count | 2,500 | 512 B | 1 frame/s per pair | 1.7 ms p50 | 5,000 concurrent sockets | ~8 KB per socket |
 
-Two practical readings of that table for a small VPS (the Hetzner CX23 class):
+Two practical readings of that table for a small VPS (the Hetzner CPX11 class):
 
 - Interactive traffic is nowhere near any limit: thousands of concurrent phone/desktop pairs
   exchanging chat-sized frames cost single-digit milliseconds of relay-added latency and tens of

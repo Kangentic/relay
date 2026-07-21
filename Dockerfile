@@ -10,6 +10,10 @@ RUN npm prune --omit=dev
 
 # --- runtime stage ---
 FROM node:22-bookworm-slim AS runtime
+LABEL org.opencontainers.image.source="https://github.com/Kangentic/relay" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.title="@kangentic/relay" \
+      org.opencontainers.image.description="Blind WebSocket rendezvous relay for the Kangentic mobile companion."
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules

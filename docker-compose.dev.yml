@@ -1,0 +1,13 @@
+# Build the relay from source instead of pulling ghcr.io/kangentic/relay.
+# Use this for local development or when contributing a change to the
+# Docker image itself:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#
+# The base docker-compose.yml pulls a published image so a plain
+# `docker compose up -d` matches exactly what self-hosters and the hosted
+# instance run; this overlay is the opt-in exception.
+services:
+  relay:
+    build: .
+    image: relay:dev

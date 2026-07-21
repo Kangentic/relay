@@ -1,0 +1,173 @@
+name: Deploy
+
+# Rolls the production box. Runs automatically as a called job from
+# release.yml on every merge to main and every vX.Y.Z tag - "protected"
+# here means the production environment's deployment-branch restriction
+# (only main and v* tags may deploy) plus secret scoping, deliberately with
+# no required reviewer, so the pipeline stays continuous. The health gate,
+# automatic rollback, and the rollback drill below are the safety net.
+#
+# workflow_dispatch exists for manual redeploys and for the rollback drill:
+# a real, good image deployed with a deliberately failing healthcheck
+# overlay, to prove rollback without ever pushing broken bits to GHCR.
+#
+# All deploy logic lives in scripts/deploy/deploy.sh, run ON THE BOX over a
+# single restricted SSH call. A dropped runner connection then cannot leave
+# the server half-deployed and unverified - the box completes or reverts on
+# its own.
+on:
+  workflow_call:
+    inputs:
+      image_tag:
+        required: true
+        type: string
+      git_ref:
+        required: false
+        type: string
+      drill:
+        required: false
+        type: string
+        default: none
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Image tag to deploy, e.g. sha-<full sha> or vX.Y.Z
+        required: true
+        type: string
+      git_ref:
+        description: Git ref to check out on the box (defaults to the current sha)
+        required: false
+        type: string
+      drill:
+        description: Rollback drill mode - deploys the real image with a deliberately failing gate
+        required: false
+        type: choice
+        options: [none, healthcheck, port]
+        default: none
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Resolve git ref
+        id: ref
+        # Inputs reach the script through env, never interpolated into the
+        # shell body: `${{ inputs.git_ref }}` inline would let a crafted
+        # workflow_dispatch value run arbitrary code on this runner, which
+        # holds the deploy SSH key and the Origin CA private key.
+        env:
+          INPUT_GIT_REF: ${{ inputs.git_ref }}
+          DEFAULT_GIT_REF: ${{ github.sha }}
+        run: |
+          git_ref="${INPUT_GIT_REF:-$DEFAULT_GIT_REF}"
+          case "$git_ref" in
+            *[!0-9a-zA-Z._/-]* | -*)
+              echo "refusing unsafe git ref: $git_ref" >&2
+              exit 1
+              ;;
+          esac
+          echo "git_ref=$git_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve server by Hetzner label
+        id: server
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          SELECTOR: ${{ vars.HCLOUD_SERVER_SELECTOR }}
+        run: |
+          response="$(curl -sf -H "Authorization: Bearer $HCLOUD_TOKEN" \
+            "https://api.hetzner.cloud/v1/servers?label_selector=$SELECTOR")"
+          count="$(echo "$response" | jq '.servers | length')"
+          if [ "$count" = "0" ]; then
+            # The box does not exist yet during Phase 1 of the rollout, so
+            # the very first merge to main must not report a red deploy.
+            echo "no server matches label selector '$SELECTOR' - skipping deploy, nothing provisioned yet"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$count" != "1" ]; then
+            echo "expected exactly one server for label selector '$SELECTOR', found $count" >&2
+            exit 1
+          fi
+          ip="$(echo "$response" | jq -r '.servers[0].public_net.ipv4.ip')"
+          echo "ip=$ip" >> "$GITHUB_OUTPUT"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Set up deploy SSH key
+        if: steps.server.outputs.found == 'true'
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Push .env and Origin CA cert/key to the box
+        if: steps.server.outputs.found == 'true'
+        env:
+          DEPLOY_SSH_USER: ${{ vars.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_PORT: ${{ vars.DEPLOY_SSH_PORT }}
+          SERVER_IP: ${{ steps.server.outputs.ip }}
+          RELAY_HOSTNAME: ${{ vars.RELAY_PUBLIC_HOSTNAME }}
+          METRICS_TOKEN: ${{ secrets.RELAY_METRICS_TOKEN }}
+          SLOT_LOG_SALT: ${{ secrets.RELAY_SLOT_LOG_SALT }}
+          ORIGIN_CERT: ${{ secrets.CF_ORIGIN_CERT_PEM }}
+          ORIGIN_KEY: ${{ secrets.CF_ORIGIN_KEY_PEM }}
+        run: |
+          ssh_cmd() {
+            ssh -i "$HOME/.ssh/deploy_key" \
+              -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+              -o HostKeyAlias=relay-production \
+              -o StrictHostKeyChecking=yes \
+              -o BatchMode=yes \
+              -p "${DEPLOY_SSH_PORT:-22}" \
+              "$DEPLOY_SSH_USER@$SERVER_IP" "$@"
+          }
+
+          # 172.31.240.0/24 must match infra/compose/docker-compose.prod.yml's
+          # pinned `edge` network subnet exactly - that pairing is what makes
+          # TRUSTED_PROXY_CIDRS actually trust Caddy and nothing else. See
+          # infra/README.md's production .env table for why every value here
+          # differs (or doesn't) from the relay's defaults.
+          cat > "$RUNNER_TEMP/relay.env" <<EOF
+          MAX_CONNECTIONS=4000
+          MAX_CONNECTIONS_PER_IP=64
+          TRUST_PROXY=true
+          TRUSTED_PROXY_CIDRS=172.31.240.0/24
+          METRICS_TOKEN=$METRICS_TOKEN
+          SLOT_LOG_SALT=$SLOT_LOG_SALT
+          RELAY_HOSTNAME=$RELAY_HOSTNAME
+          EOF
+          printf '%s' "$ORIGIN_CERT" > "$RUNNER_TEMP/origin.crt"
+          printf '%s' "$ORIGIN_KEY" > "$RUNNER_TEMP/origin.key"
+
+          ssh_cmd write-secret env < "$RUNNER_TEMP/relay.env"
+          ssh_cmd write-secret origin-cert < "$RUNNER_TEMP/origin.crt"
+          ssh_cmd write-secret origin-key < "$RUNNER_TEMP/origin.key"
+
+          rm -f "$RUNNER_TEMP/relay.env" "$RUNNER_TEMP/origin.crt" "$RUNNER_TEMP/origin.key"
+
+      - name: Deploy over SSH
+        if: steps.server.outputs.found == 'true'
+        run: |
+          ssh -i "$HOME/.ssh/deploy_key" \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -o HostKeyAlias=relay-production \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -p "${DEPLOY_SSH_PORT:-22}" \
+            "$DEPLOY_SSH_USER@$SERVER_IP" \
+            deploy "$IMAGE_TAG" "$GIT_REF" "$DRILL"
+        env:
+          DEPLOY_SSH_USER: ${{ vars.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_PORT: ${{ vars.DEPLOY_SSH_PORT }}
+          SERVER_IP: ${{ steps.server.outputs.ip }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          GIT_REF: ${{ steps.ref.outputs.git_ref }}
+          DRILL: ${{ inputs.drill }}

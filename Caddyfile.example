@@ -5,7 +5,38 @@
 #
 # Caddy gets a certificate automatically via Let's Encrypt and reverse
 # proxies WebSocket upgrades to the relay container transparently.
+#
+# Caddy is the relay's socket peer here, the same as it is behind
+# Cloudflare, so set TRUST_PROXY=true and TRUSTED_PROXY_CIDRS to your
+# compose network's subnet (docker network inspect <project>_default) in
+# .env, not TRUST_PROXY=false. With TRUST_PROXY=false every client's
+# resolved IP is the raw socket peer, which is always Caddy's own
+# container address in this topology - every client would bucket into one
+# shared per-IP rate limit and cap regardless of who they are.
+
+# No `trusted_proxies` here on purpose: in this topology Caddy IS the
+# internet-facing edge, so there is no upstream hop whose forwarding
+# headers should ever be believed. Leaving it unset makes {client_ip}
+# resolve to the raw socket peer, which is the only trustworthy value
+# available. Adding RFC1918 ranges here would mean any client whose
+# apparent peer address falls inside them (Docker's userland-proxy path, a
+# LAN or VPN client) could forge X-Forwarded-For and have Caddy believe it.
 
 relay.example.com {
-	reverse_proxy relay:8080
+	reverse_proxy relay:8080 {
+		# Overwrite, never append: header_up with no +/- prefix replaces
+		# the header outright, so a client cannot forge its own entry and
+		# have it survive.
+		#
+		# CF-Connecting-IP must be handled too, not just X-Forwarded-For:
+		# the relay reads CF-Connecting-IP FIRST (src/net/clientIp.ts) and
+		# returns it verbatim, so leaving it untouched here would let any
+		# client set it and bypass every per-IP cap and rate limit, even
+		# with X-Forwarded-For correctly overwritten. There is no
+		# Cloudflare in this topology, so strip it outright.
+		header_up -CF-Connecting-IP
+		header_up X-Forwarded-For {client_ip}
+		header_up -X-Real-IP
+		header_up -Forwarded
+	}
 }
