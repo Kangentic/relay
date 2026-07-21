@@ -120,6 +120,7 @@ jobs:
           DEPLOY_SSH_PORT: ${{ vars.DEPLOY_SSH_PORT }}
           SERVER_IP: ${{ steps.server.outputs.ip }}
           RELAY_HOSTNAME: ${{ vars.RELAY_PUBLIC_HOSTNAME }}
+          RELAY_HOSTNAME_ALIAS: ${{ vars.RELAY_PUBLIC_HOSTNAME_ALIAS }}
           METRICS_TOKEN: ${{ secrets.RELAY_METRICS_TOKEN }}
           SLOT_LOG_SALT: ${{ secrets.RELAY_SLOT_LOG_SALT }}
           ORIGIN_CERT: ${{ secrets.CF_ORIGIN_CERT_PEM }}
@@ -148,6 +149,7 @@ jobs:
           METRICS_TOKEN=$METRICS_TOKEN
           SLOT_LOG_SALT=$SLOT_LOG_SALT
           RELAY_HOSTNAME=$RELAY_HOSTNAME
+          RELAY_HOSTNAME_ALIAS=$RELAY_HOSTNAME_ALIAS
           EOF
           printf '%s' "$ORIGIN_CERT" > "$RUNNER_TEMP/origin.crt"
           printf '%s' "$ORIGIN_KEY" > "$RUNNER_TEMP/origin.key"

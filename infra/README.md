@@ -108,6 +108,7 @@ pipeline non-continuous for no safety the gate does not already provide.
 | `DEPLOY_SSH_PORT` | `22` | |
 | `HCLOUD_SERVER_SELECTOR` | `project=relay,env=production` | Resolves the box by label, not a numeric ID that changes on rebuild |
 | `RELAY_PUBLIC_HOSTNAME` | `relay-ashburn-us-east.kangentic.com` | Written into `.env` as `RELAY_HOSTNAME` for Caddy's site block |
+| `RELAY_PUBLIC_HOSTNAME_ALIAS` | `relay.kangentic.com` | Written into `.env` as `RELAY_HOSTNAME_ALIAS`. **Required, not optional** - Caddy only routes a Host header matching one of a site block's own configured addresses, so the short CNAME needs to be listed explicitly in `infra/compose/Caddyfile.prod` or it gets a 200 with an empty body despite the CNAME resolving and the TLS handshake succeeding (the wildcard Origin CA cert covers it fine; only the HTTP-layer Host match was missing). This exact gap shipped once - see the Caddyfile's own comment. |
 
 ### `monitoring` environment (unprotected - see monitor.yml's own comment for why)
 

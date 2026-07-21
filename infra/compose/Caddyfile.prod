@@ -7,13 +7,25 @@
 	}
 }
 
-# {$RELAY_HOSTNAME}, not a literal hostname: this file is shared with any
-# future region's box, and the real hostname lives only in the box's own
+# Two site addresses, not one: RELAY_HOSTNAME is this box's own
+# region-qualified name (e.g. relay-ashburn-us-east.kangentic.com) and
+# RELAY_HOSTNAME_ALIAS is the short CNAME that points at it (e.g.
+# relay.kangentic.com). Caddy only routes a Host header that matches one
+# of a site block's own addresses - a CNAME pointing at this box does NOT
+# make Caddy accept its own name automatically, since DNS resolution and
+# HTTP Host routing are unrelated. Missing this the first time round
+# produced a real bug: relay.kangentic.com TLS-handshook fine (the Origin
+# CA cert is a *.kangentic.com wildcard) but got a 200 with an empty body
+# on every request, since no site block matched that Host at the HTTP
+# layer at all.
+#
+# Neither is a literal hostname here: this file is shared with any future
+# region's box, and the real hostnames live only in the box's own
 # environment, never committed. Strict Host matching (Caddy's default) is
-# itself a defense: a request for any other Host, e.g. from another
-# Cloudflare customer aiming their zone at this IP, gets a plain 404
-# instead of being routed to the relay.
-{$RELAY_HOSTNAME} {
+# itself a defense for anything that matches NEITHER address - a request
+# for any other Host, e.g. from another Cloudflare customer aiming their
+# zone at this IP, does not get routed to the relay.
+{$RELAY_HOSTNAME} {$RELAY_HOSTNAME_ALIAS} {
 	tls /etc/caddy/origin/origin.crt /etc/caddy/origin/origin.key
 
 	reverse_proxy relay:8080 {

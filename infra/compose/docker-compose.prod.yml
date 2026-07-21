@@ -17,7 +17,12 @@
 #                   (ghcr.io/kangentic/relay@sha256:...) for a rollback -
 #                   never a bare tag var interpolated after a hardcoded
 #                   colon, since that shape cannot express a digest.
-#   RELAY_HOSTNAME  read from --env-file /opt/relay/.env (stable, not secret)
+#   RELAY_HOSTNAME       read from --env-file /opt/relay/.env (stable, not secret)
+#   RELAY_HOSTNAME_ALIAS same file. Both are required: Caddy only routes a
+#                        Host header matching one of a site block's own
+#                        addresses, so the short CNAME needs to be listed
+#                        explicitly - pointing DNS at this box does not by
+#                        itself make Caddy accept that Host.
 services:
   relay:
     image: ${RELAY_IMAGE_REF:?RELAY_IMAGE_REF must be set}
@@ -53,6 +58,7 @@ services:
       - "443:443"
     environment:
       - RELAY_HOSTNAME=${RELAY_HOSTNAME:?RELAY_HOSTNAME must be set}
+      - RELAY_HOSTNAME_ALIAS=${RELAY_HOSTNAME_ALIAS:?RELAY_HOSTNAME_ALIAS must be set}
     volumes:
       - ./Caddyfile.prod:/etc/caddy/Caddyfile:ro
       - ../cloudflare/trusted-proxies.caddy:/etc/caddy/trusted-proxies.caddy:ro
