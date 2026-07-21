@@ -1,0 +1,176 @@
+#cloud-config
+#
+# Kangentic relay host bootstrap. Contains NO secrets by design: Hetzner
+# instance metadata is readable from anything running on this box, so
+# user-data is treated as public. Secrets (the .env file, the Origin CA
+# cert and key) arrive later over SSH from the deploy pipeline - see
+# infra/README.md.
+#
+# Fully static and committed as-is: both the maintainer's admin key and
+# the ci-deploy key are injected by `hcloud server create --ssh-key`
+# rather than templated in here, so self-hosters run this exact file
+# unmodified.
+#
+# Docker's `docker` group is root-equivalent (a container can bind-mount
+# the host filesystem), so membership in it is NOT a privilege boundary.
+# The `deploy` user below is a convenience account, not a sandbox. The
+# real containment on this box is that it does exactly one thing.
+
+package_update: true
+package_upgrade: true
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - ufw
+  - fail2ban
+  - unattended-upgrades
+  - jq
+
+users:
+  - name: deploy
+    groups: [docker]
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    lock_passwd: true
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/10-relay-hardening.conf
+    content: |
+      PasswordAuthentication no
+      PermitRootLogin prohibit-password
+      KbdInteractiveAuthentication no
+      X11Forwarding no
+
+  - path: /etc/docker/daemon.json
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": { "max-size": "10m", "max-file": "3" },
+        "default-ulimits": {
+          "nofile": { "Name": "nofile", "Soft": 65535, "Hard": 65535 }
+        },
+        "live-restore": true
+      }
+
+  - path: /etc/systemd/journald.conf.d/10-relay-caps.conf
+    content: |
+      [Journal]
+      SystemMaxUse=512M
+      SystemMaxFileSize=64M
+      MaxRetentionSec=2week
+
+  - path: /etc/security/limits.d/10-relay-nofile.conf
+    content: |
+      *  soft  nofile  65535
+      *  hard  nofile  65535
+
+  - path: /etc/systemd/system.conf.d/10-relay-nofile.conf
+    content: |
+      [Manager]
+      DefaultLimitNOFILE=65535:65535
+
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+
+  - path: /opt/relay/bin/ci-deploy-wrapper.sh
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      # Forced command for the ci-deploy SSH key (see authorized_keys
+      # below). Accepts exactly two shapes. Anything else is refused.
+      # Never updated by git, so a compromised deploy pipeline cannot
+      # rewrite its own leash.
+      #
+      #   deploy <image-tag> <git-ref> [drill-mode]
+      #     Checks out git-ref and runs deploy.sh, which does everything
+      #     else (pull, health-gate, rollback) on the box.
+      #
+      #   write-secret <name>
+      #     Reads stdin and writes it to a fixed path, restricted to a
+      #     three-entry allowlist so this cannot become a path-traversal
+      #     write-anywhere primitive. Used to deliver the .env file and
+      #     the Origin CA cert/key, which are never committed and never
+      #     appear in this cloud-init user-data.
+      set -eu
+      # Word-splitting $SSH_ORIGINAL_COMMAND below is intentional (it is
+      # how the shape gets parsed into positional args); -f disables
+      # pathname expansion first so a tag or ref containing a glob
+      # character cannot expand against this directory's contents.
+      set -f
+      case "${SSH_ORIGINAL_COMMAND:-}" in
+        "deploy "*)
+          # shellcheck disable=SC2086
+          set -- $SSH_ORIGINAL_COMMAND
+          shift
+          image_tag="${1:?missing image tag}"
+          git_ref="${2:?missing git ref}"
+          drill="${3:-none}"
+          cd /opt/relay/src
+          git fetch --tags origin
+          git checkout --quiet "$git_ref"
+          exec /opt/relay/src/scripts/deploy/deploy.sh "$image_tag" "$drill"
+          ;;
+        "write-secret "*)
+          # shellcheck disable=SC2086
+          set -- $SSH_ORIGINAL_COMMAND
+          shift
+          name="${1:?missing secret name}"
+          case "$name" in
+            env) dest=/opt/relay/.env; mode=600 ;;
+            origin-cert) dest=/opt/relay/secrets/origin.crt; mode=644 ;;
+            origin-key) dest=/opt/relay/secrets/origin.key; mode=600 ;;
+            *) echo "refused: unknown secret name '$name'" >&2; exit 1 ;;
+          esac
+          umask 077
+          cat > "$dest.tmp"
+          chmod "$mode" "$dest.tmp"
+          mv "$dest.tmp" "$dest"
+          ;;
+        *)
+          echo "refused: unrecognized command" >&2
+          exit 1
+          ;;
+      esac
+
+runcmd:
+  # Docker CE from the official repo, resolved to whatever codename this
+  # Ubuntu release actually reports rather than a hardcoded one, since
+  # Docker's apt repo can lag a fresh LTS by weeks. If the suite is
+  # missing, this fails loudly here rather than leaving a booted box with
+  # no Docker and no signal - see infra/README.md's DOCKER_APT_SUITE
+  # override if that happens.
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - >
+    sh -c 'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc]
+    https://download.docker.com/linux/ubuntu ${DOCKER_APT_SUITE:-$(. /etc/os-release && echo "$VERSION_CODENAME")} stable"
+    > /etc/apt/sources.list.d/docker.list'
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - systemctl enable --now docker
+  # Layout the deploy pipeline writes into. Secrets land here later, never
+  # as part of this cloud-init run.
+  - install -d -m 0750 -o deploy -g deploy /opt/relay
+  - install -d -m 0700 -o deploy -g deploy /opt/relay/secrets
+  - install -d -m 0755 -o deploy -g deploy /opt/relay/state
+  - install -d -m 0755 -o root -g root /opt/relay/bin
+  # Give the deploy user the keys Hetzner injected into root at create time.
+  - install -d -m 0700 -o deploy -g deploy /home/deploy/.ssh
+  - install -m 0600 -o deploy -g deploy /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
+  - systemctl restart ssh
+  - systemctl enable --now fail2ban
+  # 2 GB swap: cheap insurance on a 2 GB box with 40 GB of disk to spare.
+  - fallocate -l 2G /swapfile
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - swapon /swapfile
+  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  # Fail loudly rather than silently: infra/hetzner/provision.sh polls for
+  # this marker and refuses to declare the box ready without it.
+  - docker --version
+  - docker compose version
+  - touch /opt/relay/.bootstrap-ok

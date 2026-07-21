@@ -1,0 +1,14 @@
+# Rollback drill overlay, mode "port". Makes the relay listen on a port
+# Caddy does not proxy to, so the container's own Docker healthcheck still
+# reports healthy (it honors $PORT and probes itself correctly), but the
+# host probe through Caddy on the published port fails. The health gate is
+# a conjunction of both, and this drill exercises that conjunct
+# independently of the "healthcheck" drill - one drill only proves one
+# branch of an AND.
+#
+# Used by scripts/deploy/deploy.sh when invoked with drill=port via the
+# Deploy workflow's workflow_dispatch. See infra/README.md.
+services:
+  relay:
+    environment:
+      - PORT=9099

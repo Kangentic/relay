@@ -1,0 +1,11 @@
+# Rollback drill overlay, mode "healthcheck". Deploys the real, good image
+# with only its healthcheck forced to fail, so the deploy gate's
+# health-report condition fails and rollback fires - proving the rollback
+# path without ever pushing a broken image to GHCR.
+#
+# Used by scripts/deploy/deploy.sh when invoked with drill=healthcheck via
+# the Deploy workflow's workflow_dispatch. See infra/README.md.
+services:
+  relay:
+    healthcheck:
+      test: ["CMD", "false"]

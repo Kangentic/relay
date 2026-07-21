@@ -1,0 +1,116 @@
+name: Monitor
+
+# Secondary monitoring, complementing an external uptime SaaS on /healthz
+# (see infra/README.md). This workflow holds the credential the SaaS
+# should not: UptimeRobot's free tier cannot send a custom Authorization
+# header, so the token-gated /metricz check and the synthetic pairing
+# probe (the only check that proves the product actually works, since
+# /healthz says nothing about whether the WS upgrade routes correctly
+# through Caddy and Cloudflare) live here instead.
+#
+# This workflow must NOT use the `production` environment - queuing every
+# scheduled run for approval would stop monitoring entirely. It uses a
+# separate, unprotected `monitoring` environment.
+#
+# Honest limitation: scheduled workflows are best-effort and can run late,
+# and are auto-disabled after 60 days of repository inactivity. The
+# dead-man ping at the end covers the case where GitHub itself is down and
+# this workflow silently never runs at all.
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+# Naming any scope zeroes every unnamed one, so `contents: read` has to be
+# explicit here for the checkout below - it currently succeeds only because
+# this repo is public.
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    environment: monitoring
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check /metricz
+        env:
+          HOSTNAME: ${{ vars.RELAY_PUBLIC_HOSTNAME }}
+          TOKEN: ${{ secrets.RELAY_METRICS_TOKEN }}
+        run: |
+          set -eu
+          body="$(curl -sf -H "Authorization: Bearer $TOKEN" "https://$HOSTNAME/metricz")"
+          # Never echo $body or $TOKEN - this workflow's logs are public.
+          uptime="$(echo "$body" | jq '.uptimeSeconds')"
+          active="$(echo "$body" | jq '.activeConnections')"
+          rss="$(echo "$body" | jq '.rssBytes')"
+          if [ "$uptime" -le 0 ]; then
+            echo "uptimeSeconds is not positive" >&2
+            exit 1
+          fi
+          if [ "$active" -gt "${{ vars.RELAY_MAX_CONNECTIONS }}" ]; then
+            echo "activeConnections ($active) exceeds MAX_CONNECTIONS" >&2
+            exit 1
+          fi
+          # 900 MB on a 1200m container memory limit - see infra/README.md.
+          if [ "$rss" -gt 943718400 ]; then
+            echo "rssBytes ($rss) is approaching the container memory limit" >&2
+            exit 1
+          fi
+
+      # Origin CA certificate expiry is deliberately NOT checked here.
+      # openssl s_client against the public hostname only ever sees
+      # Cloudflare's edge certificate: the firewall restricts 80/443 to
+      # Cloudflare's ranges, so this workflow cannot reach the origin
+      # directly, and Cloudflare's own edge cert renews itself. Checking it
+      # would silently monitor the wrong certificate. The real check reads
+      # the local file on the box in scripts/deploy/deploy.sh, which runs
+      # on every deploy; see infra/README.md for the manual fallback during
+      # a quiet period with no deploys.
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --omit=dev
+
+      - name: Synthetic pairing probe
+        env:
+          RELAY_URL: wss://${{ vars.RELAY_PUBLIC_HOSTNAME }}
+        run: node scripts/deploy/synthetic-pair.mjs
+
+      - name: Ping dead-man URL
+        if: success()
+        env:
+          PING_URL: ${{ secrets.HEALTHCHECKS_PING_URL }}
+        run: |
+          if [ -z "$PING_URL" ]; then
+            echo "HEALTHCHECKS_PING_URL not set, skipping. See infra/README.md."
+            exit 0
+          fi
+          curl -sf "$PING_URL" > /dev/null
+
+      - name: File an issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'Relay monitoring check failed';
+            const body = `The scheduled monitor workflow failed at ${new Date().toISOString()}. See the run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'monitoring',
+            });
+            if (existing.data.some((issue) => issue.title === title)) return;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['monitoring'],
+            });

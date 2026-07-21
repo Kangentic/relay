@@ -25,6 +25,11 @@
 //   --inflight-bytes       producer-side send buffer high-water mark before
 //                          pausing                       (default 262144)
 //   --timeout-ms           overall run timeout          (default 120000)
+//   --metrics-token        bearer token for /metricz, if the target
+//                          instance sets METRICS_TOKEN. Also read from the
+//                          RELAY_METRICS_TOKEN env var; the flag wins.
+//                          Without it, /metricz calls 401 and the RSS
+//                          delta in the results is silently omitted.
 //
 // Run it against a dedicated relay instance started with generous limits,
 // never against a production or dev-rig instance. Example instance env:
@@ -49,6 +54,7 @@ function parseArgs(argv) {
     connectConcurrency: 50,
     inflightBytes: 262_144,
     timeoutMs: 120_000,
+    metricsToken: process.env.RELAY_METRICS_TOKEN ?? '',
   };
   const integerFlags = new Map([
     ['--pairs', 'pairs'],
@@ -66,6 +72,12 @@ function parseArgs(argv) {
     if (flag === '--url') {
       if (value === undefined) throw new Error('--url needs a value');
       options.url = value;
+      argumentIndex += 1;
+      continue;
+    }
+    if (flag === '--metrics-token') {
+      if (value === undefined) throw new Error('--metrics-token needs a value');
+      options.metricsToken = value;
       argumentIndex += 1;
       continue;
     }
@@ -88,9 +100,10 @@ function metricsBaseUrl(wsUrl) {
   return wsUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
 }
 
-async function fetchMetricz(wsUrl) {
+async function fetchMetricz(wsUrl, metricsToken) {
   try {
-    const response = await fetch(`${metricsBaseUrl(wsUrl)}/metricz`);
+    const headers = metricsToken ? { Authorization: `Bearer ${metricsToken}` } : {};
+    const response = await fetch(`${metricsBaseUrl(wsUrl)}/metricz`, { headers });
     if (!response.ok) return null;
     return await response.json();
   } catch {
@@ -182,7 +195,7 @@ async function main() {
     `relay load test: ${options.pairs} pairs x ${options.frames} frames x ${options.size} B (${paceLabel}) against ${options.url}`,
   );
 
-  const metricsBefore = await fetchMetricz(options.url);
+  const metricsBefore = await fetchMetricz(options.url, options.metricsToken);
   if (!metricsBefore) {
     console.log('note: /metricz not reachable before the run; RSS delta will be unavailable');
   }
@@ -244,7 +257,7 @@ async function main() {
   }
 
   const elapsedMs = performance.now() - startedAt;
-  const metricsAfter = await fetchMetricz(options.url);
+  const metricsAfter = await fetchMetricz(options.url, options.metricsToken);
 
   const sortedLatencies = state.latencies.slice(0, state.samplesFilled).sort();
   const totalBytes = totalFrames * options.size;
