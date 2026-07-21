@@ -12,9 +12,11 @@ permissions:
 
 jobs:
   checks:
+    name: Checks
     uses: ./.github/workflows/checks.yml
 
   docker-build:
+    name: Docker build (+ /healthz smoke)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

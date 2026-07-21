@@ -50,6 +50,11 @@ permissions:
 
 jobs:
   deploy:
+    # Distinct from (and more specific than) the caller job's own "Deploy"
+    # name in release.yml - GitHub concatenates them as "Deploy / <this
+    # name>" in the checks list, so repeating "Deploy" in both would read
+    # redundantly.
+    name: Roll production box
     runs-on: ubuntu-latest
     environment: production
     concurrency:

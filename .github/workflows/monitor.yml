@@ -30,6 +30,7 @@ permissions:
 
 jobs:
   monitor:
+    name: Scheduled health check
     runs-on: ubuntu-latest
     environment: monitoring
     steps:
