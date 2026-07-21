@@ -76,18 +76,29 @@ prev_git_ref="$(git -C "$repo_root" rev-parse "HEAD@{1}" 2>/dev/null || echo "")
 
 echo "deploying image_tag=$image_tag drill=$drill (previous digest: ${prev_digest:-none})"
 
+# Skip entirely when nothing that affects the built image changed between
+# the previous deploy and this one. This is NOT decided by comparing image
+# digests (that was the original design and it does not work):
+# docker/metadata-action's default labels include
+# org.opencontainers.image.created, a build timestamp baked into every
+# image's config, so two builds from byte-identical source still produce
+# different digests. Comparing the actual source inputs the Dockerfile
+# reads is the real signal - a docs-only merge (markdown is excluded by
+# .dockerignore, but git diff does not consult that) touches none of these
+# paths, and recreating the container for no reason would drop every live
+# session pointlessly.
+if [ "$drill" = "none" ] && [ -n "$prev_container_id" ] && [ -n "$prev_git_ref" ]; then
+  if git -C "$repo_root" diff --quiet "$prev_git_ref" HEAD -- \
+    Dockerfile .dockerignore package.json package-lock.json tsconfig.json tsconfig.build.json src
+  then
+    echo "no build-relevant changes since $prev_git_ref, skipping restart"
+    exit 0
+  fi
+fi
+
 compose pull
 
 new_digest="$(docker image inspect "$RELAY_IMAGE_REF" --format '{{index .RepoDigests 0}}')"
-
-# Skip entirely when the pulled image is byte-identical to what is already
-# running and this is not a drill. A docs-only merge produces the same
-# image (markdown is excluded by .dockerignore), and recreating the
-# container for no reason would drop every live session pointlessly.
-if [ "$drill" = "none" ] && [ -n "$prev_container_id" ] && [ "$new_digest" = "$prev_digest" ]; then
-  echo "image unchanged ($new_digest), skipping restart"
-  exit 0
-fi
 
 rollback() {
   echo "health gate failed, rolling back" >&2
