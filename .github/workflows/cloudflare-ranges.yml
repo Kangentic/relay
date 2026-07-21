@@ -22,6 +22,7 @@ permissions:
 
 jobs:
   refresh:
+    name: Refresh Cloudflare IP ranges
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
