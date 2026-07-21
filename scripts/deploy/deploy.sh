@@ -37,6 +37,17 @@ compose() {
   docker compose --env-file "$env_file" -f "$compose_file" "${drill_args[@]}" "$@"
 }
 
+# Exported before ANY compose() call, including the "previous container"
+# lookup below. docker-compose.prod.yml's services.relay.image requires
+# RELAY_IMAGE_REF via ${RELAY_IMAGE_REF:?...}, and `docker compose`
+# interpolates every service's fields to parse the file at all - even a
+# `compose ps` scoped to one service fails outright (empty output, not
+# just a warning) if a DIFFERENT service's required variable is unset.
+# Exporting late here previously meant prev_container_id and prev_digest
+# were silently always empty, which meant the skip-when-unchanged
+# optimization never triggered and rollback never had a real target.
+export RELAY_IMAGE_REF="ghcr.io/kangentic/relay:$image_tag"
+
 # `docker inspect <container>` has no .RepoDigests field at all - that is
 # an IMAGE-level field, not a container one (docker inspect on a container
 # ID returns "map has no entry for key RepoDigests" if asked for it
@@ -65,7 +76,6 @@ prev_git_ref="$(git -C "$repo_root" rev-parse "HEAD@{1}" 2>/dev/null || echo "")
 
 echo "deploying image_tag=$image_tag drill=$drill (previous digest: ${prev_digest:-none})"
 
-export RELAY_IMAGE_REF="ghcr.io/kangentic/relay:$image_tag"
 compose pull
 
 new_digest="$(docker image inspect "$RELAY_IMAGE_REF" --format '{{index .RepoDigests 0}}')"
