@@ -217,6 +217,12 @@ it) is itself open source, also AGPL-3.0-only, in the main
 [Kangentic/kangentic](https://github.com/Kangentic/kangentic) repository. An auditable crypto core is
 a feature for a security product.
 
+## Documentation
+
+Deeper architecture and deployment docs live in [`docs/`](docs/README.md): the connection
+lifecycle and slot rendezvous state machine ([architecture.md](docs/architecture.md)), and how a
+commit becomes a running instance ([deployment.md](docs/deployment.md)).
+
 ## Development
 
 ```
