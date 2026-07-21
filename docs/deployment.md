@@ -60,6 +60,7 @@ deploy.yml (runner)
        (ci-deploy-wrapper.sh, forced command, no shell/pty/port-forward)
        -> git fetch --tags && git checkout <git-ref>
        -> exec scripts/deploy/deploy.sh <image-tag> <drill-mode>
+            -> skip check (git diff against the previous deploy's ref)
             -> compose pull
             -> compose up -d caddy          (idempotent: only starts if missing)
             -> compose up -d --force-recreate relay   (scoped to relay only)
@@ -99,11 +100,22 @@ fallback — never the primary source for an active rollback decision.
 
 ### Skip when unchanged
 
-Before recreating anything, `deploy.sh` compares the freshly pulled image's digest against the
-previously running one. If they match and this isn't a drill, it exits immediately without
-touching the container. A docs-only merge produces a byte-identical image (`.dockerignore`
-excludes `*.md`), so this stops a pure documentation change from dropping every live session for
-no reason.
+Before pulling anything, `deploy.sh` runs `git diff --quiet` between the previously deployed git
+ref and the current `HEAD`, scoped to the exact paths the Dockerfile reads (`Dockerfile`,
+`.dockerignore`, `package.json`, `package-lock.json`, `tsconfig*.json`, `src`). If none of them
+changed and this isn't a drill, it exits immediately without pulling or touching the container. A
+docs-only merge (markdown, `infra/`, `scripts/deploy/deploy.sh` itself, workflow YAML - none of
+which affect the built image) then correctly skips, so a documentation change doesn't drop every
+live session for no reason.
+
+This is **not** decided by comparing image digests, and that distinction matters: the original
+design did exactly that, and it does not work. `docker/metadata-action`'s default labels include
+`org.opencontainers.image.created`, a build timestamp baked into every image's config, so two
+builds from byte-identical source still produce two different digests. Confirmed live: two
+docs-only deploys in a row both recreated the container with a fresh digest instead of skipping,
+before this was caught and fixed. Diffing the actual source inputs is the signal that is actually
+true to "would rebuilding produce different application behavior," independent of whether Docker's
+own build is reproducible.
 
 ### Proving rollback: the drill
 
@@ -150,6 +162,35 @@ leftmost, attacker-controlled hop by the time the relay's fallback parsing reach
 The Hetzner firewall is what makes any of this meaningful rather than cosmetic: without it,
 anyone who learned the origin IP could bypass Cloudflare (and therefore Caddy's header rewriting)
 entirely and forge headers directly against the relay.
+
+**Verified against the real Cloudflare edge, not just the design intent**: attempting to set a
+client-supplied `CF-Connecting-IP` header through Cloudflare gets rejected outright with a 403
+before the request ever reaches the origin - Cloudflare enforces this itself, as a layer
+independent of anything Caddy or this relay do. A forged `X-Forwarded-For`, which Cloudflare does
+not police, does reach the origin - and Caddy's overwrite of it was the thing actually tested:
+holding one connection open and attempting a second with a different forged `X-Forwarded-For`
+correctly tripped `MAX_CONNECTIONS_PER_IP` (`rejectsByReason.ip_cap` incremented on `/metricz`),
+proving the real client identity was resolved correctly despite the forged header, not the forged
+value. See `infra/README.md`'s post-deploy security gate for the exact procedure.
+
+### Every hostname a box serves needs its own Caddy site match
+
+Caddy routes by Host header matching one of a site block's own configured addresses. Pointing DNS
+at a box (a CNAME, in this case `relay.kangentic.com` aliasing the region-qualified
+`relay-ashburn-us-east.kangentic.com`) does not by itself make Caddy accept that Host - DNS
+resolution and HTTP-layer routing are unrelated. This shipped once as a real bug: the CNAME
+TLS-handshook fine (the Origin CA cert is a `*.kangentic.com` wildcard, so certificate selection
+never failed) but got a `200` with an empty body on every single request, since nothing at the
+HTTP layer matched. `infra/compose/Caddyfile.prod`'s site block now lists both
+`RELAY_HOSTNAME` and `RELAY_HOSTNAME_ALIAS` explicitly; adding a further alias (or a second
+region's box reusing this same file) means adding it to that address line too.
+
+A related trap when applying this kind of fix by hand: `RELAY_HOSTNAME_ALIAS` is a
+compose-level `environment:` value on the `caddy` service, baked into the container at creation
+time. `caddy reload` (which the deploy's success path runs automatically, to pick up Caddyfile
+*content* changes) re-parses the Caddyfile but does not change the running process's environment -
+picking up a new or changed env var needs the container actually recreated
+(`docker compose up -d --force-recreate --no-deps caddy`), not just reloaded.
 
 ### Provisioning
 

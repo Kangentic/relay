@@ -201,15 +201,23 @@ Run this once after the first deploy, and again after any change to `TRUSTED_PRO
 Caddy header configuration. It is the one test that behaviorally proves per-IP caps actually bind,
 since the resolved client IP is never logged.
 
+**Test with a forged `X-Forwarded-For`, not `CF-Connecting-IP`.** Verified live against the real
+Cloudflare edge: a client-supplied `CF-Connecting-IP` header gets rejected outright with a 403 by
+Cloudflare itself, before the request ever reaches the origin - that header is not forgeable
+through the public hostname at all, and attempting it only proves Cloudflare's own layer, not
+Caddy's. `X-Forwarded-For` is not policed by Cloudflare (it appends to it rather than replacing
+it), so a forged value does reach the origin, making it the one header that actually exercises the
+forgery path Caddy is meant to close.
+
 1. Temporarily set `MAX_CONNECTIONS_PER_IP=1` (push via `write-secret env`, or edit `.env` directly
    on the box and restart).
-2. From one real client, open two WebSocket connections with different forged
-   `CF-Connecting-IP` headers - Cloudflare's own edge will overwrite this for genuine external
-   traffic, so test this from inside the `edge` network or directly against Caddy on the box to
-   actually exercise the forgery path Caddy is meant to close.
-3. If forgery works, both connections are admitted. If the design holds, the second is rejected and
-   `rejectsByReason.ip_cap` increments on `/metricz`.
-4. Restore `MAX_CONNECTIONS_PER_IP` to `64`.
+2. From one real client, through the public hostname, open one WebSocket connection normally and
+   hold it open.
+3. Attempt a second connection with a forged `X-Forwarded-For` header set to a different address.
+4. If forgery works, both connections are admitted. If the design holds (Caddy's
+   `header_up X-Forwarded-For {client_ip}` has overwritten the forged value before the relay ever
+   sees it), the second is rejected (`503`) and `rejectsByReason.ip_cap` increments on `/metricz`.
+5. Restore `MAX_CONNECTIONS_PER_IP` to `64`.
 
 ## Health triage
 
