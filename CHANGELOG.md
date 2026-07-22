@@ -52,8 +52,18 @@ All notable changes to this project are documented in this file. The format is b
   mid-drain.
 - README: updated the self-hosting deploy guidance from a Hetzner CX23 baseline to a CPX11, and
   fixed the deploy steps to require `TRUSTED_PROXY_CIDRS` alongside `TRUST_PROXY=true` - setting
-  `TRUST_PROXY=true` alone trusts `CF-Connecting-IP` / `X-Forwarded-For` from any peer, which lets
-  a client forge either header and bypass every per-IP cap and rate limit.
+  `TRUST_PROXY=true` alone previously trusted `CF-Connecting-IP` / `X-Forwarded-For` from any peer,
+  which let a client forge either header and bypass every per-IP cap and rate limit (now enforced in
+  code, see the next entry).
+- `TRUST_PROXY=true` with an empty `TRUSTED_PROXY_CIDRS` now fails closed at startup: `loadConfig`
+  throws a `ConfigError` instead of booting, and every configured CIDR is validated at load time so
+  a malformed entry (including a trailing-slash typo like `10.0.0.0/`, which would otherwise behave
+  as a match-everything `/0`) cannot reach the trusted-proxy matcher at request time. The relay's
+  own `X-Forwarded-For` parsing also now walks from the rightmost untrusted hop rather than the
+  leftmost, so a proxy that appends to the header instead of replacing it does not open a spoofing
+  path. **Breaking for self-hosters:** a `TRUST_PROXY=true` deployment with an empty
+  `TRUSTED_PROXY_CIDRS` that previously booted (and trusted every peer) will now refuse to start;
+  set `TRUSTED_PROXY_CIDRS` to the fronting proxy's address or subnet.
 - Default `SLOT_ID_PATTERN` now accepts the 32-hex ongoing-session slot
   (`^([0-9a-f]{32}|[0-9a-f]{64})$`) in addition to the 64-hex pairing slot. The old default
   (`^[0-9a-f]{64}$`) let pairing succeed but rejected every session rendezvous at upgrade time,

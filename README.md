@@ -74,12 +74,15 @@ byte-forwarding, and Cloudflare's proxy absorbs volumetric DDoS for free at no e
 2. Install Docker and the Docker Compose plugin.
 3. Clone this repo, copy `.env.example` to `.env`, and set both `TRUST_PROXY=true` **and**
    `TRUSTED_PROXY_CIDRS` to the address (or subnet) of whatever reverse proxy actually fronts this
-   box. **Setting `TRUST_PROXY=true` alone is not safe**: an empty `TRUSTED_PROXY_CIDRS` makes the
-   relay trust `CF-Connecting-IP` / `X-Forwarded-For` from *any* peer, so a client behind no real
-   proxy at all could forge either header and bypass every per-IP cap and rate limit. If you are
-   running Caddy in front (see below or `infra/compose/` for the hosted setup), the relay's socket
-   peer is Caddy's own address, not Cloudflare's - `TRUSTED_PROXY_CIDRS` must be Caddy's address or
-   its Docker network subnet, not Cloudflare's published ranges.
+   box. **`TRUST_PROXY=true` alone will not start**: the relay refuses to boot with an empty
+   `TRUSTED_PROXY_CIDRS`, since that combination would trust `CF-Connecting-IP` /
+   `X-Forwarded-For` from *any* peer, letting a client behind no real proxy at all forge either
+   header and bypass every per-IP cap and rate limit. If you are running Caddy in front (see below
+   or `infra/compose/` for the hosted setup), the relay's socket peer is Caddy's own address, not
+   Cloudflare's - `TRUSTED_PROXY_CIDRS` must be Caddy's address or its Docker network subnet, not
+   Cloudflare's published ranges. Once a peer is trusted, `X-Forwarded-For` is read from the right
+   (nearest hop first, skipping trusted-proxy hops), so a proxy that appends to the header rather
+   than replacing it does not open a spoofing path.
 4. `docker compose up -d`.
 5. Point a DNS `A` record (e.g. `relay.example.com`) at the server's IP.
 6. In Cloudflare, enable the proxy (the orange cloud) for that record. WebSockets are proxied by
@@ -119,7 +122,7 @@ All configuration is environment variables, documented fully in `.env.example`. 
 | `MAX_SESSION_BYTES` | `1073741824` | Total bytes forwarded across a paired tunnel before it is torn down. |
 | `MAX_BUFFERED_BYTES` | `16777216` | Per-connection outbound buffer cap: when a slow consumer's socket backlog exceeds this, the tunnel is torn down with close code `4431` and both clients reconnect. Bounds worst-case per-connection memory; the 16 MiB default leaves room for one realistic multi-MiB transcript burst to a phone on a slow link. |
 | `PING_INTERVAL_MS` | `30000` | WS-level ping/pong cadence used to reap half-open sockets. Invisible to the client; there is no application-level heartbeat. |
-| `TRUST_PROXY` / `TRUSTED_PROXY_CIDRS` | `false` / empty | Trust `CF-Connecting-IP` / `X-Forwarded-For` for the real client IP, from peers in the given CIDR list only. **An empty list with `TRUST_PROXY=true` trusts every peer**, which lets any client forge either header and bypass per-IP caps and rate limits - always set both together. See "Deploying for real" above. |
+| `TRUST_PROXY` / `TRUSTED_PROXY_CIDRS` | `false` / empty | Trust `CF-Connecting-IP` / `X-Forwarded-For` for the real client IP, from peers in the given CIDR list only. **The relay refuses to start with `TRUST_PROXY=true` and an empty list**, since that combination would trust every peer and let any client forge either header to bypass per-IP caps and rate limits - always set both together. `X-Forwarded-For` is read from the rightmost untrusted hop, not the leftmost, so an appending (not replacing) proxy is still safe. See "Deploying for real" above. |
 | `METRICS_ENABLED` / `METRICS_TOKEN` | `true` / unset | Prometheus-format `/metrics` and its JSON twin `/metricz`, optionally behind a bearer token. Set a token before exposing either on a public hostname. |
 | `SLOT_LOG_SALT` | random per process | Salt for hashed slot ids in logs (`LOG_SLOT_HASHING=true`). Pin this in production: the default regenerates on every restart, which breaks cross-restart correlation of the hashes. |
 | `ADMISSION_WEBHOOK_URL` | unset | The open-core seam. See below. |

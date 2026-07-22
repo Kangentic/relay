@@ -113,10 +113,15 @@ death: a quiet-but-alive paired tunnel is normal and must never be killed by thi
 `resolveClientIp` always trusts the raw socket address when `TRUST_PROXY` is `false` (the
 default) — a self-hoster with no reverse proxy in front cannot have caps bypassed via a forged
 header. When `TRUST_PROXY` is `true`, it only consults `CF-Connecting-IP` / `X-Forwarded-For` if
-the immediate socket peer's address falls inside `TRUSTED_PROXY_CIDRS`. **An empty
-`TRUSTED_PROXY_CIDRS` list means every peer is trusted** — this is a real footgun the deploy docs
-address explicitly (see [deployment.md](deployment.md)); the fix belongs in this file, not the
-docs, and is tracked as a follow-up (make an empty list fail closed at config-load time).
+the immediate socket peer's address falls inside `TRUSTED_PROXY_CIDRS`. `loadConfig` fails closed
+at startup with `TRUST_PROXY=true` and an empty `TRUSTED_PROXY_CIDRS`, since that combination
+would otherwise trust every peer (see [deployment.md](deployment.md)); each configured CIDR is
+also validated at load time so a malformed entry cannot reach the matcher at request time.
+
+Once a peer is trusted, `X-Forwarded-For` is walked from the rightmost hop, skipping any listed
+trusted-proxy hops, rather than taking the leftmost entry - the leftmost hops are client-supplied,
+so a proxy that appends to the header instead of replacing it would otherwise let a client forge
+the value the relay keys its per-IP cap and rate limit on.
 
 IPv6 addresses are bucketed to their leading `IPV6_PREFIX_BITS` (`bucketIp`) before being used as
 a rate-limit/cap key, so a single client cannot evade per-IP limits by rotating through its own

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveClientIp, bucketIp, normalizeIp, isInCidr } from '../src/net/clientIp.js';
+import { resolveClientIp, bucketIp, normalizeIp, isInCidr, isValidCidr } from '../src/net/clientIp.js';
 
 describe('normalizeIp', () => {
   it('strips the IPv4-mapped IPv6 prefix', () => {
@@ -27,6 +27,48 @@ describe('isInCidr', () => {
   it('matches an IPv6 address inside its prefix', () => {
     expect(isInCidr('2001:db8::1', '2001:db8::/32')).toBe(true);
   });
+
+  it('returns false instead of throwing for a non-numeric prefix', () => {
+    expect(isInCidr('10.0.0.1', '10.0.0.0/x')).toBe(false);
+  });
+
+  it('rejects an empty prefix segment rather than treating it as /0', () => {
+    expect(isInCidr('203.0.113.9', '10.0.0.0/')).toBe(false);
+  });
+});
+
+describe('isValidCidr', () => {
+  it('accepts a well-formed IPv4 CIDR', () => {
+    expect(isValidCidr('10.0.0.0/8')).toBe(true);
+  });
+
+  it('accepts a well-formed IPv6 CIDR', () => {
+    expect(isValidCidr('2001:db8::/32')).toBe(true);
+  });
+
+  it('rejects a non-numeric prefix', () => {
+    expect(isValidCidr('10.0.0.0/x')).toBe(false);
+  });
+
+  it('rejects a prefix out of range for the address family', () => {
+    expect(isValidCidr('10.0.0.0/99')).toBe(false);
+  });
+
+  it('rejects a network that is not a valid IP', () => {
+    expect(isValidCidr('notanip/24')).toBe(false);
+  });
+
+  it('rejects a CIDR with no prefix', () => {
+    expect(isValidCidr('10.0.0.0')).toBe(false);
+  });
+
+  it('rejects a trailing-slash typo instead of accepting it as /0', () => {
+    expect(isValidCidr('10.0.0.0/')).toBe(false);
+  });
+
+  it('rejects a non-decimal prefix that Number() would coerce', () => {
+    expect(isValidCidr('10.0.0.0/0x8')).toBe(false);
+  });
 });
 
 describe('resolveClientIp', () => {
@@ -43,7 +85,7 @@ describe('resolveClientIp', () => {
     const ip = resolveClientIp(
       { 'cf-connecting-ip': '203.0.113.9' },
       '10.0.0.5',
-      { trustProxy: true, trustedProxyCidrs: [] },
+      { trustProxy: true, trustedProxyCidrs: ['10.0.0.0/8'] },
     );
     expect(ip).toBe('203.0.113.9');
   });
@@ -69,6 +111,69 @@ describe('resolveClientIp', () => {
   it('normalizes an IPv4-mapped IPv6 socket address', () => {
     const ip = resolveClientIp({}, '::ffff:10.0.0.5', { trustProxy: false, trustedProxyCidrs: [] });
     expect(ip).toBe('10.0.0.5');
+  });
+
+  it('picks the rightmost untrusted hop instead of a forged leftmost one', () => {
+    const ip = resolveClientIp(
+      { 'x-forwarded-for': '1.2.3.4, 198.51.100.1, 10.0.0.5' },
+      '10.0.0.5',
+      { trustProxy: true, trustedProxyCidrs: ['10.0.0.0/8'] },
+    );
+    expect(ip).toBe('198.51.100.1');
+  });
+
+  it('strips multiple trusted hops from the right before returning the client hop', () => {
+    const ip = resolveClientIp(
+      { 'x-forwarded-for': '198.51.100.1, 10.0.0.6, 10.0.0.5' },
+      '10.0.0.5',
+      { trustProxy: true, trustedProxyCidrs: ['10.0.0.0/8'] },
+    );
+    expect(ip).toBe('198.51.100.1');
+  });
+
+  it('ignores X-Forwarded-For and falls back to the socket peer when no CIDRs are trusted', () => {
+    const ip = resolveClientIp(
+      { 'x-forwarded-for': '198.51.100.1, 10.0.0.5' },
+      '10.0.0.5',
+      { trustProxy: true, trustedProxyCidrs: [] },
+    );
+    expect(ip).toBe('10.0.0.5');
+  });
+
+  it('skips a malformed rightmost hop and returns the next untrusted valid hop', () => {
+    const ip = resolveClientIp(
+      { 'x-forwarded-for': '198.51.100.1, not-an-ip, 10.0.0.5' },
+      '10.0.0.5',
+      { trustProxy: true, trustedProxyCidrs: ['10.0.0.0/8'] },
+    );
+    expect(ip).toBe('198.51.100.1');
+  });
+
+  it('falls back to the socket peer when every hop is trusted', () => {
+    const ip = resolveClientIp(
+      { 'x-forwarded-for': '10.0.0.6, 10.0.0.5' },
+      '10.0.0.5',
+      { trustProxy: true, trustedProxyCidrs: ['10.0.0.0/8'] },
+    );
+    expect(ip).toBe('10.0.0.5');
+  });
+
+  it('does not trust CF-Connecting-IP when no CIDRs are trusted', () => {
+    const ip = resolveClientIp(
+      { 'cf-connecting-ip': '203.0.113.9' },
+      '10.0.0.5',
+      { trustProxy: true, trustedProxyCidrs: [] },
+    );
+    expect(ip).toBe('10.0.0.5');
+  });
+
+  it('joins multiple X-Forwarded-For header lines before walking hops', () => {
+    const ip = resolveClientIp(
+      { 'x-forwarded-for': ['1.2.3.4', '198.51.100.1, 10.0.0.5'] },
+      '10.0.0.5',
+      { trustProxy: true, trustedProxyCidrs: ['10.0.0.0/8'] },
+    );
+    expect(ip).toBe('198.51.100.1');
   });
 });
 

@@ -65,6 +65,7 @@ function expandIpv6(address: string): number[] | null {
 export function isInCidr(address: string, cidr: string): boolean {
   const [network, prefixLengthRaw] = cidr.split('/');
   if (!network || prefixLengthRaw === undefined) return false;
+  if (!/^\d+$/.test(prefixLengthRaw)) return false;
   const prefixLength = Number(prefixLengthRaw);
   const addressBits = ipToBits(address);
   const networkBits = ipToBits(network);
@@ -75,8 +76,19 @@ export function isInCidr(address: string, cidr: string): boolean {
   return (addressBits.bits >> shift) === (networkBits.bits >> shift);
 }
 
+/** Returns true if `cidr` is a well-formed "network/prefixLength" string. */
+export function isValidCidr(cidr: string): boolean {
+  const [network, prefixLengthRaw] = cidr.split('/');
+  if (!network || prefixLengthRaw === undefined) return false;
+  if (!/^\d+$/.test(prefixLengthRaw)) return false;
+  const prefixLength = Number(prefixLengthRaw);
+  const networkBits = ipToBits(network);
+  if (!networkBits) return false;
+  return prefixLength >= 0 && prefixLength <= networkBits.length;
+}
+
 function isTrustedProxy(remoteAddress: string, trustedCidrs: readonly string[]): boolean {
-  if (trustedCidrs.length === 0) return true;
+  if (trustedCidrs.length === 0) return false;
   return trustedCidrs.some((cidr) => isInCidr(remoteAddress, cidr));
 }
 
@@ -85,8 +97,11 @@ function isTrustedProxy(remoteAddress: string, trustedCidrs: readonly string[]):
  * (the default), always trusts the raw socket address, so a self-hoster
  * with no reverse proxy cannot have its caps bypassed via a forged header.
  * With trustProxy enabled, prefers Cloudflare's authoritative
- * CF-Connecting-IP, then falls back to the outermost X-Forwarded-For entry
- * once any listed trusted-proxy hops are stripped.
+ * CF-Connecting-IP, then falls back to the rightmost X-Forwarded-For entry
+ * that is not a listed trusted-proxy hop - the leftmost entries are
+ * client-supplied and a proxy that appends (rather than replaces) XFF
+ * preserves them, so walking from the near end is the only spoof-resistant
+ * choice.
  */
 export function resolveClientIp(
   headers: IncomingHttpHeaders,
@@ -103,13 +118,15 @@ export function resolveClientIp(
   }
 
   const forwardedFor = headers['x-forwarded-for'];
-  const forwardedValue = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor;
+  const forwardedValue = Array.isArray(forwardedFor) ? forwardedFor.join(',') : forwardedFor;
   if (typeof forwardedValue === 'string' && forwardedValue.length > 0) {
     const hops = forwardedValue.split(',').map((entry) => normalizeIp(entry));
-    const clientHop = hops.find((hop) => !isTrustedProxy(hop, config.trustedProxyCidrs));
-    if (clientHop) return clientHop;
-    const firstHop = hops[0];
-    if (firstHop) return firstHop;
+    for (let index = hops.length - 1; index >= 0; index -= 1) {
+      const hop = hops[index];
+      if (hop && ipToBits(hop) !== null && !isTrustedProxy(hop, config.trustedProxyCidrs)) {
+        return hop;
+      }
+    }
   }
 
   return fallback;
