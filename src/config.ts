@@ -1,4 +1,5 @@
 import type { Config, LogLevel } from './types.js';
+import { isValidCidr } from './net/clientIp.js';
 
 const LOG_LEVELS: readonly LogLevel[] = ['error', 'warn', 'info', 'debug'];
 
@@ -113,6 +114,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   if (config.maxConnectionsPerSlot < 1) {
     throw new ConfigError('MAX_CONNECTIONS_PER_SLOT', 'must be at least 1');
+  }
+  if (config.trustProxy && config.trustedProxyCidrs.length === 0) {
+    throw new ConfigError(
+      'TRUSTED_PROXY_CIDRS',
+      'must list at least one CIDR when TRUST_PROXY is true; an empty list would trust forwarding headers from any peer',
+    );
+  }
+  for (const cidr of config.trustedProxyCidrs) {
+    if (!isValidCidr(cidr)) {
+      throw new ConfigError('TRUSTED_PROXY_CIDRS', `not a valid CIDR: "${cidr}"`);
+    }
   }
 
   return Object.freeze(config);

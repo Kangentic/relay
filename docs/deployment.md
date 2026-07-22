@@ -156,8 +156,11 @@ shared bucket.
 Caddy, in turn, **overwrites** both `CF-Connecting-IP` and `X-Forwarded-For` on every proxied
 request (`header_up ... {client_ip}`, no `+`/`-` prefix — a bare field name replaces rather than
 appends). This matters because Cloudflare itself *appends* to `X-Forwarded-For` rather than
-replacing it, so a client-forged `X-Forwarded-For: 1.2.3.4` would otherwise survive as the
-leftmost, attacker-controlled hop by the time the relay's fallback parsing reaches it.
+replacing it, so a client-forged `X-Forwarded-For: 1.2.3.4` would otherwise arrive as the
+leftmost, attacker-controlled hop. The relay's own fallback parsing (`src/net/clientIp.ts`) now
+walks `X-Forwarded-For` from the rightmost untrusted hop rather than the leftmost, so that
+forgery would be skipped even without Caddy's overwrite - Caddy's rewrite here is defense in
+depth, not the only thing standing between a forged header and a bypassed per-IP cap.
 
 The Hetzner firewall is what makes any of this meaningful rather than cosmetic: without it,
 anyone who learned the origin IP could bypass Cloudflare (and therefore Caddy's header rewriting)

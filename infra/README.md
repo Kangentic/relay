@@ -22,7 +22,7 @@ What is load-bearing at each layer, and why:
 
 | Layer | Protects |
 |---|---|
-| Caddy `trusted_proxies` plus `header_up` overwrite of `CF-Connecting-IP` and `X-Forwarded-For` | Header authenticity. This is the actual fix for the relay's fail-open `TRUSTED_PROXY_CIDRS` default - see below. |
+| Caddy `trusted_proxies` plus `header_up` overwrite of `CF-Connecting-IP` and `X-Forwarded-For` | Header authenticity, and pinning the trusted hop to exactly Caddy. The relay now fails closed on an empty `TRUSTED_PROXY_CIDRS` on its own (see below), so this layer is defense in depth, not the only fix. |
 | `TRUST_PROXY=true` with `TRUSTED_PROXY_CIDRS` pinned to the `edge` network subnet | The relay trusts exactly one hop: Caddy. Not Cloudflare's ranges - the relay's socket peer is always Caddy, never Cloudflare directly. |
 | Hetzner firewall, 80/443 restricted to Cloudflare's published ranges | Reachability and origin-IP hiding. This is what makes the Caddy layer's header authenticity actually mean something - without it, anyone who learns the origin IP could dial in directly and forge headers themselves. |
 | Caddy's strict `Host` match (its default behavior) | Free protection against another Cloudflare customer aiming their zone at this IP. |
@@ -33,17 +33,20 @@ peer is in `TRUSTED_PROXY_CIDRS`. The relay's socket peer is always Caddy's cont
 Cloudflare's edge, so putting Cloudflare's ranges there would make every connection resolve to
 Caddy's one address and collapse `MAX_CONNECTIONS_PER_IP` into a global cap.
 
-**Why an empty `TRUSTED_PROXY_CIDRS` is dangerous.** `isTrustedProxy` treats an empty list as "trust
-everything." The relay's own quickstart README used to say "set `TRUST_PROXY=true`" with no
-mention of the CIDR list, which is exactly that trap - any client could forge
-`CF-Connecting-IP`/`X-Forwarded-For` and bypass per-IP caps and rate limits entirely. This is fixed
-in the shipped README and `.env.example`, but the production value here is what actually closes it.
+**Why `TRUST_PROXY=true` with an empty `TRUSTED_PROXY_CIDRS` is refused at startup.** `loadConfig`
+now fails closed on that combination: `isTrustedProxy` trusts no peer when the list is empty, so
+`TRUST_PROXY=true` with nothing to trust is a misconfiguration the relay refuses to boot with rather
+than silently trusting every peer. Earlier builds treated an empty list as "trust everything," which
+let any client forge `CF-Connecting-IP`/`X-Forwarded-For` and bypass per-IP caps and rate limits
+entirely. Pinning the production value here is now belt and suspenders (it also limits the trusted
+hop to exactly Caddy), not the only thing closing that hole.
 
 **Why Caddy replaces `X-Forwarded-For` instead of just setting `CF-Connecting-IP`.** Cloudflare
 *appends* to XFF rather than replacing it, so a client-forged `X-Forwarded-For: 1.2.3.4` arrives as
-`1.2.3.4, <real client>`. The relay's fallback path picks the leftmost untrusted hop, which would be
-the forged entry. Caddy's `header_up X-Forwarded-For {client_ip}` (no `+`/`-` prefix) replaces
-outright, so neither header is forgeable.
+`1.2.3.4, <real client>`. The relay's own fallback path now walks XFF from the rightmost untrusted
+hop, not the leftmost, so the forged leftmost entry is skipped even without Caddy's rewrite. Caddy's
+`header_up X-Forwarded-For {client_ip}` (no `+`/`-` prefix) replaces the header outright anyway, so
+this is defense in depth rather than the only safeguard.
 
 ## First provision
 
@@ -132,7 +135,7 @@ that differ from `src/config.ts`'s defaults are listed; everything else stays de
 | `MAX_CONNECTIONS` | `4000` | 2x the 2000 all-concurrent worst case at under 1k users. The default of 10000 cannot bound memory on a 2 GB box given the 16 MiB `MAX_BUFFERED_BYTES` tail per connection - refuse cleanly with a 503 rather than risk an OOM. |
 | `MAX_CONNECTIONS_PER_IP` | `64` | Mobile carrier CGNAT puts thousands of phones behind one IPv4; the default of 20 would mean roughly 10 real users share a bucket. The real abuse bound is `MAX_CONNECTIONS_PER_SLOT=2`, unchanged. |
 | `TRUST_PROXY` | `true` | Required - without it, every connection resolves to the raw socket peer, which is always Caddy's one bridge address. |
-| `TRUSTED_PROXY_CIDRS` | `172.31.240.0/24` | The `edge` network subnet pinned in `infra/compose/docker-compose.prod.yml`. This is the actual fix for the empty-list trust-everything default - see "Topology" above. |
+| `TRUSTED_PROXY_CIDRS` | `172.31.240.0/24` | The `edge` network subnet pinned in `infra/compose/docker-compose.prod.yml`. Pins the trusted hop to exactly Caddy; the relay also fails closed on an empty list at startup now - see "Topology" above. |
 | `RELAY_HOSTNAME` | `relay-ashburn-us-east.kangentic.com` | Not a relay config var - read by compose for Caddy's `{$RELAY_HOSTNAME}` site block. Harmless if the relay process ignores it, which it does. |
 | `METRICS_TOKEN` | 32 bytes hex, generated with `openssl rand -hex 32` | Mandatory. Both `/metrics` and `/metricz` sit on the public hostname; unset means world-readable operational telemetry. |
 | `SLOT_LOG_SALT` | 32 bytes hex, pinned | Mandatory. The default regenerates every process restart, which destroys the cross-restart correlation the hashed slot ids exist for. Treat this value as a secret; it is what makes the hashes reversible-by-comparison to anyone who also holds it. |
@@ -282,10 +285,6 @@ stretch, check manually: `ssh deploy@relay-ashburn-us-east.kangentic.com "openss
 - **Authenticated Origin Pulls** - redundant with the firewall for its headline claim, and its own
   CA certificate has a hard expiry that would silently 5xx the whole site. See
   `infra/cloudflare/origin-ca.md`.
-- **Fail-closed on empty `TRUSTED_PROXY_CIDRS`** - a breaking change to `src/net/clientIp.ts`'s
-  shipped default behavior, deserving its own tests and migration note rather than being buried in
-  this infra change. The hosted box is unaffected either way (it ships an explicit list); the
-  exposed party would be self-hosters following the old README, which is fixed separately.
 - **Narrowing SSH to GitHub's runner ranges** - GitHub publishes them, but the list runs to
   thousands of CIDRs and exceeds Hetzner's per-firewall rule limits. Mitigated by key-only auth and
   fail2ban instead.

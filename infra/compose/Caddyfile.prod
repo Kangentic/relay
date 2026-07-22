@@ -32,9 +32,12 @@
 		# header_up with no +/- prefix REPLACES the header outright. Both
 		# are set because the relay reads CF-Connecting-IP first and falls
 		# back to X-Forwarded-For, and Cloudflare APPENDS to XFF rather
-		# than replacing it - an unreplaced XFF is forgeable even behind
-		# Cloudflare. {client_ip} is Caddy's own trusted-proxy-aware real
-		# client address, resolved using the imported trusted_proxies list.
+		# than replacing it. The relay's own parsing (src/net/clientIp.ts)
+		# walks XFF from the rightmost untrusted hop, so an unreplaced,
+		# appended XFF is not actually forgeable even behind Cloudflare -
+		# this overwrite is defense in depth, not the only safeguard.
+		# {client_ip} is Caddy's own trusted-proxy-aware real client
+		# address, resolved using the imported trusted_proxies list.
 		header_up CF-Connecting-IP {client_ip}
 		header_up X-Forwarded-For {client_ip}
 		header_up -X-Real-IP
