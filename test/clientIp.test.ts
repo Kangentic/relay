@@ -90,6 +90,38 @@ describe('resolveClientIp', () => {
     expect(ip).toBe('203.0.113.9');
   });
 
+  it('ignores a CF-Connecting-IP that is not an address', () => {
+    // An unvalidated value would become the rate-limit and cap key verbatim,
+    // so a client behind a proxy that forwards this header could mint a fresh
+    // full-burst bucket on every request just by varying the string.
+    const ip = resolveClientIp(
+      { 'cf-connecting-ip': 'not-an-ip-at-all' },
+      '10.0.0.5',
+      { trustProxy: true, trustedProxyCidrs: ['10.0.0.0/8'] },
+    );
+    expect(ip).toBe('10.0.0.5');
+  });
+
+  it('falls through to X-Forwarded-For when CF-Connecting-IP is unparseable', () => {
+    const ip = resolveClientIp(
+      { 'cf-connecting-ip': 'garbage', 'x-forwarded-for': '198.51.100.1, 10.0.0.5' },
+      '10.0.0.5',
+      { trustProxy: true, trustedProxyCidrs: ['10.0.0.0/8'] },
+    );
+    expect(ip).toBe('198.51.100.1');
+  });
+
+  it('ignores a comma-joined CF-Connecting-IP rather than trusting the whole string', () => {
+    // Node joins repeated header lines; the CF branch takes a single address,
+    // so the joined form must not become a cap key.
+    const ip = resolveClientIp(
+      { 'cf-connecting-ip': '203.0.113.9, 203.0.113.10' },
+      '10.0.0.5',
+      { trustProxy: true, trustedProxyCidrs: ['10.0.0.0/8'] },
+    );
+    expect(ip).toBe('10.0.0.5');
+  });
+
   it('falls back to X-Forwarded-For when there is no CF-Connecting-IP', () => {
     const ip = resolveClientIp(
       { 'x-forwarded-for': '198.51.100.1, 10.0.0.5' },
@@ -192,5 +224,29 @@ describe('bucketIp', () => {
     const bucketA = bucketIp('2001:db8:abcd:1::1', 64);
     const bucketB = bucketIp('2001:db8:abcd:2::1', 64);
     expect(bucketA).not.toBe(bucketB);
+  });
+
+  it('honors a prefix that does not land on a 16-bit boundary', () => {
+    // A /56 must aggregate a whole /56, not silently behave as a /64. These
+    // two addresses share their first 56 bits and differ in the next 8.
+    expect(bucketIp('2001:db8:abcd:1200::1', 56)).toBe(bucketIp('2001:db8:abcd:12ff::9', 56));
+    // ...while a genuinely different /56 still separates.
+    expect(bucketIp('2001:db8:abcd:1200::1', 56)).not.toBe(bucketIp('2001:db8:abcd:1300::1', 56));
+  });
+
+  it('aggregates more aggressively as the prefix tightens', () => {
+    const address = '2001:db8:abcd:1234::1';
+    const sibling = '2001:db8:abcd:9999::1';
+    expect(bucketIp(address, 64)).not.toBe(bucketIp(sibling, 64));
+    expect(bucketIp(address, 48)).toBe(bucketIp(sibling, 48));
+    expect(bucketIp(address, 32)).toBe(bucketIp(sibling, 32));
+  });
+
+  it('masks within a group rather than at the group boundary', () => {
+    // These differ at bit 24, inside the second 16-bit group. A /20 keeps only
+    // the top 4 bits of that group, so they share a bucket; a /28 keeps 12 and
+    // separates them. Truncating whole groups could not tell these apart.
+    expect(bucketIp('2001:db8::1', 20)).toBe(bucketIp('2001:dc8::1', 20));
+    expect(bucketIp('2001:db8::1', 28)).not.toBe(bucketIp('2001:dc8::1', 28));
   });
 });

@@ -1,69 +1,11 @@
-import { EventEmitter } from 'node:events';
-import { describe, it, expect, vi } from 'vitest';
-import { attachConnectionHandlers, createConn } from '../src/connection.js';
-import { SlotTable } from '../src/rendezvous.js';
-import { SlotConnectionCaps } from '../src/guards/caps.js';
-import { createMetrics, type Metrics } from '../src/http/metrics.js';
-import type { Logger } from '../src/logging.js';
-import type { Config, Conn } from '../src/types.js';
-import type { WebSocket } from 'ws';
+import { describe, it, expect } from 'vitest';
+import {
+  createSlotTableHarness as createHarness,
+  type ByteCapOverrides,
+  type SlotTableHarness as Harness,
+} from './helpers/slotTableHarness.js';
 
-class FakeSocket extends EventEmitter {
-  readonly OPEN = 1;
-  readonly CONNECTING = 0;
-  readyState = 1;
-  bufferedAmount = 0;
-  send = vi.fn();
-  close = vi.fn();
-  terminate = vi.fn();
-  ping = vi.fn();
-}
-
-interface Harness {
-  readonly slotTable: SlotTable;
-  readonly metrics: Metrics;
-  connect(slot: string): { conn: Conn; socket: FakeSocket };
-}
-
-const silentLogger: Logger = {
-  error: () => {},
-  warn: () => {},
-  info: () => {},
-  debug: () => {},
-  slotRef: (slotId) => slotId,
-};
-
-function createHarness(
-  configOverrides: Partial<Pick<Config, 'maxParkedBufferBytes' | 'maxBufferedBytes' | 'maxSessionBytes'>> = {},
-  maxConnectionsPerSlot = 2,
-): Harness {
-  const metrics = createMetrics();
-  const slotTable = new SlotTable({
-    slotCaps: new SlotConnectionCaps(maxConnectionsPerSlot),
-    metrics,
-    logger: silentLogger,
-    parkTimeoutMs: 60_000,
-    maxSessionMs: 0,
-  });
-  const config = {
-    maxParkedBufferBytes: 1_048_576,
-    maxBufferedBytes: 16_777_216,
-    maxSessionBytes: 1_073_741_824,
-    ...configOverrides,
-  };
-
-  return {
-    slotTable,
-    metrics,
-    connect: (slot: string) => {
-      const socket = new FakeSocket();
-      const conn = createConn(socket as unknown as WebSocket, slot, '127.0.0.1');
-      attachConnectionHandlers(conn, { slotTable, metrics, logger: silentLogger, config, onClosed: () => {} });
-      slotTable.handleConnection(conn);
-      return { conn, socket };
-    },
-  };
-}
+export type { ByteCapOverrides, Harness };
 
 const SLOT = 'a'.repeat(64);
 
@@ -143,6 +85,42 @@ describe('forwarding hot path', () => {
     expect(a.conn.pendingBytes).toBe(0);
   });
 
+  it('charges pre-pair flushed frames against the session byte cap', () => {
+    // Flushing outside the accounting would hand every session a free
+    // MAX_PARKED_BUFFER_BYTES that neither the session cap nor backpressure
+    // ever sees.
+    const harness = createHarness({ maxSessionBytes: 10, maxParkedBufferBytes: 1_000 });
+    const a = harness.connect(SLOT);
+
+    a.socket.emit('message', Buffer.alloc(8), true);
+    a.socket.emit('message', Buffer.alloc(8), true);
+    expect(a.conn.pendingBytes).toBe(16);
+
+    const b = harness.connect(SLOT);
+
+    // The first flushed frame fits under the cap, the second trips it, and the
+    // pair is torn down instead of the bytes passing uncounted.
+    expect(b.socket.send).toHaveBeenCalledTimes(1);
+    expect(a.socket.close).toHaveBeenCalledWith(4432, 'session_byte_cap');
+    expect(b.socket.close).toHaveBeenCalledWith(4432, 'session_byte_cap');
+    expect(harness.metrics.snapshot().rejectsByReason.session_byte_cap).toBe(1);
+  });
+
+  it('applies backpressure teardown to the pre-pair flush, not just the live path', () => {
+    const harness = createHarness({ maxBufferedBytes: 10, maxParkedBufferBytes: 1_000 });
+    const a = harness.connect(SLOT);
+    a.socket.emit('message', Buffer.alloc(8), true);
+
+    // The newcomer's send buffer is already past the ceiling when it pairs, so
+    // the flush must tear down rather than pile more onto a stalled consumer.
+    const b = harness.connect(SLOT, 5_000);
+
+    expect(b.socket.send).not.toHaveBeenCalled();
+    expect(a.socket.close).toHaveBeenCalledWith(4431, 'backpressure');
+    expect(b.socket.close).toHaveBeenCalledWith(4431, 'backpressure');
+    expect(harness.metrics.snapshot().rejectsByReason.backpressure).toBe(1);
+  });
+
   it('closes a parked connection with 4431 when its buffered frames exceed MAX_PARKED_BUFFER_BYTES', () => {
     const harness = createHarness({ maxParkedBufferBytes: 100 });
     const a = harness.connect(SLOT);
@@ -167,6 +145,50 @@ describe('forwarding hot path', () => {
     expect(harness.metrics.snapshot().peerClosedTotal).toBe(1);
     expect(a.conn.pairState).toBeNull();
     expect(b.conn.pairState).toBeNull();
+  });
+});
+
+describe('per-slot cap accounting', () => {
+  it('a rejected third connection does not release a reservation it never held', () => {
+    // Releasing unconditionally on close would let each rejected probe
+    // decrement the live pair's reservation, walking the per-slot count to
+    // zero while both real peers are still connected.
+    const harness = createHarness();
+    const a = harness.connect(SLOT);
+    const b = harness.connect(SLOT);
+    expect(a.conn.slotReserved).toBe(true);
+    expect(b.conn.slotReserved).toBe(true);
+
+    for (let probe = 0; probe < 3; probe += 1) {
+      const rejected = harness.connect(SLOT);
+      expect(rejected.socket.close).toHaveBeenCalledWith(4409, 'slot_busy');
+      expect(rejected.conn.slotReserved).toBe(false);
+      rejected.socket.readyState = 3; // CLOSED
+      rejected.socket.emit('close');
+    }
+
+    // The pair still owns both reservations, so a fourth arrival is still
+    // rejected rather than slipping into a slot the counter thinks is free.
+    const fourth = harness.connect(SLOT);
+    expect(fourth.socket.close).toHaveBeenCalledWith(4409, 'slot_busy');
+    expect(harness.slotCaps.tryReserve(SLOT)).toBe(false);
+  });
+
+  it('releases the reservation once, even if close fires twice', () => {
+    const harness = createHarness();
+    const a = harness.connect(SLOT);
+    expect(harness.slotCaps.tryReserve(SLOT)).toBe(true);
+    harness.slotCaps.release(SLOT);
+
+    a.socket.readyState = 3; // CLOSED
+    a.socket.emit('close');
+    a.socket.emit('close');
+
+    expect(a.conn.slotReserved).toBe(false);
+    // One slot's worth was returned, not two.
+    expect(harness.slotCaps.tryReserve(SLOT)).toBe(true);
+    expect(harness.slotCaps.tryReserve(SLOT)).toBe(true);
+    expect(harness.slotCaps.tryReserve(SLOT)).toBe(false);
   });
 });
 

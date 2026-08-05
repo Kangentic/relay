@@ -50,6 +50,35 @@ export class ConnectionCaps {
   }
 }
 
+/**
+ * Tracks how many admitted connections have not yet found a partner.
+ *
+ * Every connection is unpaired when it is admitted and releases its slot the
+ * moment it pairs, so this counts exactly the population an attacker can
+ * inflate for free: sockets parked on slots no partner will ever present.
+ * Capping them separately keeps parking pressure from consuming the global
+ * connection cap and starving pairs that would otherwise establish.
+ */
+export class UnpairedConnectionCap {
+  private count = 0;
+
+  constructor(private readonly maxUnpaired: number) {}
+
+  tryReserve(): boolean {
+    if (this.count >= this.maxUnpaired) return false;
+    this.count += 1;
+    return true;
+  }
+
+  release(): void {
+    this.count = Math.max(0, this.count - 1);
+  }
+
+  get unpairedConnections(): number {
+    return this.count;
+  }
+}
+
 /** Tracks how many connections (waiting + paired) currently reference a slot. */
 export class SlotConnectionCaps {
   private readonly perSlotCount = new Map<string, number>();

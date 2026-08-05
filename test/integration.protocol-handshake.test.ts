@@ -7,6 +7,14 @@
  * imports @kangentic/protocol itself; this is the one place in the repo
  * that does, as a devDependency, specifically to prove blindness does not
  * mean brokenness.
+ *
+ * Scope note: KK is the *reconnect* handshake, used once both peers already
+ * hold each other's pinned static keys. First-time pairing uses IKpsk0
+ * instead, because on genuine first contact only the desktop's static public
+ * key has travelled out of band (by QR) and the phone's arrives in-band in
+ * message one. That path has no relay-level coverage yet; adding it would
+ * exercise the same byte-forwarding this test already covers, over a
+ * different handshake shape.
  */
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
 import { describe, it, expect, afterEach } from 'vitest';

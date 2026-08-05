@@ -7,6 +7,7 @@ export interface Config {
   readonly wsPath: string;
   readonly slotIdPattern: RegExp;
   readonly maxConnections: number;
+  readonly maxUnpairedConnections: number;
   readonly maxConnectionsPerIp: number;
   readonly maxConnectionsPerSlot: number;
   readonly rateLimitIpPerMinute: number;
@@ -26,6 +27,7 @@ export interface Config {
   readonly ipv6PrefixBits: number;
   readonly metricsEnabled: boolean;
   readonly metricsToken: string | null;
+  readonly metricsAllowUnauthenticated: boolean;
   readonly logLevel: LogLevel;
   readonly logSlotHashing: boolean;
   readonly slotLogSalt: string;
@@ -57,6 +59,18 @@ export interface Conn {
   parkTimer: ReturnType<typeof setTimeout> | null;
   sessionTimer: ReturnType<typeof setTimeout> | null;
   torndown: boolean;
+  /**
+   * Whether this connection currently holds a per-slot cap reservation.
+   * Rejected connections never reserve one, so releasing unconditionally on
+   * close would decrement a reservation that was never taken and erode the
+   * cap for the peers that do hold one.
+   */
+  slotReserved: boolean;
+  /**
+   * Whether this connection currently holds an unpaired-connection cap
+   * reservation. Released when it pairs, not only when it closes.
+   */
+  unpairedReserved: boolean;
   /**
    * The shared paired-slot state, set while this connection is half of a
    * live pair and cleared on teardown. Kept directly on the connection so

@@ -31,6 +31,8 @@ export function createConn(socket: WebSocket, slot: string, ip: string): Conn {
     parkTimer: null,
     sessionTimer: null,
     torndown: false,
+    slotReserved: false,
+    unpairedReserved: false,
     pairState: null,
   };
 }

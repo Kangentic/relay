@@ -4,15 +4,20 @@ import type { RejectReason } from './closeCodes.js';
 import type { Conn, PairedSlotState, SlotState } from './types.js';
 import type { Metrics } from './http/metrics.js';
 import type { Logger } from './logging.js';
-import type { SlotConnectionCaps } from './guards/caps.js';
+import type { SlotConnectionCaps, UnpairedConnectionCap } from './guards/caps.js';
 import { byteLengthOfRawData, BINARY_SEND_OPTIONS, TEXT_SEND_OPTIONS } from './wireData.js';
 
 export interface RendezvousDeps {
   readonly slotCaps: SlotConnectionCaps;
+  readonly unpairedCap: UnpairedConnectionCap;
   readonly metrics: Metrics;
   readonly logger: Logger;
   readonly parkTimeoutMs: number;
   readonly maxSessionMs: number;
+  /** Session byte cap, applied to the pre-pair flush as well as the live path. */
+  readonly maxSessionBytes: number;
+  /** Slow-consumer ceiling, applied to the pre-pair flush as well as the live path. */
+  readonly maxBufferedBytes: number;
 }
 
 function closeIfOpen(socket: WebSocket, code: number, reason: string): void {
@@ -72,6 +77,7 @@ export class SlotTable {
         this.rejectBusy(conn);
         return;
       }
+      conn.slotReserved = true;
       this.pair(existing.peer, conn);
       return;
     }
@@ -84,6 +90,7 @@ export class SlotTable {
       this.rejectBusy(conn);
       return;
     }
+    conn.slotReserved = true;
     this.park(conn);
   }
 
@@ -94,7 +101,12 @@ export class SlotTable {
 
     clearTimer(conn, 'parkTimer');
     clearTimer(conn, 'sessionTimer');
-    this.deps.slotCaps.release(conn.slot);
+    // Only release what this connection actually holds. A connection rejected
+    // by rejectBusy never reserved, so releasing unconditionally would
+    // decrement the reservation held by a peer that is still connected and
+    // erode the per-slot cap toward zero.
+    this.releaseSlotReservation(conn);
+    this.releaseUnpairedReservation(conn);
 
     if (conn.state === 'waiting') {
       const state = this.slots.get(conn.slot);
@@ -151,6 +163,18 @@ export class SlotTable {
     closeIfOpen(pairState.b.socket, closeCode, reason);
   }
 
+  private releaseSlotReservation(conn: Conn): void {
+    if (!conn.slotReserved) return;
+    conn.slotReserved = false;
+    this.deps.slotCaps.release(conn.slot);
+  }
+
+  private releaseUnpairedReservation(conn: Conn): void {
+    if (!conn.unpairedReserved) return;
+    conn.unpairedReserved = false;
+    this.deps.unpairedCap.release();
+  }
+
   private rejectBusy(conn: Conn): void {
     this.deps.metrics.onReject('slot_busy');
     conn.socket.close(CLOSE_CODE.SLOT_BUSY, 'slot_busy');
@@ -179,6 +203,13 @@ export class SlotTable {
     clearTimer(waiting, 'parkTimer');
     this.deps.metrics.waitingSlots.decrement();
 
+    // Both halves stop being unpaired here, not when they eventually close.
+    // Releasing only on close would let the unpaired count track total live
+    // connections instead of parked ones, and a healthy busy relay would
+    // drift up into refusing every new pairing.
+    this.releaseUnpairedReservation(waiting);
+    this.releaseUnpairedReservation(incoming);
+
     waiting.state = 'paired';
     incoming.state = 'paired';
     waiting.partner = incoming;
@@ -203,11 +234,29 @@ export class SlotTable {
     // in order, before any live traffic. The newcomer cannot have
     // buffered anything itself: pairing happens synchronously inside its
     // own connection handler, before its 'message' listener can fire.
+    //
+    // These bytes are charged against the session and checked for
+    // backpressure exactly as the live path charges them, in the same order
+    // (connection.ts's forward()). Flushing outside that accounting would
+    // let a parked peer push a whole MAX_PARKED_BUFFER_BYTES past both caps
+    // on every pairing.
     for (const frame of waiting.pending) {
-      if (incoming.socket.readyState === incoming.socket.OPEN) {
-        incoming.socket.send(frame.data, frame.isBinary ? BINARY_SEND_OPTIONS : TEXT_SEND_OPTIONS);
-        this.deps.metrics.onForward(byteLengthOfRawData(frame.data));
+      if (incoming.socket.readyState !== incoming.socket.OPEN) break;
+
+      if (incoming.socket.bufferedAmount > this.deps.maxBufferedBytes) {
+        this.enforceGuardTeardown(waiting, CLOSE_CODE.BACKPRESSURE, 'backpressure');
+        break;
       }
+
+      const size = byteLengthOfRawData(frame.data);
+      pairState.sessionBytes += size;
+      if (pairState.sessionBytes > this.deps.maxSessionBytes) {
+        this.enforceGuardTeardown(waiting, CLOSE_CODE.SESSION_BYTE_CAP, 'session_byte_cap');
+        break;
+      }
+
+      incoming.socket.send(frame.data, frame.isBinary ? BINARY_SEND_OPTIONS : TEXT_SEND_OPTIONS);
+      this.deps.metrics.onForward(size);
     }
     waiting.pending = [];
     waiting.pendingBytes = 0;

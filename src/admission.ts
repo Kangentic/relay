@@ -42,6 +42,25 @@ function isWebhookAdmissionResponseBody(value: unknown): value is WebhookAdmissi
 }
 
 /**
+ * Best-effort reason for a 4xx deny. Deliberately swallows every parse
+ * failure: a 4xx is already an explicit deny, and letting a malformed body
+ * throw here would route it into the fail-open catch and turn the deny into
+ * an admit.
+ */
+async function readDenyReason(response: Response): Promise<string> {
+  try {
+    const body: unknown = await response.json();
+    if (typeof body === 'object' && body !== null) {
+      const reason = (body as Record<string, unknown>)['reason'];
+      if (typeof reason === 'string' && reason.length > 0) return reason;
+    }
+  } catch {
+    // No readable JSON body; the status alone is the decision.
+  }
+  return 'denied';
+}
+
+/**
  * Because this relay is AGPL-3.0-only, a private control plane must not
  * link it in-process (that would pull the control plane under AGPL). This
  * policy is the out-of-process seam instead: it POSTs the AdmissionContext
@@ -72,6 +91,14 @@ export function createWebhookAdmissionPolicy(
           }),
           signal: controller.signal,
         });
+        // A 4xx is the control plane speaking, not the control plane failing.
+        // It must deny even under ADMISSION_FAIL_OPEN, so that a gate written
+        // the natural REST way (403 with {"allow": false}) does not silently
+        // admit everyone. Only 5xx, timeouts, and network errors count as
+        // "unavailable" and fall through to the fail-open policy below.
+        if (response.status >= 400 && response.status < 500) {
+          return { allow: false, closeCode: CLOSE_CODE.ADMISSION_DENIED, reason: await readDenyReason(response) };
+        }
         if (!response.ok) {
           throw new Error(`admission webhook returned HTTP ${response.status}`);
         }

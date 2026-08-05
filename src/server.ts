@@ -9,8 +9,8 @@ import { handleLandingRequest } from './http/landing.js';
 import { resolveClientIp, bucketIp } from './net/clientIp.js';
 import { isValidSlotId } from './guards/slotFormat.js';
 import { RateLimiter } from './guards/rateLimit.js';
-import { ConnectionCaps, SlotConnectionCaps } from './guards/caps.js';
-import { allowAllPolicy, type AdmissionPolicy } from './admission.js';
+import { ConnectionCaps, SlotConnectionCaps, UnpairedConnectionCap } from './guards/caps.js';
+import { allowAllPolicy, type AdmissionDecision, type AdmissionPolicy } from './admission.js';
 import { SlotTable } from './rendezvous.js';
 import { attachConnectionHandlers, createConn } from './connection.js';
 import { startKeepalive } from './keepalive.js';
@@ -58,15 +58,19 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
 
   const connectionCaps = new ConnectionCaps(config.maxConnections, config.maxConnectionsPerIp);
   const slotConnectionCaps = new SlotConnectionCaps(config.maxConnectionsPerSlot);
+  const unpairedConnectionCap = new UnpairedConnectionCap(config.maxUnpairedConnections);
   const ipRateLimiter = new RateLimiter(config.rateLimitIpPerMinute, config.rateLimitIpBurst);
   const slotRateLimiter = new RateLimiter(config.rateLimitSlotPerMinute, config.rateLimitSlotBurst);
 
   const slotTable = new SlotTable({
     slotCaps: slotConnectionCaps,
+    unpairedCap: unpairedConnectionCap,
     metrics,
     logger,
     parkTimeoutMs: config.parkTimeoutMs,
     maxSessionMs: config.maxSessionMs,
+    maxSessionBytes: config.maxSessionBytes,
+    maxBufferedBytes: config.maxBufferedBytes,
   });
 
   const liveConnections = new Set<Conn>();
@@ -107,6 +111,10 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
 
   function onWebSocketConnection(ws: WebSocket, slotId: string, ip: string, releaseCapReservation: () => void): void {
     const conn = createConn(ws, slotId, ip);
+    // The unpaired reservation taken during the upgrade now belongs to this
+    // connection; the slot table releases it when the connection pairs or
+    // closes, whichever comes first.
+    conn.unpairedReserved = true;
     liveConnections.add(conn);
 
     attachConnectionHandlers(conn, {
@@ -158,23 +166,47 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
       return;
     }
 
-    if (health.draining) {
+    if (!unpairedConnectionCap.tryReserve()) {
       reservation.release();
+      metrics.onReject('unpaired_cap');
+      // Same 503 as global-cap exhaustion: the wire must not tell a prober
+      // which ceiling they hit. The reject counter distinguishes them.
+      destroySocket(socket, 503);
+      return;
+    }
+
+    // Both reservations are held from here on, so every path that does not
+    // hand them to a Conn has to give them back.
+    const releaseReservations = (): void => {
+      reservation.release();
+      unpairedConnectionCap.release();
+    };
+
+    if (health.draining) {
+      releaseReservations();
       metrics.onReject('shutting_down');
       destroySocket(socket, 503);
       return;
     }
 
-    const decision = await admissionPolicy.admit({
-      ip,
-      slotId,
-      headers: request.headers,
-      rawUrl: request.url ?? '',
-      connectedAt: Date.now(),
-    });
+    let decision: AdmissionDecision;
+    try {
+      decision = await admissionPolicy.admit({
+        ip,
+        slotId,
+        headers: request.headers,
+        rawUrl: request.url ?? '',
+        connectedAt: Date.now(),
+      });
+    } catch (error) {
+      // A custom policy that throws must not leak the reservations it was
+      // holding; the outer handler turns this into a 503.
+      releaseReservations();
+      throw error;
+    }
 
     if (health.draining) {
-      reservation.release();
+      releaseReservations();
       metrics.onReject('shutting_down');
       destroySocket(socket, 503);
       return;
@@ -184,7 +216,7 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
       if (!decision.allow) {
         metrics.onReject('admission');
         ws.close(decision.closeCode, decision.reason);
-        reservation.release();
+        releaseReservations();
         return;
       }
       onWebSocketConnection(ws, slotId, ip, reservation.release);

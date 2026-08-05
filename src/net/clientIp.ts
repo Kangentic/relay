@@ -114,7 +114,13 @@ export function resolveClientIp(
 
   const cfConnectingIp = headers['cf-connecting-ip'];
   if (typeof cfConnectingIp === 'string' && cfConnectingIp.length > 0) {
-    return normalizeIp(cfConnectingIp);
+    // Must parse as an address before it is trusted, exactly like the
+    // X-Forwarded-For hops below. An unparseable value would otherwise become
+    // a rate-limit and cap key verbatim, so a client behind a proxy that does
+    // not overwrite this header could mint a fresh full-burst bucket per
+    // request. Fall through to the XFF walk rather than returning junk.
+    const candidate = normalizeIp(cfConnectingIp);
+    if (ipToBits(candidate) !== null) return candidate;
   }
 
   const forwardedFor = headers['x-forwarded-for'];
@@ -143,9 +149,21 @@ export function bucketIp(address: string, ipv6PrefixBits: number): string {
   if (!normalized.includes(':')) return normalized;
   const groups = expandIpv6(normalized);
   if (!groups) return normalized;
+
   const keepGroups = Math.ceil(ipv6PrefixBits / 16);
-  return groups
-    .slice(0, keepGroups)
-    .map((group) => group.toString(16))
-    .join(':');
+  const kept = groups.slice(0, keepGroups);
+
+  // A prefix that does not land on a 16-bit boundary has to have the leftover
+  // bits of its final group masked off. Truncating whole groups alone would
+  // round the prefix *up*, so an operator tightening IPV6_PREFIX_BITS to 56
+  // would silently keep getting /64 buckets and 256x more distinct keys than
+  // they asked for.
+  const remainderBits = ipv6PrefixBits % 16;
+  const lastIndex = keepGroups - 1;
+  const lastGroup = kept[lastIndex];
+  if (remainderBits !== 0 && lastGroup !== undefined) {
+    kept[lastIndex] = lastGroup & ((0xffff << (16 - remainderBits)) & 0xffff);
+  }
+
+  return kept.map((group) => group.toString(16)).join(':');
 }

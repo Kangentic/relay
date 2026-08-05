@@ -148,28 +148,40 @@ the README's "Open-core and licensing" section.
 ## Observability (`src/http/metrics.ts`, `src/logging.ts`)
 
 `/metrics` (Prometheus text) and `/metricz` (its JSON twin, plus `rssBytes`/`heapUsedBytes`/
-`uptimeSeconds`) are gated by the same `authorizeMetricsRequest`: `METRICS_ENABLED=false` yields a
-plain 404 (hidden entirely); `METRICS_TOKEN` set requires an exact `Authorization: Bearer <token>`
-match. Neither surface ever carries a slot id, an IP, or frame content — only aggregate counters.
+`uptimeSeconds`) are gated by the same `authorizeMetricsRequest`, in three steps:
+`METRICS_ENABLED=false` yields a plain 404 (hidden entirely); with `METRICS_TOKEN` set, an exact
+`Authorization: Bearer <token>` match is required, compared in constant time; with no token set,
+both surfaces answer 404 unless `METRICS_ALLOW_UNAUTHENTICATED=true`. Neither surface ever carries
+a slot id, an IP, or frame content — only aggregate counters.
+
+That last rule exists because the aggregates, while anonymous, still reveal when pairings form and
+which guard rejected a connection, which is a useful feedback channel for someone probing the
+relay. It is an explicit flag rather than something inferred from `BIND_ADDRESS`, because a
+containerised relay binds `0.0.0.0` whether the host publishes the port to loopback or to the
+world, so any inference would be wrong half the time. Answering 404 rather than 401 keeps an
+untokened deployment from advertising that a token-gated surface is there at all.
 
 `closedByCause` in `/metricz` mixes two units, which the release's own runbook flags as the one
 thing to remember when reading it: `peerClosed`, `backpressure`, `sessionByteCap`,
 `sessionTimeCap` count **pair teardowns** (two sockets each); `parkedOverflow`, `heartbeat`,
 `parkTimeout` count **single sockets**.
 
-Structured JSON logs (`logging.ts`) hash slot ids by default (`LOG_SLOT_HASHING=true`,
-`slotRef()`) — even though payloads are opaque to this relay, the *pairing graph* (which two
-connections rendezvoused) is metadata worth protecting, and a raw slot id doubles as a bearer
-secret for that rendezvous.
+Structured JSON logs (`logging.ts`) contain no slot ids at all, raw or hashed: no logger call site
+passes one, and `test/logging.test.ts` fails the build if that changes. Even though payloads are
+opaque to this relay, the *pairing graph* (which two connections rendezvoused) is metadata worth
+protecting, and a raw slot id doubles as a bearer secret for that rendezvous - so the safest
+handling is not to log it. `LOG_SLOT_HASHING` and `SLOT_LOG_SALT` configure `slotRef()`, the salted
+hash that any future slot logging would have to route through; both are currently inert, and exist
+so adding a slot to a log line is a deliberate act with a safe default.
 
 ## Configuration and shutdown
 
 `src/config.ts` parses every environment variable into a single frozen `Config` object, failing
 fast (throwing `ConfigError`) on any malformed value rather than falling back to a silent default.
 `src/index.ts` wires `SIGTERM`/`SIGINT` to `relay.close()`, which flips `health.draining` (so
-`/readyz` starts returning 503 and new upgrades are refused with close code `4503`), closes every
-live connection with code `1001`, and force-terminates anything still open after
-`SHUTDOWN_GRACE_MS`.
+`/readyz` starts returning 503 and new upgrades are refused with an HTTP 503 before the handshake,
+not a WebSocket close code), closes every live connection with code `1001`, and force-terminates
+anything still open after `SHUTDOWN_GRACE_MS`.
 
 ## What is deliberately not here
 

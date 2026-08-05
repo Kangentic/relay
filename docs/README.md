@@ -11,6 +11,7 @@ guarantee, self-hosting quickstart, and full config reference.
 |---|---|
 | Self-hosting the relay | [Root README](../README.md#quickstart-self-hosting) |
 | Understanding how the relay works | [Architecture](architecture.md) |
+| Assessing what the relay protects | [Security model](security-model.md) |
 | Understanding how a commit becomes a running instance | [Deployment architecture](deployment.md) |
 | Operating the hosted instance | [`infra/README.md`](../infra/README.md) |
 
@@ -20,6 +21,9 @@ guarantee, self-hosting quickstart, and full config reference.
 - [Architecture](architecture.md) — Connection lifecycle, the slot rendezvous state machine,
   guards, the forwarding hot path, liveness, real-client-IP resolution, the admission seam,
   observability.
+- [Security model](security-model.md) — What pairing and routing integrity the relay guarantees
+  and how each claim is tested, why slot ids cannot be guessed, what an attacker holding one can
+  and cannot do, IP-trust rules, logging and metrics exposure, and the accepted risks.
 
 ### Deployment
 - [Deployment architecture](deployment.md) — The publish pipeline (GHCR, image tags), the deploy
