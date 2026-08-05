@@ -206,9 +206,23 @@ horizontal scaling needs no code changes, only slot-sticky routing in front.
   `parkedOverflow` (a parked socket overflowing its pre-pair buffer), `heartbeat`, and
   `parkTimeout` count single sockets. Neither surface ever contains a slot id, an IP, or frame
   content.
+- **Both metrics surfaces need a token before they will answer.** They are 404 out of the box.
+  Either set `METRICS_TOKEN` and pass `Authorization: Bearer <token>`, or set
+  `METRICS_ALLOW_UNAUTHENTICATED=true` if the instance is genuinely private:
+
+  ```
+  # in .env, then: docker compose up -d
+  METRICS_TOKEN=$(openssl rand -hex 32)
+
+  curl -H "Authorization: Bearer $METRICS_TOKEN" http://127.0.0.1:8080/metricz
+  ```
+
+  They answer 404 rather than 401 when untokened, so an exposed relay does not advertise that a
+  gated surface is there. `/healthz` and `/readyz` are always open and need no token.
 - `scripts/loadTest.mjs` drives N concurrent pairs of M frames of S bytes against an instance and
   reports latency percentiles, throughput, and the relay RSS delta (see the header comment; run
-  it only against a dedicated instance, never a live one).
+  it only against a dedicated instance, never a live one). Pass `--metrics-token` so it can read
+  `/metricz`, or the RSS delta is reported as unavailable.
 
 ## Open-core and licensing
 

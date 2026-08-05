@@ -84,10 +84,17 @@ describe('pre-upgrade guard ladder', () => {
   });
 
   it('rejects with 503 once the global connection cap is full', async () => {
-    const relay = await startTestRelay({ maxConnections: 1, maxUnpairedConnections: 2 });
+    // Both cap rejections answer 503, so assert the counter as well or this
+    // cannot tell which ladder step actually fired.
+    const relay = await startTestRelay({ maxConnections: 1, maxUnpairedConnections: 50 });
     try {
       const parked = await connectTestClient(relay.url, SLOT_A);
       expect(await attemptUpgrade(relay.url, `/?slot=${SLOT_B}`)).toEqual({ opened: false, status: 503 });
+
+      const rejects = relay.metrics.snapshot().rejectsByReason;
+      expect(rejects['global_cap']).toBe(1);
+      expect(rejects['unpaired_cap']).toBeUndefined();
+
       parked.close();
     } finally {
       await relay.close();

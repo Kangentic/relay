@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   createSlotTableHarness as createHarness,
+  READY_STATE,
   type ByteCapOverrides,
   type SlotTableHarness as Harness,
 } from './helpers/slotTableHarness.js';
@@ -171,6 +172,41 @@ describe('per-slot cap accounting', () => {
     // rejected rather than slipping into a slot the counter thinks is free.
     const fourth = harness.connect(SLOT);
     expect(fourth.socket.close).toHaveBeenCalledWith(4409, 'slot_busy');
+    expect(harness.slotCaps.tryReserve(SLOT)).toBe(false);
+  });
+
+  it('returns the reservation of a parked peer overwritten while its close was still pending', () => {
+    // The stale-entry overwrite path: a parked peer's socket dies, a newcomer
+    // takes the slot before the corpse's close event fires, and both hold a
+    // reservation at once. If the corpse's close did not give its own back,
+    // the slot would stay permanently one reservation short.
+    const harness = createHarness();
+    const stale = harness.connect(SLOT);
+    expect(stale.conn.slotReserved).toBe(true);
+
+    stale.socket.readyState = READY_STATE.CLOSING;
+    const replacement = harness.connect(SLOT);
+    expect(replacement.conn.state).toBe('waiting');
+    expect(replacement.socket.close).not.toHaveBeenCalled();
+
+    stale.socket.readyState = READY_STATE.CLOSED;
+    stale.socket.emit('close');
+
+    expect(stale.conn.slotReserved).toBe(false);
+    expect(replacement.conn.slotReserved).toBe(true);
+
+    // The freed capacity is real: a partner can still pair with the replacement.
+    const partner = harness.connect(SLOT);
+    expect(partner.socket.close).not.toHaveBeenCalled();
+    expect(replacement.conn.state).toBe('paired');
+
+    // And once that pair goes away the slot is fully released, not leaked.
+    for (const half of [replacement, partner]) {
+      half.socket.readyState = READY_STATE.CLOSED;
+      half.socket.emit('close');
+    }
+    expect(harness.slotCaps.tryReserve(SLOT)).toBe(true);
+    expect(harness.slotCaps.tryReserve(SLOT)).toBe(true);
     expect(harness.slotCaps.tryReserve(SLOT)).toBe(false);
   });
 

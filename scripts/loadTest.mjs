@@ -28,13 +28,22 @@
 //   --metrics-token        bearer token for /metricz, if the target
 //                          instance sets METRICS_TOKEN. Also read from the
 //                          RELAY_METRICS_TOKEN env var; the flag wins.
-//                          Without it, /metricz calls 401 and the RSS
-//                          delta in the results is silently omitted.
+//                          Without it, /metricz answers 401 (wrong token) or
+//                          404 (the instance set neither METRICS_TOKEN nor
+//                          METRICS_ALLOW_UNAUTHENTICATED), and the RSS delta
+//                          in the results is reported as unavailable.
 //
 // Run it against a dedicated relay instance started with generous limits,
 // never against a production or dev-rig instance. Example instance env:
 //   PORT=18080 MAX_CONNECTIONS=25000 MAX_CONNECTIONS_PER_IP=25000
-//   RATE_LIMIT_IP_PER_MIN=1000000 RATE_LIMIT_IP_BURST=100000 LOG_LEVEL=warn
+//   MAX_UNPAIRED_CONNECTIONS=25000 RATE_LIMIT_IP_PER_MIN=1000000
+//   RATE_LIMIT_IP_BURST=100000 METRICS_ALLOW_UNAUTHENTICATED=true
+//   LOG_LEVEL=warn
+//
+// MAX_UNPAIRED_CONNECTIONS matters here: this harness opens every connection
+// before the pairs settle, so the default (half of MAX_CONNECTIONS) would
+// reject the back half of a large run with a 503 that looks like a relay
+// failure rather than a deliberate cap.
 //
 // The script needs no dependencies beyond the relay's own `ws` package.
 
