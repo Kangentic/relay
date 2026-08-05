@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { RejectReason } from '../closeCodes.js';
 import type { Config } from '../types.js';
@@ -134,25 +135,56 @@ export function createMetrics(): Metrics {
 }
 
 /**
- * Shared gate for both metrics surfaces: 404 when disabled, 401 without the
- * bearer token when one is configured. Returns true when the request may
- * proceed (the response is already finished otherwise).
+ * Constant-time bearer comparison, so the response latency does not leak how
+ * many leading bytes of a guessed token were correct.
+ */
+function matchesBearerToken(authorizationHeader: string | undefined, expectedToken: string): boolean {
+  if (typeof authorizationHeader !== 'string') return false;
+  const presented = Buffer.from(authorizationHeader);
+  const expected = Buffer.from(`Bearer ${expectedToken}`);
+  if (presented.length !== expected.length) return false;
+  return timingSafeEqual(presented, expected);
+}
+
+/**
+ * Shared gate for both metrics surfaces: 404 when disabled, 404 when no token
+ * is configured, and 401 when a token is configured but not presented.
+ * Returns true when the request may proceed (the response is already finished
+ * otherwise).
+ *
+ * The middle case is the one worth explaining. These surfaces carry no slot
+ * ids and no IPs, but the live waiting/paired gauges reveal when pairings
+ * happen and the per-reason reject counters tell a prober exactly which guard
+ * they tripped, which is a useful feedback channel to deny a stranger.
+ *
+ * The relay cannot tell from inside the process whether it is internet
+ * reachable - in a container the bind address is 0.0.0.0 whether the host
+ * publishes to loopback or to the world - so rather than infer it wrongly,
+ * metrics simply require a token. An operator who genuinely wants them open
+ * says so with METRICS_ALLOW_UNAUTHENTICATED.
  */
 function authorizeMetricsRequest(
   request: IncomingMessage,
   response: ServerResponse,
-  config: Pick<Config, 'metricsEnabled' | 'metricsToken'>,
+  config: Pick<Config, 'metricsEnabled' | 'metricsToken' | 'metricsAllowUnauthenticated'>,
 ): boolean {
   if (!config.metricsEnabled) {
     response.writeHead(404).end();
     return false;
   }
-  if (config.metricsToken) {
-    const authorizationHeader = request.headers['authorization'];
-    if (authorizationHeader !== `Bearer ${config.metricsToken}`) {
-      response.writeHead(401).end();
+  if (!config.metricsToken) {
+    if (!config.metricsAllowUnauthenticated) {
+      // Indistinguishable from METRICS_ENABLED=false on the wire, so an
+      // untokened deployment does not advertise that a gated surface is here.
+      response.writeHead(404).end();
       return false;
     }
+    return true;
+  }
+  const authorizationHeader = request.headers['authorization'];
+  if (!matchesBearerToken(authorizationHeader, config.metricsToken)) {
+    response.writeHead(401).end();
+    return false;
   }
   return true;
 }
@@ -161,7 +193,7 @@ export function handleMetricsRequest(
   request: IncomingMessage,
   response: ServerResponse,
   metrics: Metrics,
-  config: Pick<Config, 'metricsEnabled' | 'metricsToken'>,
+  config: Pick<Config, 'metricsEnabled' | 'metricsToken' | 'metricsAllowUnauthenticated'>,
 ): void {
   if (!authorizeMetricsRequest(request, response, config)) return;
   response.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' }).end(metrics.render());
@@ -177,7 +209,7 @@ export function handleMetriczRequest(
   request: IncomingMessage,
   response: ServerResponse,
   metrics: Metrics,
-  config: Pick<Config, 'metricsEnabled' | 'metricsToken'>,
+  config: Pick<Config, 'metricsEnabled' | 'metricsToken' | 'metricsAllowUnauthenticated'>,
 ): void {
   if (!authorizeMetricsRequest(request, response, config)) return;
   const currentSnapshot = metrics.snapshot();

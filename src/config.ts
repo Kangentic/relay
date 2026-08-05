@@ -70,12 +70,18 @@ function randomSalt(): string {
 
 /** Parses and validates every relay env var into a frozen Config. Fails fast on bad input. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const maxConnections = readInt(env, 'MAX_CONNECTIONS', 10_000);
   const config: Config = {
     port: readInt(env, 'PORT', 8080),
     bindAddress: readString(env, 'BIND_ADDRESS', '0.0.0.0'),
     wsPath: readString(env, 'WS_PATH', '/'),
     slotIdPattern: readRegExp(env, 'SLOT_ID_PATTERN', '^([0-9a-f]{32}|[0-9a-f]{64})$'),
-    maxConnections: readInt(env, 'MAX_CONNECTIONS', 10_000),
+    maxConnections,
+    // Ceiling on connections that have not yet found a partner, so a flood of
+    // parked never-to-be-paired sockets cannot consume the global cap and
+    // starve pairs that would otherwise establish. Derived from
+    // MAX_CONNECTIONS so raising the global ceiling raises this with it.
+    maxUnpairedConnections: readInt(env, 'MAX_UNPAIRED_CONNECTIONS', Math.floor(maxConnections / 2)),
     maxConnectionsPerIp: readInt(env, 'MAX_CONNECTIONS_PER_IP', 20),
     maxConnectionsPerSlot: readInt(env, 'MAX_CONNECTIONS_PER_SLOT', 2),
     rateLimitIpPerMinute: readInt(env, 'RATE_LIMIT_IP_PER_MIN', 120),
@@ -98,6 +104,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ipv6PrefixBits: readInt(env, 'IPV6_PREFIX_BITS', 64),
     metricsEnabled: readBoolean(env, 'METRICS_ENABLED', true),
     metricsToken: readOptionalString(env, 'METRICS_TOKEN'),
+    // Without a token the metrics surfaces answer 404. The relay cannot tell
+    // whether it is internet-reachable from inside the process, so serving
+    // live pairing gauges and per-guard reject counters openly has to be an
+    // explicit choice rather than an inferred one.
+    metricsAllowUnauthenticated: readBoolean(env, 'METRICS_ALLOW_UNAUTHENTICATED', false),
     logLevel: readLogLevel(env, 'LOG_LEVEL', 'info'),
     logSlotHashing: readBoolean(env, 'LOG_SLOT_HASHING', true),
     slotLogSalt: readString(env, 'SLOT_LOG_SALT', randomSalt()),
@@ -114,6 +125,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   if (config.maxConnectionsPerSlot < 1) {
     throw new ConfigError('MAX_CONNECTIONS_PER_SLOT', 'must be at least 1');
+  }
+  // Both halves of a pair are unpaired at the moment they are admitted, so a
+  // ceiling below 2 could never let a single pairing complete.
+  if (config.maxUnpairedConnections < 2) {
+    throw new ConfigError('MAX_UNPAIRED_CONNECTIONS', 'must be at least 2, or no pairing could ever complete');
   }
   if (config.trustProxy && config.trustedProxyCidrs.length === 0) {
     throw new ConfigError(

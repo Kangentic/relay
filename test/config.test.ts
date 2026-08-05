@@ -42,3 +42,38 @@ describe('loadConfig', () => {
     ).toThrow(/TRUSTED_PROXY_CIDRS/);
   });
 });
+
+describe('connection cap configuration', () => {
+  it('derives MAX_UNPAIRED_CONNECTIONS from MAX_CONNECTIONS so raising one raises both', () => {
+    expect(loadConfig({}).maxUnpairedConnections).toBe(5_000);
+    expect(loadConfig({ MAX_CONNECTIONS: '400' }).maxUnpairedConnections).toBe(200);
+  });
+
+  it('honors an explicit MAX_UNPAIRED_CONNECTIONS over the derived default', () => {
+    const config = loadConfig({ MAX_CONNECTIONS: '400', MAX_UNPAIRED_CONNECTIONS: '25' });
+    expect(config.maxUnpairedConnections).toBe(25);
+  });
+
+  it('refuses a MAX_UNPAIRED_CONNECTIONS below 2, which could never complete a pairing', () => {
+    // Both halves are unpaired at the moment they are admitted, so a ceiling
+    // of 1 would deadlock every rendezvous rather than merely tightening it.
+    expect(() => loadConfig({ MAX_UNPAIRED_CONNECTIONS: '1' })).toThrow(/MAX_UNPAIRED_CONNECTIONS/);
+    expect(() => loadConfig({ MAX_UNPAIRED_CONNECTIONS: '0' })).toThrow(/MAX_UNPAIRED_CONNECTIONS/);
+    expect(() => loadConfig({ MAX_CONNECTIONS: '2' })).toThrow(/MAX_UNPAIRED_CONNECTIONS/);
+  });
+
+  it('refuses a MAX_CONNECTIONS_PER_SLOT below 1', () => {
+    expect(() => loadConfig({ MAX_CONNECTIONS_PER_SLOT: '0' })).toThrow(/MAX_CONNECTIONS_PER_SLOT/);
+  });
+
+  it('keeps the shipped slot-id pattern anchored to exactly 32 or 64 lowercase hex', () => {
+    // The anti-enumeration guarantee is a property of this default, so pin it.
+    const { slotIdPattern } = loadConfig({});
+    expect(slotIdPattern.test('a'.repeat(64))).toBe(true);
+    expect(slotIdPattern.test('a'.repeat(32))).toBe(true);
+    expect(slotIdPattern.test('A'.repeat(64))).toBe(false);
+    expect(slotIdPattern.test(`prefix${'a'.repeat(64)}`)).toBe(false);
+    expect(slotIdPattern.test(`${'a'.repeat(64)}suffix`)).toBe(false);
+    expect(slotIdPattern.test('123456')).toBe(false);
+  });
+});

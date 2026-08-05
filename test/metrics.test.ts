@@ -1,7 +1,117 @@
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { describe, it, expect, afterEach } from 'vitest';
-import { createMetrics } from '../src/http/metrics.js';
+import { createMetrics, handleMetricsRequest, handleMetriczRequest } from '../src/http/metrics.js';
 import { startTestRelay, type RelayHarness } from './helpers/relayHarness.js';
 import { connectTestClient } from './helpers/wsClient.js';
+
+interface FakeResponse {
+  statusCode: number | null;
+  body: string | null;
+  writeHead(status: number, headers?: Record<string, string>): FakeResponse;
+  end(body?: string): void;
+}
+
+function fakeResponse(): FakeResponse {
+  const response: FakeResponse = {
+    statusCode: null,
+    body: null,
+    writeHead(status: number) {
+      response.statusCode = status;
+      return response;
+    },
+    end(body?: string) {
+      response.body = body ?? '';
+    },
+  };
+  return response;
+}
+
+function requestWith(authorization?: string): IncomingMessage {
+  return { headers: authorization ? { authorization } : {} } as IncomingMessage;
+}
+
+describe('metrics authorization gate', () => {
+  const baseConfig = { metricsEnabled: true, metricsToken: null, metricsAllowUnauthenticated: false };
+
+  it('hides an untokened surface behind 404 by default', () => {
+    // Without this, an operator who exposes the relay publishes live pairing
+    // gauges and the per-guard reject breakdown to anyone who asks.
+    const response = fakeResponse();
+    handleMetricsRequest(requestWith(), response as unknown as ServerResponse, createMetrics(), baseConfig);
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('answers 404 rather than 401 when untokened, so it does not advertise a gated surface', () => {
+    const disabled = fakeResponse();
+    handleMetricsRequest(
+      requestWith(),
+      disabled as unknown as ServerResponse,
+      createMetrics(),
+      { ...baseConfig, metricsEnabled: false },
+    );
+
+    const untokened = fakeResponse();
+    handleMetricsRequest(requestWith(), untokened as unknown as ServerResponse, createMetrics(), baseConfig);
+
+    expect(untokened.statusCode).toBe(disabled.statusCode);
+  });
+
+  it('serves an untokened surface only when explicitly opted in', () => {
+    const response = fakeResponse();
+    handleMetricsRequest(
+      requestWith(),
+      response as unknown as ServerResponse,
+      createMetrics(),
+      { ...baseConfig, metricsAllowUnauthenticated: true },
+    );
+    expect(response.statusCode).toBe(200);
+  });
+
+  it('requires an exact bearer match once a token is configured', () => {
+    const config = { ...baseConfig, metricsToken: 'secret-token' };
+
+    const authorized = fakeResponse();
+    handleMetricsRequest(
+      requestWith('Bearer secret-token'),
+      authorized as unknown as ServerResponse,
+      createMetrics(),
+      config,
+    );
+    expect(authorized.statusCode).toBe(200);
+
+    for (const header of [undefined, 'Bearer wrong-token', 'secret-token', 'Bearer secret-token-extra']) {
+      const rejected = fakeResponse();
+      handleMetricsRequest(requestWith(header), rejected as unknown as ServerResponse, createMetrics(), config);
+      expect(rejected.statusCode).toBe(401);
+    }
+  });
+
+  it('ignores the opt-out once a token is configured', () => {
+    const response = fakeResponse();
+    handleMetricsRequest(
+      requestWith(),
+      response as unknown as ServerResponse,
+      createMetrics(),
+      { ...baseConfig, metricsToken: 'secret-token', metricsAllowUnauthenticated: true },
+    );
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('applies the same gate to /metricz', () => {
+    const hidden = fakeResponse();
+    handleMetriczRequest(requestWith(), hidden as unknown as ServerResponse, createMetrics(), baseConfig);
+    expect(hidden.statusCode).toBe(404);
+
+    const served = fakeResponse();
+    handleMetriczRequest(
+      requestWith(),
+      served as unknown as ServerResponse,
+      createMetrics(),
+      { ...baseConfig, metricsAllowUnauthenticated: true },
+    );
+    expect(served.statusCode).toBe(200);
+  });
+});
 
 describe('createMetrics', () => {
   it('moves counters and gauges as connections open, pair, forward, and reject', () => {
@@ -79,7 +189,7 @@ describe('GET /metrics over the live server', () => {
   });
 
   it('serves Prometheus text with live counters after a pairing', async () => {
-    relay = await startTestRelay();
+    relay = await startTestRelay({ metricsAllowUnauthenticated: true });
     const slot = 'b'.repeat(64);
     const a = await connectTestClient(relay.url, slot);
     const b = await connectTestClient(relay.url, slot);
@@ -124,7 +234,7 @@ describe('GET /metricz over the live server', () => {
   });
 
   it('serves a JSON snapshot with process memory and closed-by-cause counters', async () => {
-    relay = await startTestRelay();
+    relay = await startTestRelay({ metricsAllowUnauthenticated: true });
     const slot = 'c'.repeat(64);
     const a = await connectTestClient(relay.url, slot);
     const b = await connectTestClient(relay.url, slot);

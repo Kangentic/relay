@@ -26,6 +26,8 @@ function fakeConn(readyState = 1): { conn: Conn; socket: FakeSocket } {
     parkTimer: null,
     sessionTimer: null,
     torndown: false,
+    slotReserved: false,
+    unpairedReserved: false,
     pairState: null,
   };
   return { conn, socket };

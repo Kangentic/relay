@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ConnectionCaps, SlotConnectionCaps } from '../src/guards/caps.js';
+import { ConnectionCaps, SlotConnectionCaps, UnpairedConnectionCap } from '../src/guards/caps.js';
 
 describe('ConnectionCaps', () => {
   it('rejects once the global cap is reached', () => {
@@ -67,5 +67,33 @@ describe('SlotConnectionCaps', () => {
     const caps = new SlotConnectionCaps(1);
     expect(caps.tryReserve('slot-1')).toBe(true);
     expect(caps.tryReserve('slot-2')).toBe(true);
+  });
+});
+
+describe('UnpairedConnectionCap', () => {
+  it('allows up to the configured ceiling and then refuses', () => {
+    const cap = new UnpairedConnectionCap(2);
+    expect(cap.tryReserve()).toBe(true);
+    expect(cap.tryReserve()).toBe(true);
+    expect(cap.tryReserve()).toBe(false);
+    expect(cap.unpairedConnections).toBe(2);
+  });
+
+  it('releasing restores capacity', () => {
+    const cap = new UnpairedConnectionCap(1);
+    expect(cap.tryReserve()).toBe(true);
+    expect(cap.tryReserve()).toBe(false);
+    cap.release();
+    expect(cap.tryReserve()).toBe(true);
+  });
+
+  it('never goes negative on an unmatched release', () => {
+    const cap = new UnpairedConnectionCap(1);
+    cap.release();
+    cap.release();
+    expect(cap.unpairedConnections).toBe(0);
+    // Capacity is still exactly one, not inflated by the spurious releases.
+    expect(cap.tryReserve()).toBe(true);
+    expect(cap.tryReserve()).toBe(false);
   });
 });

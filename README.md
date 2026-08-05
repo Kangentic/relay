@@ -34,10 +34,21 @@ Kangentic's own hosted one, can still observe:
 - Frame sizes and frequency (traffic shape, not content).
 - The pairing graph: which slot ids co-occur, i.e. which two connections were rendezvoused together.
 
+Two further disclosures, because "blind to content" is easy to over-read:
+
+- **The slot id travels in the request URL**, and on Kangentic's hosted instance TLS is terminated
+  at Cloudflare, so Cloudflare sees it. For a first-time pairing the slot id doubles as the
+  handshake's pre-shared key, which makes that key material passing through a third party. It does
+  *not* let them impersonate a peer - that needs the desktop's static public key, which never
+  crosses the relay - but the pre-shared key contributes nothing against an observer at that layer.
+  Self-hosting without Cloudflare removes that party.
+- **The reconnect slot id is stable for the life of a pairing**, so an operator can correlate one
+  device's reconnects over time.
+
 This is inherent to operating any relay and is not specific to this implementation. Self-hosting
-removes Kangentic (or anyone else) from that observation entirely. This relay's structured logs hash
-slot ids by default (`LOG_SLOT_HASHING=true`) specifically because the pairing graph is sensitive,
-even though the payloads that cross it never are.
+removes Kangentic (or anyone else) from that observation entirely. As for the pairing graph itself,
+no relay log line contains a slot id at all, raw or hashed, and a test enforces that no logger call
+site passes one. [`docs/security-model.md`](docs/security-model.md) states the full model.
 
 ## Quickstart: self-hosting
 
@@ -114,18 +125,19 @@ All configuration is environment variables, documented fully in `.env.example`. 
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `8080` | Port for both the HTTP health/metrics routes and the WebSocket upgrade. |
-| `SLOT_ID_PATTERN` | `^([0-9a-f]{32}\|[0-9a-f]{64})$` | Format the relay requires of a slot id before it will even try to rendezvous it. Accepts the 64-hex pairing slot and the 32-hex ongoing-session slot. |
+| `SLOT_ID_PATTERN` | `^([0-9a-f]{32}\|[0-9a-f]{64})$` | Format the relay requires of a slot id before it will even try to rendezvous it. Accepts the 64-hex pairing slot and the 32-hex ongoing-session slot. **Security-relevant default:** the slot id is the only pairing credential, and its entropy (not the rate limits below) is what makes it unguessable. Narrowing this to a short or low-entropy shape makes slots enumerable regardless of every other setting. |
 | `MAX_CONNECTIONS` / `MAX_CONNECTIONS_PER_IP` / `MAX_CONNECTIONS_PER_SLOT` | `10000` / `20` / `2` | Connection caps: global, per resolved IP, and per slot. |
-| `RATE_LIMIT_IP_PER_MIN` / `RATE_LIMIT_IP_BURST` | `120` / `40` | New-connection rate limit per resolved IP, as a token bucket refilling per minute with a burst allowance. |
-| `RATE_LIMIT_SLOT_PER_MIN` / `RATE_LIMIT_SLOT_BURST` | `60` / `20` | Same, per slot rather than per IP. |
+| `MAX_UNPAIRED_CONNECTIONS` | half of `MAX_CONNECTIONS` | Ceiling on connections that have not yet found a partner, so a flood of parked sockets cannot consume the global cap and starve pairings that would otherwise succeed. A connection releases its place here the moment it pairs. Must be at least 2. |
+| `RATE_LIMIT_IP_PER_MIN` / `RATE_LIMIT_IP_BURST` | `120` / `40` | New-connection rate limit per resolved IP, as a token bucket refilling per minute with a burst allowance. A cost and abuse control, not an anti-enumeration one: a previously unseen key starts with a full burst. |
+| `RATE_LIMIT_SLOT_PER_MIN` / `RATE_LIMIT_SLOT_BURST` | `60` / `20` | Same, per slot rather than per IP. Bounds reconnect churn against a slot someone already holds; it cannot bind on an attacker trying a different slot each attempt. |
 | `MAX_MESSAGE_BYTES` | `1114112` | Per-WebSocket-message size ceiling, enforced at the `ws` layer (must exceed the inner protocol's 1 MiB plaintext cap plus Noise/AEAD overhead). |
 | `MAX_SESSION_BYTES` | `1073741824` | Total bytes forwarded across a paired tunnel before it is torn down. |
 | `MAX_BUFFERED_BYTES` | `16777216` | Per-connection outbound buffer cap: when a slow consumer's socket backlog exceeds this, the tunnel is torn down with close code `4431` and both clients reconnect. Bounds worst-case per-connection memory; the 16 MiB default leaves room for one realistic multi-MiB transcript burst to a phone on a slow link. |
 | `PING_INTERVAL_MS` | `30000` | WS-level ping/pong cadence used to reap half-open sockets. Invisible to the client; there is no application-level heartbeat. |
 | `TRUST_PROXY` / `TRUSTED_PROXY_CIDRS` | `false` / empty | Trust `CF-Connecting-IP` / `X-Forwarded-For` for the real client IP, from peers in the given CIDR list only. **The relay refuses to start with `TRUST_PROXY=true` and an empty list**, since that combination would trust every peer and let any client forge either header to bypass per-IP caps and rate limits - always set both together. `X-Forwarded-For` is read from the rightmost untrusted hop, not the leftmost, so an appending (not replacing) proxy is still safe. See "Deploying for real" above. |
-| `METRICS_ENABLED` / `METRICS_TOKEN` | `true` / unset | Prometheus-format `/metrics` and its JSON twin `/metricz`, optionally behind a bearer token. Set a token before exposing either on a public hostname. |
-| `SLOT_LOG_SALT` | random per process | Salt for hashed slot ids in logs (`LOG_SLOT_HASHING=true`). Pin this in production: the default regenerates on every restart, which breaks cross-restart correlation of the hashes. |
-| `ADMISSION_WEBHOOK_URL` | unset | The open-core seam. See below. |
+| `METRICS_ENABLED` / `METRICS_TOKEN` / `METRICS_ALLOW_UNAUTHENTICATED` | `true` / unset / `false` | Prometheus-format `/metrics` and its JSON twin `/metricz`. They carry no slot ids or IPs, but do expose live pairing gauges and a per-guard reject breakdown. **They require a token**: with none set both answer 404 (not 401, which would advertise them). Set `METRICS_ALLOW_UNAUTHENTICATED=true` to serve them openly on a genuinely private deployment. |
+| `LOG_SLOT_HASHING` / `SLOT_LOG_SALT` | `true` / random per process | Configure `slotRef()`, the salted hash any future slot logging would go through. **Currently inert**: no log line contains a slot id, so nothing calls it. They exist so that adding one is deliberate and safe by default. |
+| `ADMISSION_WEBHOOK_URL` | unset | The open-core seam, for an embedder calling `createRelay({ admissionPolicy })`. **The shipped binary does not construct it**, so setting this alone gates nothing. See below. |
 
 See `.env.example` for the complete list.
 
@@ -206,17 +218,28 @@ that hosted service is what is monetized, not the software itself.
 
 A future, separate, **private** control-plane repository (accounts, billing, quotas) can decide
 *whether* a device may use Kangentic's *hosted* relay and at what plan limits, without ever
-rearchitecting this relay. It attaches through `ADMISSION_WEBHOOK_URL`: if set, this relay POSTs
-connection-level metadata only (resolved IP, the slot id, request headers, connection time; never a
-frame or payload) to that URL and honors its allow/deny response. Because this relay is AGPL, a
-private service must not link it in-process (that would pull the private service under AGPL); the
-webhook seam keeps the relay artifact unmodified and fully open while the control plane stays
-separate and private.
+rearchitecting this relay. It attaches through the `AdmissionPolicy` seam: the policy POSTs
+connection-level metadata only (resolved IP, the slot id, request URL, connection time; never a
+frame or payload) to `ADMISSION_WEBHOOK_URL` and honors its allow/deny response. Because this relay
+is AGPL, a private service must not link it in-process (that would pull the private service under
+AGPL); the webhook seam keeps the relay artifact unmodified and fully open while the control plane
+stays separate and private.
 
-Self-hosting bypasses all of this entirely: with no `ADMISSION_WEBHOOK_URL` set (the default), every
-connection is admitted, exactly as in v1. "Even our paid relay cannot read your data" stays true
-because the entitlement gate only ever decides admission, never content, since content is opaque
-ciphertext this relay was never able to read in the first place.
+Two practical notes for anyone wiring this up:
+
+- **The shipped binary does not construct the webhook policy.** `src/index.ts` builds the relay
+  with the default allow-all policy, so the open-source relay is free and accountless as advertised
+  and setting `ADMISSION_WEBHOOK_URL` on a stock `docker compose up` gates nothing. The seam is for
+  an embedder calling `createRelay(config, { admissionPolicy })`.
+- **Deny with HTTP 200 and `{"allow": false}`.** A 4xx counts as an explicit deny and is honored
+  even when `ADMISSION_FAIL_OPEN` is true. A 5xx, timeout, or network error counts as the control
+  plane being *unavailable* and follows `ADMISSION_FAIL_OPEN`, which defaults to admitting - set it
+  to `false` wherever admission is an entitlement rather than a convenience.
+
+Self-hosting bypasses all of this entirely: every connection is admitted, exactly as in v1. "Even
+our paid relay cannot read your data" stays true because the entitlement gate only ever decides
+admission, never content, since content is opaque ciphertext this relay was never able to read in
+the first place.
 
 `@kangentic/protocol` (the end-to-end pairing and crypto layer this relay's frames carry, opaque to
 it) is itself open source, also AGPL-3.0-only, in the main
@@ -226,8 +249,9 @@ a feature for a security product.
 ## Documentation
 
 Deeper architecture and deployment docs live in [`docs/`](docs/README.md): the connection
-lifecycle and slot rendezvous state machine ([architecture.md](docs/architecture.md)), and how a
-commit becomes a running instance ([deployment.md](docs/deployment.md)).
+lifecycle and slot rendezvous state machine ([architecture.md](docs/architecture.md)), what the
+relay does and does not protect ([security-model.md](docs/security-model.md)), and how a commit
+becomes a running instance ([deployment.md](docs/deployment.md)).
 
 ## Development
 
@@ -243,5 +267,10 @@ npm run dev            # runs the relay locally with tsx, PORT=8080 by default
 See `CONTRIBUTING.md` before opening a pull request.
 
 ## Security
+
+[`docs/security-model.md`](docs/security-model.md) states what the relay guarantees about pairing
+and routing integrity, why a slot id cannot be guessed, what an attacker who obtains one can and
+cannot do, and the risks the design accepts. Each guarantee there is pinned by a test in
+`test/pairingIntegrity.test.ts`.
 
 See `SECURITY.md` for how to report a vulnerability.
