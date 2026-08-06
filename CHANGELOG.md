@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-05
+
+### Fixed
+
+- **A tagged release could not deploy.** `release.yml` passed the git tag verbatim (`v0.2.0`) as
+  the image tag to pull, but `docker/metadata-action`'s `{{version}}` publishes it without the
+  leading `v` (`0.2.0`), so the box tried to pull a tag that was never pushed and the deploy died
+  on `failed to resolve reference`. The bug was latent from the start of the pipeline: 0.1.0
+  changed nothing build-relevant, so `deploy.sh` short-circuited on "no build-relevant changes"
+  and never reached the pull. 0.2.0 bumped `package.json`, which is build-relevant, and surfaced
+  it. Production was never touched - the pull fails before any container is recreated - so 0.2.0
+  is a published release that never shipped, and this is the first version to deploy through the
+  tag path.
+- The image job now asserts the tag it hands to the deploy is one it actually published, so a
+  future drift between the deploy tag and `metadata-action`'s naming fails in the build, before
+  the production box is contacted.
+
 ## [0.2.0] - 2026-08-05
 
 The relay itself is unchanged from 0.1.0 - this release carries no `src/`, `Dockerfile`, or

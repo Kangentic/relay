@@ -82,11 +82,17 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
+      # The git tag is vX.Y.Z but docker/metadata-action's {{version}}
+      # publishes it as X.Y.Z, so the leading v has to be stripped or the
+      # deploy pulls a tag that was never pushed. This was latent until the
+      # first tagged release that changed a build-relevant file: before that,
+      # deploy.sh short-circuited on "no build-relevant changes" and never
+      # reached the pull.
       - name: Determine this run's immutable deploy tag
         id: set-tag
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "image_tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "image_tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           else
             echo "image_tag=sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
           fi
@@ -122,6 +128,20 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Fail here, where it is obvious, rather than on the box mid-deploy.
+      # The deploy pulls exactly this tag, so if the naming ever drifts from
+      # what metadata-action publishes again, this catches it before the
+      # production box is touched at all.
+      - name: Verify the deploy tag was actually published
+        run: |
+          tag="${{ steps.set-tag.outputs.image_tag }}"
+          if ! docker manifest inspect "ghcr.io/kangentic/relay:$tag" > /dev/null 2>&1; then
+            echo "deploy tag ghcr.io/kangentic/relay:$tag was not published by this run" >&2
+            echo "published tags were:" >&2
+            echo "${{ steps.meta.outputs.tags }}" >&2
+            exit 1
+          fi
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v1
