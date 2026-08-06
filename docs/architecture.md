@@ -152,7 +152,7 @@ the README's "Open-core and licensing" section.
 `METRICS_ENABLED=false` yields a plain 404 (hidden entirely); with `METRICS_TOKEN` set, an exact
 `Authorization: Bearer <token>` match is required, compared in constant time; with no token set,
 both surfaces answer 404 unless `METRICS_ALLOW_UNAUTHENTICATED=true`. Neither surface ever carries
-a slot id, an IP, or frame content — only aggregate counters.
+a slot id, an IP, or frame content - only aggregate counters.
 
 That last rule exists because the aggregates, while anonymous, still reveal when pairings form and
 which guard rejected a connection, which is a useful feedback channel for someone probing the

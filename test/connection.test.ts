@@ -1,12 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  createSlotTableHarness as createHarness,
-  READY_STATE,
-  type ByteCapOverrides,
-  type SlotTableHarness as Harness,
-} from './helpers/slotTableHarness.js';
-
-export type { ByteCapOverrides, Harness };
+import { createSlotTableHarness as createHarness, READY_STATE } from './helpers/slotTableHarness.js';
 
 const SLOT = 'a'.repeat(64);
 

@@ -42,6 +42,18 @@ function isWebhookAdmissionResponseBody(value: unknown): value is WebhookAdmissi
 }
 
 /**
+ * A WebSocket close frame caps its reason text at 123 UTF-8 bytes, and `ws`
+ * throws synchronously on anything longer, which would abort the upgrade
+ * callback mid-teardown. A control-plane reason is best-effort display text,
+ * so an oversized one degrades to the generic constant instead.
+ */
+const MAX_CLOSE_REASON_BYTES = 123;
+
+function clampDenyReason(reason: string): string {
+  return Buffer.byteLength(reason, 'utf8') > MAX_CLOSE_REASON_BYTES ? 'denied' : reason;
+}
+
+/**
  * Best-effort reason for a 4xx deny. Deliberately swallows every parse
  * failure: a 4xx is already an explicit deny, and letting a malformed body
  * throw here would route it into the fail-open catch and turn the deny into
@@ -52,7 +64,7 @@ async function readDenyReason(response: Response): Promise<string> {
     const body: unknown = await response.json();
     if (typeof body === 'object' && body !== null) {
       const reason = (body as Record<string, unknown>)['reason'];
-      if (typeof reason === 'string' && reason.length > 0) return reason;
+      if (typeof reason === 'string' && reason.length > 0) return clampDenyReason(reason);
     }
   } catch {
     // No readable JSON body; the status alone is the decision.
@@ -107,7 +119,7 @@ export function createWebhookAdmissionPolicy(
           throw new Error('admission webhook returned a malformed body');
         }
         if (body.allow) return { allow: true };
-        return { allow: false, closeCode: CLOSE_CODE.ADMISSION_DENIED, reason: body.reason ?? 'denied' };
+        return { allow: false, closeCode: CLOSE_CODE.ADMISSION_DENIED, reason: clampDenyReason(body.reason ?? 'denied') };
       } catch (error) {
         logger.warn('admission webhook call failed', {
           error: error instanceof Error ? error.message : String(error),

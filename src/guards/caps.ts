@@ -62,10 +62,10 @@ export class ConnectionCaps {
 export class UnpairedConnectionCap {
   private count = 0;
 
-  constructor(private readonly maxUnpaired: number) {}
+  constructor(private readonly maxUnpairedConnections: number) {}
 
   tryReserve(): boolean {
-    if (this.count >= this.maxUnpaired) return false;
+    if (this.count >= this.maxUnpairedConnections) return false;
     this.count += 1;
     return true;
   }

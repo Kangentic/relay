@@ -212,15 +212,32 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
       return;
     }
 
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      if (!decision.allow) {
-        metrics.onReject('admission');
-        ws.close(decision.closeCode, decision.reason);
-        releaseReservations();
-        return;
-      }
-      onWebSocketConnection(ws, slotId, ip, reservation.release);
-    });
+    let handshakeCompleted = false;
+    try {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        handshakeCompleted = true;
+        if (!decision.allow) {
+          metrics.onReject('admission');
+          releaseReservations();
+          try {
+            ws.close(decision.closeCode, decision.reason);
+          } catch {
+            // A malformed decision from a custom policy (close code outside
+            // the sendable range, reason over the 123-byte close-frame limit)
+            // must still tear the socket down, not abort the upgrade handler.
+            ws.terminate();
+          }
+          return;
+        }
+        onWebSocketConnection(ws, slotId, ip, reservation.release);
+      });
+    } finally {
+      // ws aborts the handshake without ever invoking the callback for a
+      // missing or bad Sec-WebSocket-Key/-Version, a non-GET method, or a
+      // socket that died while the admission decision was awaited. No Conn
+      // owns the reservations on those paths, so they are given back here.
+      if (!handshakeCompleted) releaseReservations();
+    }
   }
 
   httpServer.on('upgrade', (request, socket, head) => {

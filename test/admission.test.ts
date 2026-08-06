@@ -208,6 +208,79 @@ describe('createWebhookAdmissionPolicy', () => {
     clearTimeoutSpy.mockRestore();
   });
 
+  it('degrades a deny reason too long for a close frame to the generic constant', async () => {
+    // A close frame caps its reason at 123 UTF-8 bytes and ws throws
+    // synchronously past that, which would abort the upgrade callback
+    // mid-teardown. A control-plane reason is best-effort display text, so an
+    // oversized one has to degrade rather than become a crash.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ allow: false, reason: 'x'.repeat(124) }) }),
+    );
+    const policy = createWebhookAdmissionPolicy(
+      { admissionWebhookUrl: 'https://control-plane.example/admit', admissionWebhookTimeoutMs: 1000, admissionFailOpen: true },
+      silentLogger,
+    );
+    const decision = await policy.admit(baseContext);
+    expect(decision.allow).toBe(false);
+    if (!decision.allow) expect(decision.reason).toBe('denied');
+  });
+
+  it('keeps a deny reason sitting exactly on the 123-byte limit', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ allow: false, reason: 'y'.repeat(123) }) }),
+    );
+    const policy = createWebhookAdmissionPolicy(
+      { admissionWebhookUrl: 'https://control-plane.example/admit', admissionWebhookTimeoutMs: 1000, admissionFailOpen: true },
+      silentLogger,
+    );
+    const decision = await policy.admit(baseContext);
+    expect(decision.allow).toBe(false);
+    if (!decision.allow) expect(decision.reason).toBe('y'.repeat(123));
+  });
+
+  it('measures the deny reason in UTF-8 bytes, not characters', async () => {
+    // 42 three-byte characters is 126 bytes but only 42 characters, so a
+    // character-length check would wave this through and ws would then throw
+    // on the very close frame the deny needs to send.
+    const multiByteReason = '€'.repeat(42);
+    expect(multiByteReason.length).toBeLessThan(123);
+    expect(Buffer.byteLength(multiByteReason, 'utf8')).toBeGreaterThan(123);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ allow: false, reason: multiByteReason }) }),
+    );
+    const policy = createWebhookAdmissionPolicy(
+      { admissionWebhookUrl: 'https://control-plane.example/admit', admissionWebhookTimeoutMs: 1000, admissionFailOpen: true },
+      silentLogger,
+    );
+    const decision = await policy.admit(baseContext);
+    expect(decision.allow).toBe(false);
+    if (!decision.allow) expect(decision.reason).toBe('denied');
+  });
+
+  it('degrades an over-long reason on the 4xx path as well', async () => {
+    // The 4xx branch builds its reason through readDenyReason(), a separate
+    // call site from the allow:false body, so it needs its own clamp.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+        json: async () => ({ allow: false, reason: 'z'.repeat(200) }),
+      }),
+    );
+    const policy = createWebhookAdmissionPolicy(
+      { admissionWebhookUrl: 'https://control-plane.example/admit', admissionWebhookTimeoutMs: 1000, admissionFailOpen: true },
+      silentLogger,
+    );
+    const decision = await policy.admit(baseContext);
+    expect(decision.allow).toBe(false);
+    if (!decision.allow) expect(decision.reason).toBe('denied');
+  });
+
   it('sends only connection metadata in the webhook request body, never frame data', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ allow: true }) });
     vi.stubGlobal('fetch', fetchMock);
