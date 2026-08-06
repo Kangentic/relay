@@ -78,10 +78,12 @@ messages between them byte-for-byte. See `README.md`'s "The blind-relay guarante
 `src/**` must never import `@kangentic/protocol` at runtime, and no code path may parse,
 decode, or branch on frame content. `@kangentic/protocol` appears only as a devDependency,
 imported by exactly one file: `test/integration.protocol-handshake.test.ts`, which proves a
-real Noise KK handshake and secretstream-sealed message round-trips through a live relay
-instance while the relay itself never touches any of it. (KK is the *reconnect* handshake;
-first-time pairing uses IKpsk0 and has no relay-level coverage yet. The relay is blind to both,
-so the distinction matters for docs and tests, not for `src/**`.) `test/blindness.test.ts` mechanically
+real Noise handshake and secretstream-sealed message round-trips through a live relay
+instance while the relay itself never touches any of it. (That file covers both patterns the
+product performs: KK, the *reconnect* handshake, over the paired forwarding path, and IKpsk0,
+the *first-pairing* handshake, sent while the initiator is still parked alone so it travels
+the pre-pair buffer-and-flush path instead. The relay is blind to both, so the distinction
+matters for docs and tests, not for `src/**`.) `test/blindness.test.ts` mechanically
 enforces the import restriction, and `/code-review` re-runs it as a pre-flight Critical-severity
 gate on every review. Treat any change that would need to import the protocol package into
 `src/**` as a design smell to escalate, not a quick fix.

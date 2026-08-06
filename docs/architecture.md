@@ -188,8 +188,10 @@ anything still open after `SHUTDOWN_GRACE_MS`.
 - **No frame parsing, ever.** `src/**` has zero runtime dependency on `@kangentic/protocol` (the
   end-to-end crypto layer whose frames this relay carries). That package appears only as a
   `devDependency`, imported by exactly one file:
-  `test/integration.protocol-handshake.test.ts`, which proves a real Noise handshake completes
-  through this relay without the relay itself ever touching it.
+  `test/integration.protocol-handshake.test.ts`, which proves both Noise handshakes the product
+  performs complete through this relay without the relay itself ever touching them: KK on
+  reconnect, over the paired forwarding path, and IKpsk0 on first pairing, sent while the
+  initiator is still parked alone so it crosses the pre-pair buffer instead.
   `test/blindness.test.ts` mechanically enforces the import restriction.
 - **No horizontal scaling inside this codebase.** The slot table is in-process memory; two peers
   of one slot must land on the same instance. See the README's "A known limit: single instance"

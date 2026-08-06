@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- **First-time pairing now has relay-level proof.** The integration test covered only the KK
+  reconnect handshake; it now also drives a real IKpsk0 pairing handshake through a live relay,
+  including the pre-pair buffer-and-flush path that carries pairing message one.
+
 ## [0.2.1] - 2026-08-05
 
 ### Fixed

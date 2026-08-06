@@ -17,8 +17,9 @@ decrypt anything.
   connections that present the same slot id, and forwards every binary message between them
   byte-for-byte. It does not parse, wrap, or inspect a single byte of frame content.
 - `src/**` has zero runtime dependency on `@kangentic/protocol` (the end-to-end crypto layer). That
-  package appears only as a `devDependency`, imported by exactly one integration test that proves a
-  real handshake completes correctly through this relay, never by the shipped server.
+  package appears only as a `devDependency`, imported by exactly one integration test file, which
+  proves both of the real handshakes the product performs complete correctly through this relay,
+  never by the shipped server.
 - There is no authentication, no accounts, and no signup in the open-source relay. v1 ships free and
   accountless. A future, separate, private control plane can gate access to a *hosted* instance
   (see "Open-core and licensing" below), but it attaches from outside this process and never touches
