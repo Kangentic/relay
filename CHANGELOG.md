@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-05
+
+The relay itself is unchanged from 0.1.0 - this release carries no `src/`, `Dockerfile`, or
+dependency change, so the image content is identical. It exists because how the relay reaches
+production changed, which matters to anyone running this pipeline or reading the deployment docs.
+
 ### Changed
 
 - **Merging to `main` no longer deploys.** A merge publishes an image (`latest`,

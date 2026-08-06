@@ -1,6 +1,6 @@
 {
   "name": "@kangentic/relay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Blind WebSocket rendezvous relay for the Kangentic mobile companion: forwards only opaque ciphertext frames between two peers that dial out to it, reading nothing.",
   "type": "module",
   "license": "AGPL-3.0-only",
