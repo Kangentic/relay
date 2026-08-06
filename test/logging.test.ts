@@ -2,40 +2,21 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { createLogger } from '../src/logging.js';
+import { SRC_ROOT, everySourceFile } from './helpers/sourceFiles.js';
 
 /**
  * The relay's privacy claim about the pairing graph is that a raw slot id
  * never reaches a log line. Today that holds for the strongest possible
  * reason: no log call site passes a slot at all. Nothing enforced that, so
  * this file does, because the claim is only worth documenting if a future
- * `logger.info('paired', { slot: conn.slot })` fails the build.
+ * `logger.info('paired', { slot: conn.slot })` fails the build. The files
+ * come from the same src/ walk the blindness test uses, so a brand-new
+ * module is scanned without anyone remembering to list it.
  */
 
-const SRC_FILES_WITH_LOG_CALLS = [
-  'server.ts',
-  'index.ts',
-  'connection.ts',
-  'rendezvous.ts',
-  'admission.ts',
-  'keepalive.ts',
-  'config.ts',
-  'logging.ts',
-  'guards/caps.ts',
-  'guards/rateLimit.ts',
-  'guards/slotFormat.ts',
-  'net/clientIp.ts',
-  'http/metrics.ts',
-  'http/health.ts',
-  'http/landing.ts',
-];
-
-function readSource(relativePath: string): string {
-  return readFileSync(path.join(import.meta.dirname, '..', 'src', relativePath), 'utf8');
-}
-
 describe('slot ids never reach a log line', () => {
-  it.each(SRC_FILES_WITH_LOG_CALLS)('%s passes no slot-derived field to a logger call', (relativePath) => {
-    const contents = readSource(relativePath);
+  it.each(everySourceFile())('src/%s passes no slot-derived field to a logger call', (relativePath) => {
+    const contents = readFileSync(path.join(SRC_ROOT, relativePath), 'utf8');
     // Matches a logger call whose fields object mentions a slot, e.g.
     // logger.info('paired', { slot: conn.slot }) or { slotId }.
     const loggerCallWithSlotField = /(?:logger|log)\.(?:error|warn|info|debug)\s*\([^)]*\bslot/i;

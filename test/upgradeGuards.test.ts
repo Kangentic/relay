@@ -1,7 +1,11 @@
+import { connect as connectTcp } from 'node:net';
 import { describe, it, expect } from 'vitest';
 import { WebSocket as NodeWebSocket } from 'ws';
 import { startTestRelay } from './helpers/relayHarness.js';
 import { connectTestClient } from './helpers/wsClient.js';
+import { CLOSE_CODE } from '../src/closeCodes.js';
+import type { AdmissionPolicy } from '../src/admission.js';
+import type { Logger } from '../src/logging.js';
 
 type UpgradeOutcome = { readonly opened: true } | { readonly opened: false; readonly status: number };
 
@@ -31,6 +35,64 @@ function attemptUpgrade(relayUrl: string, query: string): Promise<UpgradeOutcome
       if (!settled) reject(error);
     });
   });
+}
+
+/**
+ * Drives a raw upgrade that `ws` refuses without ever invoking its completion
+ * callback - here by omitting Sec-WebSocket-Key. Node emits 'upgrade' on the
+ * Upgrade header alone, so the relay has already taken both cap reservations
+ * by the time ws aborts, which is exactly the path that has to give them back.
+ * Resolves once the server has answered and the socket is done.
+ */
+function attemptAbortedUpgrade(port: number, slotId: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = connectTcp(port, '127.0.0.1', () => {
+      socket.write(
+        `GET /?slot=${slotId} HTTP/1.1\r\n` +
+          `Host: 127.0.0.1:${port}\r\n` +
+          'Upgrade: websocket\r\n' +
+          'Connection: Upgrade\r\n' +
+          'Sec-WebSocket-Version: 13\r\n' +
+          '\r\n',
+      );
+    });
+    socket.once('error', reject);
+    socket.once('close', () => resolve());
+    socket.once('data', () => socket.destroy());
+  });
+}
+
+/**
+ * Completes the WebSocket handshake and resolves with the close code the
+ * client observes. An abnormal 1006 means the server destroyed the socket
+ * without a close frame, which is what terminate() looks like from the wire.
+ */
+function upgradeAndAwaitClose(relayUrl: string, slotId: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const socket = new NodeWebSocket(`${relayUrl}/?slot=${slotId}`);
+    socket.once('close', (code: number) => resolve(code));
+    socket.once('unexpected-response', (_request, response) => {
+      response.resume();
+      socket.terminate();
+      reject(new Error(`upgrade refused with HTTP ${response.statusCode ?? 0}`));
+    });
+    // A destroyed socket surfaces as an error before the 1006 close; swallow
+    // it so the close code stays the thing under assertion.
+    socket.once('error', () => undefined);
+  });
+}
+
+/** A logger that captures error-level messages so a test can assert none were emitted. */
+function recordingLogger(errorMessages: string[]): Logger {
+  return {
+    error: (message: string) => {
+      errorMessages.push(message);
+    },
+    warn: () => undefined,
+    info: () => undefined,
+    debug: () => undefined,
+    slotRef: (slotId: string) => slotId,
+  };
 }
 
 const SLOT_A = 'a'.repeat(64);
@@ -142,6 +204,59 @@ describe('unpaired-connection cap', () => {
       secondPeer.close();
       thirdPeer.close();
       fourthPeer.close();
+    } finally {
+      await relay.close();
+    }
+  });
+});
+
+describe('reservations survive an upgrade that never becomes a connection', () => {
+  it('gives back both reservations when ws aborts the handshake without completing it', async () => {
+    // The reservations are taken before the socket is handed to ws, and no
+    // Conn exists to own them when ws refuses the handshake outright. Without
+    // an explicit release on that path the relay leaks capacity until it
+    // refuses everything.
+    const relay = await startTestRelay({ maxConnections: 2, maxConnectionsPerIp: 2, maxUnpairedConnections: 2 });
+    try {
+      const port = Number(new URL(relay.url).port);
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await attemptAbortedUpgrade(port, SLOT_A);
+      }
+
+      // Four aborted upgrades is twice both ceilings: a leak would have this
+      // legitimate connect answered with 503 instead of an open socket.
+      expect(await attemptUpgrade(relay.url, `/?slot=${SLOT_B}`)).toEqual({ opened: true });
+    } finally {
+      await relay.close();
+    }
+  });
+
+  it('tears the socket down when a policy denies with a reason no close frame can carry', async () => {
+    // ws throws synchronously on a reason over 123 bytes. Without the
+    // terminate() fallback that throw escapes the upgrade callback and the
+    // deny is handled as a crashed handler, which writes an HTTP status line
+    // into an already-upgraded socket. It has to stay an orderly teardown.
+    const denyWithUnsendableReason: AdmissionPolicy = {
+      admit: () => ({ allow: false, closeCode: CLOSE_CODE.ADMISSION_DENIED, reason: 'x'.repeat(200) }),
+    };
+    const loggedErrors: string[] = [];
+    const relay = await startTestRelay(
+      { maxConnections: 1 },
+      { admissionPolicy: denyWithUnsendableReason, logger: recordingLogger(loggedErrors) },
+    );
+    try {
+      // No close frame could be sent, so the client observes an abnormal 1006
+      // rather than hanging on an open socket.
+      expect(await upgradeAndAwaitClose(relay.url, SLOT_A)).toBe(1006);
+
+      // The single global slot was handed back, so this reaches the policy
+      // again instead of being refused by an exhausted cap.
+      expect(await upgradeAndAwaitClose(relay.url, SLOT_B)).toBe(1006);
+      expect(relay.metrics.snapshot().rejectsByReason['admission']).toBe(2);
+
+      // The load-bearing half: a deny the wire cannot express is still a
+      // deny, never an escaped exception from the upgrade handler.
+      expect(loggedErrors).toEqual([]);
     } finally {
       await relay.close();
     }

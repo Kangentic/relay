@@ -21,7 +21,7 @@ guarantee, self-hosting quickstart, and full config reference.
 - [Architecture](architecture.md) — Connection lifecycle, the slot rendezvous state machine,
   guards, the forwarding hot path, liveness, real-client-IP resolution, the admission seam,
   observability.
-- [Security model](security-model.md) — What pairing and routing integrity the relay guarantees
+- [Security model](security-model.md) - What pairing and routing integrity the relay guarantees
   and how each claim is tested, why slot ids cannot be guessed, what an attacker holding one can
   and cannot do, IP-trust rules, logging and metrics exposure, and the accepted risks.
 

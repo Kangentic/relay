@@ -1,29 +1,9 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
+import { SRC_ROOT, everySourceFile, everyTypeScriptFile } from './helpers/sourceFiles.js';
 
-const SRC_ROOT = path.join(import.meta.dirname, '..', 'src');
-
-/**
- * Every .ts file under src/, discovered by walking the tree rather than from
- * a list maintained by hand. The list version could only catch a protocol
- * import in a file somebody remembered to add to it, which is the opposite of
- * how this check earns its keep: the file most likely to import the protocol
- * package is a brand-new one.
- */
-function everySourceFile(directory: string = SRC_ROOT): string[] {
-  const found: string[] = [];
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const fullPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) found.push(...everySourceFile(fullPath));
-    else if (entry.name.endsWith('.ts')) found.push(fullPath);
-  }
-  return found;
-}
-
-const SRC_FILES = everySourceFile().map((filePath) =>
-  path.relative(SRC_ROOT, filePath).split(path.sep).join('/'),
-);
+const SRC_FILES = everySourceFile();
 
 /**
  * Forms of importing @kangentic/protocol that must not appear in src/.
@@ -73,13 +53,15 @@ describe('the relay stays blind: no runtime import of @kangentic/protocol', () =
   it('imports the protocol package from exactly one test file', () => {
     const testRoot = import.meta.dirname;
     // This file is excluded because it names the package in its own match
-    // patterns above, which is a mention rather than an import.
-    const importers = readdirSync(testRoot, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.ts') && entry.name !== 'blindness.test.ts')
-      .filter((entry) =>
-        /from\s+['"]@kangentic\/protocol['"]/.test(readFileSync(path.join(testRoot, entry.name), 'utf8')),
-      )
-      .map((entry) => entry.name);
+    // patterns above, which is a mention rather than an import. The walk
+    // recurses for the same reason the src/ one does: a helper under
+    // test/helpers/ must not be able to pick the package up through a
+    // directory this check never opened.
+    const importers = everyTypeScriptFile(testRoot)
+      .filter((relativePath) => relativePath !== 'blindness.test.ts')
+      .filter((relativePath) =>
+        /from\s+['"]@kangentic\/protocol['"]/.test(readFileSync(path.join(testRoot, relativePath), 'utf8')),
+      );
 
     expect(importers).toEqual(['integration.protocol-handshake.test.ts']);
   });

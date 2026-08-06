@@ -249,6 +249,9 @@ Two practical notes for anyone wiring this up:
   even when `ADMISSION_FAIL_OPEN` is true. A 5xx, timeout, or network error counts as the control
   plane being *unavailable* and follows `ADMISSION_FAIL_OPEN`, which defaults to admitting - set it
   to `false` wherever admission is an entitlement rather than a convenience.
+- **Keep `reason` under 123 UTF-8 bytes.** It is forwarded verbatim as the WebSocket close reason,
+  which is the frame's hard limit; anything longer degrades to the generic `denied` rather than
+  failing the teardown. It is display text for the client, not a machine-readable code.
 
 Self-hosting bypasses all of this entirely: every connection is admitted, exactly as in v1. "Even
 our paid relay cannot read your data" stays true because the entitlement gate only ever decides

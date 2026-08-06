@@ -66,6 +66,16 @@ describe('connection cap configuration', () => {
     expect(() => loadConfig({ MAX_CONNECTIONS_PER_SLOT: '0' })).toThrow(/MAX_CONNECTIONS_PER_SLOT/);
   });
 
+  it('reads METRICS_ALLOW_UNAUTHENTICATED from the environment, defaulting to closed', () => {
+    // The rest of the suite sets this field on a Config object directly, which
+    // never exercises the env parsing. Without this, the documented variable
+    // could be inert and nothing would notice.
+    expect(loadConfig({}).metricsAllowUnauthenticated).toBe(false);
+    expect(loadConfig({ METRICS_ALLOW_UNAUTHENTICATED: 'true' }).metricsAllowUnauthenticated).toBe(true);
+    expect(loadConfig({ METRICS_ALLOW_UNAUTHENTICATED: 'false' }).metricsAllowUnauthenticated).toBe(false);
+    expect(() => loadConfig({ METRICS_ALLOW_UNAUTHENTICATED: 'yes' })).toThrow(/METRICS_ALLOW_UNAUTHENTICATED/);
+  });
+
   it('keeps the shipped slot-id pattern anchored to exactly 32 or 64 lowercase hex', () => {
     // The anti-enumeration guarantee is a property of this default, so pin it.
     const { slotIdPattern } = loadConfig({});

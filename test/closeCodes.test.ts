@@ -1,24 +1,8 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { CLOSE_CODE } from '../src/closeCodes.js';
-
-const SRC_ROOT = path.join(import.meta.dirname, '..', 'src');
-
-/**
- * Walks src/ rather than using a hardcoded file list, so a close code that
- * starts being used from a newly added module is caught without anyone
- * remembering to update this test.
- */
-function everySourceFile(directory: string = SRC_ROOT): string[] {
-  const found: string[] = [];
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const fullPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) found.push(...everySourceFile(fullPath));
-    else if (entry.name.endsWith('.ts')) found.push(fullPath);
-  }
-  return found;
-}
+import { SRC_ROOT, everySourceFile } from './helpers/sourceFiles.js';
 
 /**
  * Codes that exist in the enum but that the relay never sends, because the
@@ -32,8 +16,8 @@ const RESERVED_NEVER_SENT = ['BAD_SLOT', 'SHUTTING_DOWN', 'IDLE_TIMEOUT'] as con
 describe('reserved close codes are never sent', () => {
   it.each(RESERVED_NEVER_SENT)('CLOSE_CODE.%s has no use outside its own declaration', (name) => {
     const usages = everySourceFile()
-      .filter((filePath) => path.basename(filePath) !== 'closeCodes.ts')
-      .filter((filePath) => readFileSync(filePath, 'utf8').includes(`CLOSE_CODE.${name}`));
+      .filter((relativePath) => path.basename(relativePath) !== 'closeCodes.ts')
+      .filter((relativePath) => readFileSync(path.join(SRC_ROOT, relativePath), 'utf8').includes(`CLOSE_CODE.${name}`));
 
     expect(usages).toEqual([]);
   });
