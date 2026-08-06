@@ -11,8 +11,10 @@ main loop. Choosing it wrong makes a skill slow, lossy, or unsafe.
 ## The rule
 
 - **Do NOT fork** any of this repo's current skills: `commit`, `pull-request`,
-  `merge-pull-request`, and `merge-back` are gated, mutating workflows (commit, rebase, push,
-  merge) that need main-loop visibility and user confirmations; `code-review` and `test` are
+  `merge-pull-request`, `merge-back`, and `release` are gated, mutating workflows (commit,
+  rebase, push, merge, tag, deploy) that need main-loop visibility and user confirmations -
+  `release` most of all, since it is the only one that ships to real users; `code-review` and
+  `test` are
   main-loop drivers that fan out read-only `general-purpose` `Agent`-tool subagents and
   synthesize the results in the main loop, so forking the driver itself would risk nesting
   subagents (undocumented behavior); `sync-docs` stays inline for the same reason.

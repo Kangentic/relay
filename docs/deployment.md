@@ -15,8 +15,21 @@ push to main
 or v* tag     -> release.yml   -> checks.yml (same reusable job set)
                                 -> image        (build, push to GHCR, attest provenance)
                                 -> gh-release   (tag pushes only: create the GitHub release)
-                                -> deploy       (uses: deploy.yml, environment: production)
+                                -> deploy       (tag pushes only, after gh-release;
+                                                 uses: deploy.yml, environment: production)
 ```
+
+**Merging does not ship.** A push to `main` runs the checks and publishes an image, then stops.
+Only a `vX.Y.Z` tag deploys, so landing a change and putting it in front of users are separate
+decisions: the board's Merge column merges, and its Release column runs `/release` to cut the tag.
+Production therefore always runs a version that has a changelog entry, and `main` can hold merged
+work that has not shipped yet.
+
+`deploy` needs `gh-release` rather than just `image`, which makes the changelog a hard pre-deploy
+gate: `extract-changelog.mjs` fails the release when a version has no `CHANGELOG.md` section, and
+that ordering stops such a tag from reaching production too. A deploy that is not a release - a
+rollback to a previous tag, a redeploy, or the rollback drill - goes through `deploy.yml`'s own
+`workflow_dispatch` with an explicit `image_tag`.
 
 `checks.yml` exists so `release.yml` can gate publishing on CI with a plain `needs:` rather than
 a `workflow_run` trigger. `workflow_run` reads the reusable workflow's body from the *default

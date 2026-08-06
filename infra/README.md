@@ -86,11 +86,12 @@ not apply; just run `docker compose up -d` per the main README.
 ### Why no required reviewer on the production environment
 
 "Protected" here means a deployment-branch restriction (only `main` and `v*` tags may deploy) and
-secret scoping, deliberately without a required human approval on every deploy. The relay's
-Definition of Done asks that a merge to main roll the box; the deploy gate (container identity
-changed, digest matches, health check and host probe both green) plus automatic rollback plus the
-rollback drill below are the designed safety net. A standing approval prompt would make the
-pipeline non-continuous for no safety the gate does not already provide.
+secret scoping, deliberately without a required human approval on every deploy. The deliberate act
+is cutting the release tag, which a human decides in the board's Release column; once that tag
+exists, a standing approval prompt on the deploy itself would only add a second confirmation of the
+same decision. The deploy gate (container identity changed, digest matches, health check and host
+probe both green) plus automatic rollback plus the rollback drill below are the designed safety
+net.
 
 ## Secrets and variables
 
@@ -164,9 +165,16 @@ trigger a deploy (`workflow_dispatch` works if there is no code change to publis
 
 ## Deploy and rollback
 
-A merge to `main` or a `vX.Y.Z` tag publishes the image, then automatically deploys. All deploy
-logic lives in `scripts/deploy/deploy.sh`, run on the box over one SSH call - a dropped runner
-connection cannot leave the server half-deployed, because the box completes or reverts on its own.
+A merge to `main` publishes an image (`latest`, `sha-<full sha>`) and stops there. **Only a
+`vX.Y.Z` tag deploys**, so production always runs a released version with a changelog entry, and
+`main` can carry merged-but-unreleased work. Cutting that tag is the board's Release column
+(`/release`). All deploy logic lives in `scripts/deploy/deploy.sh`, run on the box over one SSH
+call - a dropped runner connection cannot leave the server half-deployed, because the box
+completes or reverts on its own.
+
+For a deploy that is not a release - rolling back to a previous tag, redeploying the current one,
+or the rollback drill - run `deploy.yml` directly via `workflow_dispatch` with an explicit
+`image_tag`.
 
 **Rollback target is a registry digest, never a tag.** Tags are mutable; a re-pushed tag would roll
 back to the wrong bits. The digest is read from the currently running container

@@ -1,15 +1,19 @@
 name: Deploy
 
 # Rolls the production box. Runs automatically as a called job from
-# release.yml on every merge to main and every vX.Y.Z tag - "protected"
-# here means the production environment's deployment-branch restriction
-# (only main and v* tags may deploy) plus secret scoping, deliberately with
-# no required reviewer, so the pipeline stays continuous. The health gate,
+# release.yml on a vX.Y.Z tag only - merging to main publishes an image but
+# does not ship it, so a deploy always corresponds to a released version
+# with a changelog entry. "Protected" here means the production
+# environment's deployment-branch restriction (only main and v* tags may
+# deploy) plus secret scoping, deliberately with no required reviewer, so
+# cutting a release stays a single unattended step. The health gate,
 # automatic rollback, and the rollback drill below are the safety net.
 #
-# workflow_dispatch exists for manual redeploys and for the rollback drill:
-# a real, good image deployed with a deliberately failing healthcheck
-# overlay, to prove rollback without ever pushing broken bits to GHCR.
+# workflow_dispatch exists for deploys that are not a release: rolling back
+# to a previous known-good tag, redeploying the current one, and the
+# rollback drill - a real, good image deployed with a deliberately failing
+# healthcheck overlay, to prove rollback without ever pushing broken bits to
+# GHCR.
 #
 # All deploy logic lives in scripts/deploy/deploy.sh, run ON THE BOX over a
 # single restricted SSH call. A dropped runner connection then cannot leave

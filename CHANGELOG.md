@@ -3,6 +3,20 @@
 All notable changes to this project are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **Merging to `main` no longer deploys.** A merge publishes an image (`latest`,
+  `sha-<full sha>`) and stops; only a `vX.Y.Z` tag reaches the hosted instance. Landing a change
+  and shipping it are now separate decisions, `main` can carry merged-but-unreleased work, and
+  production always runs a version with a changelog entry. The board models this with a Release
+  column (`/release`) after Merge. `release.yml`'s deploy job is gated on tags and now needs
+  `gh-release`, which makes the changelog a hard pre-deploy gate: a version with no `CHANGELOG.md`
+  section fails the release and therefore never ships. Deploys that are not releases (rollback,
+  redeploy, the rollback drill) continue to run `deploy.yml` via `workflow_dispatch` with an
+  explicit `image_tag`.
+
 ## [0.1.0] - 2026-08-05
 
 First tagged release. The relay has been running from `main` builds; this promotes that work to a

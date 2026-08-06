@@ -64,6 +64,17 @@
       "effortOverride": "high"
     },
     {
+      "id": "1174f0a9-67f8-4ba7-84d2-8e0f5b74be03",
+      "name": "Release",
+      "description": "Cut a versioned release and ship it. Runs /release: promote the changelog, tag vX.Y.Z, drive the Release workflow to green, and verify production with the synthetic pairing probe. Merging does not deploy - this column is where a change reaches real users.",
+      "icon": "rocket",
+      "color": "#ff002b",
+      "autoSpawn": true,
+      "autoCommand": "/release",
+      "modelOverride": "claude-sonnet-5",
+      "effortOverride": "high"
+    },
+    {
       "id": "c9949f18-97f4-41aa-94a6-eeb30c0fe58a",
       "name": "Done",
       "role": "done",

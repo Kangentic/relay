@@ -129,12 +129,20 @@ locally.
 ### Workflow
 
 - **Landing changes goes through a PR by default.** The board drives it: the **Testing**
-  column runs `/pull-request` (commit, branch, push, create the PR, drive CI to green), and the
-  **Merge** column runs `/merge-pull-request` (merge, pull back to local `main`). For a
+  column runs `/pull-request` (commit, branch, push, create the PR, drive CI to green), the
+  **Merge** column runs `/merge-pull-request` (merge, pull back to local `main`), and the
+  **Release** column runs `/release` (promote the changelog, tag `vX.Y.Z`, ship). For a
   deliberate direct quick-push, use `/merge-back`.
+- **Merging does not ship.** A merge to `main` publishes an image and stops; only a `vX.Y.Z` tag
+  deploys to the hosted instance. So landing work and putting it in front of users are separate
+  acts, `main` may hold merged-but-unreleased changes, and production always runs a version with
+  a changelog entry. `/release` is the only skill here that reaches real users - the deploy has a
+  health gate and automatic rollback, but treat it with that in mind. A deploy that is not a
+  release (rollback, redeploy, rollback drill) runs `deploy.yml` via `workflow_dispatch`, not a
+  new tag.
 - A plain **local commit** goes through `/commit`: stages and commits on the current branch
   only, no push, no rebase. A bare "commit" / "commit changes" means `/commit`.
-- `/commit`, `/pull-request`, `/merge-pull-request`, and `/merge-back` all write
+- `/commit`, `/pull-request`, `/merge-pull-request`, `/merge-back`, and `/release` all write
   conventional-commit messages.
 - `/code-review` reviews the current diff and auto-fixes safe findings by default.
 - `/test` runs the local gate; `/sync-docs` keeps the README/`.env.example`/CONTRIBUTING in
