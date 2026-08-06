@@ -3,10 +3,26 @@
 All notable changes to this project are documented in this file. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [0.1.0] - 2026-08-05
+
+First tagged release. The relay has been running from `main` builds; this promotes that work to a
+versioned, immutable image (`ghcr.io/kangentic/relay:0.1.0`) with a published changelog.
 
 ### Added
 
+- `docs/security-model.md`: what pairing and routing integrity the relay guarantees and how each
+  claim is tested, why slot ids cannot be guessed (entropy, not rate limiting), what an attacker
+  holding a slot id can and cannot do, the IP-trust rules, logging and metrics exposure, and the
+  risks the design accepts. Written after a pre-production audit of the rendezvous path, which
+  found no way for a third party without the slot id to reach, join, or observe a pairing.
+- `MAX_UNPAIRED_CONNECTIONS` (default: half of `MAX_CONNECTIONS`, minimum 2): a ceiling on
+  connections that have not yet found a partner, so a flood of parked sockets cannot consume the
+  global cap and starve pairings that would otherwise succeed. A connection releases its place the
+  moment it pairs, not when it closes. Rejections answer the same HTTP 503 as the global cap but
+  count under a distinct `unpaired_cap` reject reason.
+- `METRICS_ALLOW_UNAUTHENTICATED` (default `false`): opt-in to serving `/metrics` and `/metricz`
+  without a token on a genuinely private deployment. See the Changed entry below for why the
+  default flipped.
 - GHCR publish and deploy pipeline: `.github/workflows/release.yml` builds and pushes
   `ghcr.io/kangentic/relay` on every merge to `main` (tagged `latest` and `sha-<full sha>`) and on
   `vX.Y.Z` tags (semver tags plus a GitHub release with changelog), then deploys automatically
@@ -44,6 +60,22 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
+- **`/metrics` and `/metricz` now require a token.** With `METRICS_TOKEN` unset they answer 404
+  (not 401, which would advertise that a gated surface exists) unless
+  `METRICS_ALLOW_UNAUTHENTICATED=true`. Neither surface has ever carried slot ids or IPs, but the
+  live waiting/paired gauges reveal when pairings form and the per-reason reject counters tell a
+  prober exactly which guard they tripped, which is a feedback channel worth denying a stranger.
+  The gate is an explicit flag rather than something inferred from `BIND_ADDRESS`, because a
+  containerised relay binds `0.0.0.0` whether the host publishes the port to loopback or to the
+  world. The bearer token is now compared in constant time. **Breaking for self-hosters who read
+  metrics:** set `METRICS_TOKEN`, or `METRICS_ALLOW_UNAUTHENTICATED=true`.
+- An admission webhook returning 4xx is now an explicit deny, honored even under
+  `ADMISSION_FAIL_OPEN`. It previously shared a catch with network errors, so a control plane that
+  denied the natural REST way (403 with `{"allow": false}`) admitted the connection instead. A
+  5xx, timeout, or network error still counts as the control plane being unavailable and follows
+  `ADMISSION_FAIL_OPEN`. A deny `reason` is forwarded as the WebSocket close reason and so is
+  capped at 123 UTF-8 bytes (the close frame's limit), degrading to the generic `denied` beyond
+  that rather than throwing mid-teardown.
 - `docker-compose.yml` now pulls `ghcr.io/kangentic/relay` instead of building from source (the
   `build: .` key previously present made `docker compose up -d` silently ignore the published
   image). Port 8080 is now bound to `127.0.0.1` only, `ulimits.nofile` is raised to 65535 matching
@@ -75,3 +107,42 @@ All notable changes to this project are documented in this file. The format is b
 - The per-frame forwarding hot path no longer does a slot-table lookup for session-byte
   accounting (pair state is cached on the connection) and no longer allocates a send-options
   object per frame.
+
+### Fixed
+
+Found by a pre-production audit of the rendezvous path. None of these let a third party pair into
+another peer's slot; they are rate-limit evasion, availability, and accounting defects.
+
+- `CF-Connecting-IP` was trusted without being parsed, unlike the `X-Forwarded-For` path. Behind a
+  proxy that forwards the header rather than overwriting it, a client could send an arbitrary
+  string and get a fresh full-burst rate-limit bucket on every request, bypassing
+  `RATE_LIMIT_IP_PER_MIN` and `MAX_CONNECTIONS_PER_IP` entirely and growing the limiter's key map
+  without bound. Kangentic's own deployment was unaffected (Caddy overwrites both headers); a
+  self-hoster behind a generic nginx or Caddy was not.
+- An upgrade that `ws` refused outright (missing or malformed `Sec-WebSocket-Key`, bad version,
+  non-GET, or a socket that died while the admission decision was awaited) never invoked the
+  completion callback, so the global and per-IP cap reservations taken beforehand were never
+  returned. Malformed upgrades could walk the relay to refusing every pairing.
+- The pre-pair flush forwarded a parked peer's buffered frames without charging them against
+  `MAX_SESSION_BYTES` or checking `MAX_BUFFERED_BYTES`, letting up to `MAX_PARKED_BUFFER_BYTES`
+  per session pass outside both caps.
+- A connection rejected for a busy slot released a per-slot cap reservation it never held, walking
+  `MAX_CONNECTIONS_PER_SLOT` toward zero while both real peers were still connected.
+- `IPV6_PREFIX_BITS` truncated whole 16-bit groups without masking the final partial one, so any
+  value not a multiple of 16 silently aggregated less than asked (a `/56` behaved as a `/64`).
+- README, `docs/architecture.md`, and `infra/README.md` described slot-id log hashing as the
+  pairing-graph mitigation. No log line contains a slot id at all, hashed or raw, which is stronger
+  than documented but was unenforced; a test now fails the build if a logger call site is ever
+  given one. `LOG_SLOT_HASHING` and `SLOT_LOG_SALT` are documented as the inert-but-sanctioned path
+  for any future slot logging.
+- `ADMISSION_WEBHOOK_URL` was documented as functional, but the shipped binary never constructs the
+  webhook policy: it is a library seam for an embedder calling
+  `createRelay(config, { admissionPolicy })`. Documented as such so no operator sets the variable
+  and believes access is gated.
+- Close codes 4400, 4410, and 4503 were documented but never sent (a bad slot is rejected
+  pre-upgrade with HTTP 400, draining uses the standard 1001, and an unanswered ping is reaped with
+  `terminate()`, yielding 1006). They are now marked reserved so a client is not written to wait
+  for one.
+- "Honest metadata disclosure" now records that the slot id travels in the request URL and that
+  Cloudflare terminates TLS on the hosted instance, and that the reconnect slot id is stable for
+  the life of a pairing.
