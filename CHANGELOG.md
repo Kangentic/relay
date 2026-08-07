@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-07
+
 ### Added
 
 - **`/healthz` now reports the running build's `version`**, read from `package.json` at import so
