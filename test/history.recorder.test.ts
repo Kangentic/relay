@@ -287,6 +287,29 @@ describe('history recorder', () => {
     expect(result.rows).toHaveLength(2);
   });
 
+  it('escalates to an error once compaction has failed repeatedly', async () => {
+    // Appends keep succeeding while renames fail, and the row ceiling is only
+    // enforced inside a SUCCESSFUL compaction, so a stuck rename grows the file
+    // forever. Nothing here can break a foreign file lock, so the escalation is
+    // loudness: this must not stay a warn that scrolls past.
+    const lines: { level: string; message: string }[] = [];
+    const recordingLogger: Logger = {
+      error: (message) => lines.push({ level: 'error', message }),
+      warn: (message) => lines.push({ level: 'warn', message }),
+      info: () => undefined,
+      debug: () => undefined,
+      slotRef: (slotId: string) => slotId,
+    };
+    await mkdir(`${historyFilePath}.tmp`, { recursive: true });
+
+    recorder = build({ compactionIntervalMs: 1, logger: recordingLogger });
+    await tick(3);
+
+    expect(lines.filter((line) => line.level === 'warn').length).toBeGreaterThan(0);
+    const escalated = lines.find((line) => line.level === 'error' && line.message.includes('unbounded'));
+    expect(escalated).toBeDefined();
+  });
+
   it('does not poison the queue: appends keep landing after a compaction failure', async () => {
     // A directory where the temp file belongs makes every compaction fail. If
     // one rejection could poison the shared queue, every later append would

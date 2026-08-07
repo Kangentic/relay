@@ -43,7 +43,7 @@ export interface ProcessSamplerDeps {
  * "unlimited" sentinel (a near-2^63 value) and any parse accident, without
  * hardcoding a magic number that a future kernel could change.
  */
-function isBelievableMemoryLimit(candidate: number): boolean {
+export function isBelievableMemoryLimit(candidate: number): boolean {
   if (!Number.isFinite(candidate) || !Number.isInteger(candidate) || candidate <= 0) return false;
   return candidate <= totalmem() * 2;
 }

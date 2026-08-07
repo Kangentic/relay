@@ -40,25 +40,42 @@ export interface Metrics {
   render(): string;
 }
 
+/** The three inputs the teardown grouping is built from, as plain numbers. */
+export interface ClosedByCauseInput {
+  readonly peerClosed: number;
+  readonly pongTimeouts: number;
+  readonly rejects: Readonly<Partial<Record<RejectReason, number>>>;
+}
+
 /**
- * The authoritative "why did connections close" grouping, shared by /metricz
- * and the /admin dashboard so the two can never disagree.
+ * THE definition of the "why did connections close" grouping. /metricz feeds it
+ * lifetime totals and the /admin history feeds it per-interval deltas, but the
+ * mapping from reject reasons to cause buckets exists only here, so adding a
+ * cause cannot leave one surface behind.
  *
  * Counter units differ by cause. Pair teardowns, counted once per pair (two
  * sockets each): peerClosed, backpressure, sessionByteCap, sessionTimeCap.
  * Single-socket closes, counted once per socket: parkedOverflow (a parked
  * socket overflowing its pre-pair buffer), heartbeat, parkTimeout.
  */
-export function closedByCauseFromSnapshot(snapshot: MetricsSnapshot): Readonly<Record<string, number>> {
+export function buildClosedByCause(input: ClosedByCauseInput): Readonly<Record<string, number>> {
   return {
-    peerClosed: snapshot.peerClosedTotal,
-    backpressure: snapshot.rejectsByReason.backpressure ?? 0,
-    parkedOverflow: snapshot.rejectsByReason.parked_overflow ?? 0,
-    heartbeat: snapshot.pongTimeoutsTotal,
-    parkTimeout: snapshot.rejectsByReason.park_timeout ?? 0,
-    sessionByteCap: snapshot.rejectsByReason.session_byte_cap ?? 0,
-    sessionTimeCap: snapshot.rejectsByReason.session_time_cap ?? 0,
+    peerClosed: input.peerClosed,
+    backpressure: input.rejects.backpressure ?? 0,
+    parkedOverflow: input.rejects.parked_overflow ?? 0,
+    heartbeat: input.pongTimeouts,
+    parkTimeout: input.rejects.park_timeout ?? 0,
+    sessionByteCap: input.rejects.session_byte_cap ?? 0,
+    sessionTimeCap: input.rejects.session_time_cap ?? 0,
   };
+}
+
+export function closedByCauseFromSnapshot(snapshot: MetricsSnapshot): Readonly<Record<string, number>> {
+  return buildClosedByCause({
+    peerClosed: snapshot.peerClosedTotal,
+    pongTimeouts: snapshot.pongTimeoutsTotal,
+    rejects: snapshot.rejectsByReason,
+  });
 }
 
 export function createMetrics(): Metrics {

@@ -1,5 +1,5 @@
 import type { RejectReason } from '../closeCodes.js';
-import type { MetricsSnapshot } from '../http/metrics.js';
+import { buildClosedByCause, type MetricsSnapshot } from '../http/metrics.js';
 import type { ProcessSample } from './processSampler.js';
 
 /**
@@ -146,21 +146,16 @@ export function buildHistoryRow(input: HistorySampleInput): HistoryRow {
 }
 
 /**
- * The unit caveat is authoritative at src/http/metrics.ts and must not be
- * forked: peerClosed / backpressure / sessionByteCap / sessionTimeCap count
- * pair teardowns (two sockets each), while parkedOverflow / heartbeat /
- * parkTimeout count single sockets.
+ * The same grouping /metricz reports, fed per-interval deltas instead of
+ * lifetime totals. The mapping itself lives in buildClosedByCause and is not
+ * repeated here, so the two surfaces cannot drift apart.
  */
 export function deriveClosedByCause(row: HistoryRow): Readonly<Record<string, number>> {
-  return {
+  return buildClosedByCause({
     peerClosed: row.peerClosedDelta,
-    backpressure: row.rejectsByReasonDelta.backpressure ?? 0,
-    parkedOverflow: row.rejectsByReasonDelta.parked_overflow ?? 0,
-    heartbeat: row.pongTimeoutsDelta,
-    parkTimeout: row.rejectsByReasonDelta.park_timeout ?? 0,
-    sessionByteCap: row.rejectsByReasonDelta.session_byte_cap ?? 0,
-    sessionTimeCap: row.rejectsByReasonDelta.session_time_cap ?? 0,
-  };
+    pongTimeouts: row.pongTimeoutsDelta,
+    rejects: row.rejectsByReasonDelta,
+  });
 }
 
 /** Which tier a row of the given age belongs in. */

@@ -48,8 +48,9 @@ function readPositiveInteger(raw: string | null): number | null {
 }
 
 /**
- * Rows carry per-interval deltas, so closedByCause is derived here rather than
- * stored, keeping one definition of that grouping (see closedByCauseFromSnapshot).
+ * Rows carry per-interval deltas, so closedByCause is derived at read time
+ * rather than stored: it is a pure projection of fields already in the row, and
+ * storing it would both duplicate bytes and let it drift from its own inputs.
  */
 function withClosedByCause(row: HistoryRow): Record<string, unknown> {
   return { ...row, closedByCause: deriveClosedByCause(row) };
