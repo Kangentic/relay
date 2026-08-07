@@ -171,7 +171,10 @@ button[aria-pressed="true"], .segmented button[aria-pressed="true"] {
 .switch:hover[aria-checked="false"] .sun, .switch:hover[aria-checked="true"] .moon { color: #fff; }
 @media (prefers-reduced-motion: reduce) { .switch .knob { transition: none; } }
 .spacer { flex: 1 1 auto; }
-.status {
+/* One rule for both header pills, so the identity and the live indicator cannot
+   drift out of alignment with each other. .pill also has to beat the generic
+   button rule above, which it does on specificity. */
+.status, .pill {
   font-size: 12px; color: var(--text-secondary); display: inline-flex; align-items: center;
   gap: 7px; background: var(--surface-1); border: 1px solid var(--border);
   border-radius: 999px; padding: 5px 12px; font-variant-numeric: tabular-nums; flex: none;
@@ -267,6 +270,22 @@ td.zero { color: var(--text-muted); }
 }
 .links { margin-top: 26px; font-size: 12px; color: var(--text-muted); }
 .links a { color: var(--text-secondary); }
+/* Who Cloudflare Access says is looking. A page that opens instantly with no
+   sign of a gate reads as a page that has none, so the account is named. */
+.headend { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.viewer { position: relative; }
+.pill:hover { color: var(--text-primary); }
+.pilltext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 24ch; }
+.chev { width: 9px; height: 6px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; transition: transform .14s; }
+.pill[aria-expanded="true"] .chev { transform: rotate(180deg); }
+.menu {
+  position: absolute; right: 0; top: calc(100% + 6px); min-width: 140px; z-index: 20;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
+  padding: 5px; box-shadow: 0 10px 28px rgba(0,0,0,0.13);
+}
+.menuitem { display: block; padding: 7px 9px; border-radius: 7px; font-size: 12.5px; color: var(--text-secondary); text-decoration: none; }
+.menuitem:hover { background: var(--page); color: var(--text-primary); }
+@media (prefers-reduced-motion: reduce) { .chev { transition: none; } }
 </style>
 </head>
 <body>
@@ -279,8 +298,21 @@ td.zero { color: var(--text-muted); }
         <p class="sub">Aggregate counters only: no slot ids, no IP addresses, no traffic content.</p>
       </div>
     </div>
-    <div class="status" id="status" role="status">
-      <span class="dot" id="dot"></span><span id="statusText">connecting</span>
+    <div class="headend">
+      <!-- Hidden until /admin/data reports an identity, so a tunnel or a local
+           preview shows nothing rather than an empty or guessed account. -->
+      <div class="viewer" id="viewer" hidden>
+        <button type="button" class="pill" id="viewerButton" aria-haspopup="menu" aria-expanded="false">
+          <span class="pilltext" id="viewerEmail"></span>
+          <svg class="chev" viewBox="0 0 10 6" aria-hidden="true" focusable="false"><path d="M1 1l4 4 4-4"/></svg>
+        </button>
+        <div class="menu" id="viewerMenu" role="menu" hidden>
+          <a class="menuitem" role="menuitem" href="/cdn-cgi/access/logout">Sign out</a>
+        </div>
+      </div>
+      <div class="status" id="status" role="status">
+        <span class="dot" id="dot"></span><span id="statusText">connecting</span>
+      </div>
     </div>
   </header>
 
@@ -361,6 +393,12 @@ td.zero { color: var(--text-muted); }
     if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(1) + "B";
     if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + "M";
     if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(1) + "k";
+    // One decimal place collapses every small rate to "0". A quiet relay
+    // forwarding 0.04 frames/s drew an axis whose five ticks all read "0/s",
+    // above a curve with an obvious peak - the shape said "something happened"
+    // and every label said "nothing did". Below 1, keep two significant
+    // figures instead, so the ticks stay distinct however small the rate is.
+    if (v !== 0 && Math.abs(v) < 1) return String(Number(v.toPrecision(2)));
     return String(Math.round(v * 10) / 10);
   }
   function fmtBytes(v) {
@@ -571,12 +609,25 @@ td.zero { color: var(--text-muted); }
       }
     } else {
       for (var si = 0; si < spec.series.length; si++) {
-        var d = "", open = false, firstX = null, lastX = null;
+        var d = "", open = false, firstX = null, lastX = null, dots = "";
         for (var p = 0; p < pts.length; p++) {
           var val = pts[p].values[si];
           if (val === null || val === undefined || !isFinite(val)) { open = false; continue; }
           var px = xAt(p);
-          d += (open ? "L" : "M") + px.toFixed(1) + " " + yAt(val).toFixed(1) + " ";
+          var py = yAt(val);
+          d += (open ? "L" : "M") + px.toFixed(1) + " " + py.toFixed(1) + " ";
+          // A run of exactly one sample emits a bare moveto, and a path that
+          // only moves paints nothing - not even with a round linecap. A sparse
+          // series is mostly such runs (average frame size is null in every
+          // interval that forwarded no frames), so the whole chart came out
+          // blank while its axis was scaled to data that was really there.
+          // Those points get an explicit dot.
+          var nextValue = p + 1 < pts.length ? pts[p + 1].values[si] : null;
+          var nextIsGap = nextValue === null || nextValue === undefined || !isFinite(nextValue);
+          if (!open && nextIsGap) {
+            dots += '<circle cx="' + px.toFixed(1) + '" cy="' + py.toFixed(1) +
+              '" r="2.5" fill="' + spec.series[si].color + '"/>';
+          }
           if (firstX === null) firstX = px;
           lastX = px;
           open = true;
@@ -592,6 +643,7 @@ td.zero { color: var(--text-muted); }
             '" fill-opacity="0.14" stroke="none"/>';
         }
         svg += '<path d="' + d + '" fill="none" stroke="' + spec.series[si].color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+        svg += dots;
       }
     }
 
@@ -1056,7 +1108,43 @@ td.zero { color: var(--text-muted); }
     document.getElementById("dot").className = "dot" + (statusClass ? " " + statusClass : "");
   }
 
+  /**
+   * textContent, never innerHTML. The value originates in a request header, so
+   * anything that reaches the origin directly controls it; rendering it as text
+   * makes markup inert by construction rather than by escaping correctly.
+   */
+  function showViewer(email) {
+    var box = document.getElementById("viewer");
+    if (!email) { box.hidden = true; return; }
+    var label = document.getElementById("viewerEmail");
+    if (label.textContent !== email) {
+      label.textContent = email;
+      // The full address when it is ellipsised, which a long one always is.
+      document.getElementById("viewerButton").title = email;
+    }
+    box.hidden = false;
+  }
+
+  function setViewerMenuOpen(open) {
+    document.getElementById("viewerMenu").hidden = !open;
+    document.getElementById("viewerButton").setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  document.getElementById("viewerButton").addEventListener("click", function (event) {
+    event.stopPropagation();
+    setViewerMenuOpen(document.getElementById("viewerMenu").hidden);
+  });
+  // Anywhere else dismisses, including a click on the page behind it. Escape
+  // returns focus to the trigger, so a keyboard user is not stranded.
+  document.addEventListener("click", function () { setViewerMenuOpen(false); });
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape" || document.getElementById("viewerMenu").hidden) return;
+    setViewerMenuOpen(false);
+    document.getElementById("viewerButton").focus();
+  });
+
   function apply(payload, replace) {
+    showViewer(payload.meta.viewer);
     var seenInstance = payload.meta.instanceId;
     if (IS_LOCAL && state.instanceId && seenInstance && seenInstance !== state.instanceId) {
       location.reload();

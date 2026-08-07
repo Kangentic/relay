@@ -31,7 +31,10 @@ import { serializeHistoryRow } from '../src/history/rows.js';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function parseArgs(argv) {
-  const options = { port: 8099, days: 40, traffic: true, pairs: 3 };
+  // A generic placeholder, never a real address: this repo is public and the
+  // string ends up in screenshots. Override with --viewer, or --no-viewer to
+  // see the page as an SSH tunnel serves it, with no identity at all.
+  const options = { port: 8099, days: 40, traffic: true, pairs: 3, viewer: 'dev@example.com' };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     const value = argv[index + 1];
@@ -39,6 +42,8 @@ function parseArgs(argv) {
     else if (flag === '--days') options.days = Number(value);
     else if (flag === '--pairs') options.pairs = Number(value);
     else if (flag === '--no-traffic') options.traffic = false;
+    else if (flag === '--viewer') options.viewer = value;
+    else if (flag === '--no-viewer') options.viewer = null;
     else if (flag === '--help') options.help = true;
   }
   return options;
@@ -211,6 +216,18 @@ async function main() {
   });
 
   const relay = createRelay(config);
+
+  // Cloudflare Access sets this header at the edge, so on localhost the
+  // "signed in as" row would never appear and could not be reviewed before it
+  // ships. Simulated here, in front of the relay, precisely so the preview
+  // shows the page production shows. Nothing in src/ knows this happened, and
+  // the relay still treats the value as display-only.
+  if (options.viewer) {
+    relay.httpServer.prependListener('request', (request) => {
+      request.headers['cf-access-authenticated-user-email'] = options.viewer;
+    });
+  }
+
   const { port } = await relay.listen();
   const relayUrl = `ws://127.0.0.1:${port}`;
   const stopTraffic = options.traffic ? startTraffic(relayUrl, options.pairs) : () => undefined;

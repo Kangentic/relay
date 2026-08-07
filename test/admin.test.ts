@@ -215,6 +215,57 @@ describe('/admin when enabled', () => {
     peerB.close();
   });
 
+  it('reports the Access identity for display, and nothing at all without it', async () => {
+    relay = await startTestRelay({ adminEnabled: true });
+
+    const signedIn = (await (
+      await fetch(`${httpBase(relay)}/admin/data`, {
+        headers: { 'cf-access-authenticated-user-email': 'someone@example.com' },
+      })
+    ).json()) as { meta: { viewer: string | null } };
+    expect(signedIn.meta.viewer).toBe('someone@example.com');
+
+    // An SSH tunnel or a local run has no edge in front of it. That must read
+    // as "no identity" rather than an empty string the page would render as a
+    // blank pill.
+    const direct = (await (await fetch(`${httpBase(relay)}/admin/data`)).json()) as {
+      meta: { viewer: string | null };
+    };
+    expect(direct.meta.viewer).toBeNull();
+  });
+
+  it('bounds the Access identity, since anything reaching the origin controls it', async () => {
+    relay = await startTestRelay({ adminEnabled: true });
+
+    const overlong = (await (
+      await fetch(`${httpBase(relay)}/admin/data`, {
+        headers: { 'cf-access-authenticated-user-email': 'a'.repeat(400) },
+      })
+    ).json()) as { meta: { viewer: string | null } };
+    expect(overlong.meta.viewer).toBeNull();
+
+    const blank = (await (
+      await fetch(`${httpBase(relay)}/admin/data`, {
+        headers: { 'cf-access-authenticated-user-email': '   ' },
+      })
+    ).json()) as { meta: { viewer: string | null } };
+    expect(blank.meta.viewer).toBeNull();
+  });
+
+  it('renders the identity as text, never as markup', async () => {
+    relay = await startTestRelay({ adminEnabled: true });
+    const html = await (await fetch(`${httpBase(relay)}/admin`)).text();
+
+    // The value originates in a forgeable request header, so the page must set
+    // it with textContent. innerHTML here would turn a header into script
+    // injection on the one surface an operator trusts.
+    expect(html).toContain('document.getElementById("viewerEmail")');
+    expect(html).toMatch(/viewerEmail[^]{0,120}textContent/);
+    expect(html).not.toMatch(/viewerEmail[^]{0,120}innerHTML/);
+    // Sign-out is Cloudflare's own endpoint: the relay grows no session to end.
+    expect(html).toContain('/cdn-cgi/access/logout');
+  });
+
   it('serves a gzip-encoded body when the client accepts it', async () => {
     relay = await startTestRelay({ adminEnabled: true });
     const response = await fetch(`${httpBase(relay)}/admin/data`, { headers: { 'accept-encoding': 'gzip' } });
