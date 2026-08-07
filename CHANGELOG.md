@@ -5,6 +5,45 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-07
+
+### Added
+
+- **The `/admin` header names the signed-in Cloudflare Access account**, with a sign-out action that
+  links to Cloudflare's own `/cdn-cgi/access/logout`. A private operational surface that opens
+  instantly, with no sign of a gate, reads as one that has no gate. Nothing here authenticates
+  anything: `Cf-Access-Authenticated-User-Email` stays display-only, never reaches an authorization
+  decision, is length-bounded before it is echoed, and is written with `textContent` so a forged
+  header carrying markup is inert by construction. The relay grows no session, so it has nothing of
+  its own to sign out of. Absent the header, as over an SSH tunnel, the page shows no identity at
+  all rather than a blank one.
+
+### Fixed
+
+- **0.3.0 shipped the `/admin` dashboard that production could not enable.** `deploy.yml` generates
+  `/opt/relay/.env` and overwrites it wholesale on every deploy, and its template never gained
+  `ADMIN_ENABLED` or `METRICS_HISTORY_PATH`. Editing the file on the box appeared to work and was
+  reverted by the next deploy. Both variables now live in the workflow, which is the only place
+  production configuration can survive.
+- **A deploy whose only change was configuration silently did nothing and reported success.**
+  `deploy.sh` skipped the container recreate whenever a `git diff` over the image's build inputs
+  came back empty, and neither the environment file nor the compose directory was among them. The
+  environment cannot be covered by a `git diff` at all, since it is delivered out of band and is
+  deliberately not in git, so it is fingerprinted by `sha256` in the state directory instead;
+  `infra/compose` joined the diff list, because mounts, `mem_limit` and ports change the running
+  container without changing the image. The fingerprint is recorded only after a successful deploy,
+  so a rollback leaves the previous value and the next attempt recreates rather than skipping. Both
+  fixes took effect immediately rather than at this release, since deploy logic runs from the
+  checked-out ref rather than from the image.
+- **A rate axis whose every tick read `0/s`.** Small rates were rounded to one decimal place, so a
+  quiet relay drew five identical `0/s` labels beneath a curve with an obvious peak: the shape said
+  something happened and every label said nothing did. Values below 1 now keep two significant
+  figures.
+- **A chart that rendered nothing while its axis was scaled to real data.** A run of exactly one
+  non-null sample emits a bare SVG `moveto`, and a path that only moves paints nothing. "Average
+  frame size" is almost entirely such runs on a quiet relay, being null in every interval that
+  forwarded no frames, so it came out blank rather than sparse. Isolated points now draw a dot.
+
 ## [0.3.0] - 2026-08-07
 
 ### Added
