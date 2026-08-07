@@ -236,7 +236,7 @@ td.zero { color: var(--text-muted); }
 
   <div class="controls">
     <div class="segmented" role="group" aria-label="Time range">
-      <button data-range="0">Live</button>
+      <button data-range="0" title="Last 15 minutes, refreshing every 2 seconds">Live</button>
       <button data-range="3600000">1h</button>
       <button data-range="21600000">6h</button>
       <button data-range="86400000">24h</button>
@@ -308,6 +308,7 @@ td.zero { color: var(--text-muted); }
     return v === null || v === undefined || !isFinite(v) ? "n/a" : Math.round(v).toLocaleString();
   }
   function fmtBytesRate(v) { return fmtBytes(v) + "/s"; }
+  function fmtPerMinute(v) { return v === null || v === undefined ? "n/a" : fmtCount(v) + "/min"; }
   function fmtPercent(v) { return v === null || v === undefined ? "n/a" : (Math.round(v * 10) / 10) + "%"; }
   function fmtMs(v) { return v === null || v === undefined ? "n/a" : (Math.round(v * 10) / 10) + " ms"; }
   function fmtDuration(seconds) {
@@ -337,6 +338,21 @@ td.zero { color: var(--text-muted); }
     var w = row.windowMs > 0 ? row.windowMs / 1000 : 1;
     return row[key] / w;
   }
+
+  /**
+   * Counts have to be normalised before they are plotted, because rows do not
+   * all cover the same span. History is tiered (1-minute, then 5-minute, then
+   * hourly), and the Live view mixes 60-second history rows with 2-second poll
+   * rows. Plotting a raw per-interval count across any of those seams draws a
+   * cliff that is purely an artefact of the bucket width: an hourly row holds
+   * twelve times the count of a 5-minute row for exactly the same traffic.
+   * Per minute reads better than per second for sparse counts like teardowns.
+   */
+  function perMinute(row, value) {
+    var minutes = row.windowMs > 0 ? row.windowMs / 60000 : 1;
+    return value / minutes;
+  }
+  function deltaPerMinute(row, key) { return perMinute(row, row[key]); }
 
   function readMean(meanFn, row) {
     if (!meanFn) return null;
@@ -606,8 +622,8 @@ td.zero { color: var(--text-muted); }
       if (!any) continue;
       slot++;
       if (slot > 8) break;
-      out.push({ label: labels[i].label, color: seriesColor(slot), key: key, reduce: "sum",
-        value: (function (k) { return function (row) { return pick(row, k) || 0; }; })(key) });
+      out.push({ label: labels[i].label, color: seriesColor(slot), key: key, reduce: "max",
+        value: (function (k) { return function (row) { return perMinute(row, pick(row, k) || 0); }; })(key) });
     }
     return out;
   }
@@ -650,9 +666,9 @@ td.zero { color: var(--text-muted); }
       { title: "Bytes forwarded", hint: "Payload only. Real egress runs roughly 1.1 to 1.3x higher.", format: fmtBytesRate, fill: true, series: [
         { label: "bytes/s", color: seriesColor(2), reduce: "max", value: function (r) { return perSecond(r, "bytesForwardedDelta"); } }
       ] },
-      { title: "New connections and sessions", hint: "Per-interval counts, summed across each plotted bucket.", format: fmtCount, series: [
-        { label: "connections", color: seriesColor(1), reduce: "sum", value: function (r) { return r.connectionsDelta; } },
-        { label: "sessions paired", color: seriesColor(3), reduce: "sum", value: function (r) { return r.sessionsDelta; } }
+      { title: "New connections and sessions", hint: "Rate per minute, so tiers and the live view stay comparable.", format: fmtPerMinute, series: [
+        { label: "connections", color: seriesColor(1), reduce: "max", value: function (r) { return deltaPerMinute(r, "connectionsDelta"); } },
+        { label: "sessions paired", color: seriesColor(3), reduce: "max", value: function (r) { return deltaPerMinute(r, "sessionsDelta"); } }
       ] },
       { title: "Outbound queue depth",
         hint: "Peak bytes waiting to flush to the slowest consumer. A growing queue means that peer is behind; the tunnel is torn down at the buffer cap.",
@@ -703,16 +719,16 @@ td.zero { color: var(--text-muted); }
     var normalSeries = activeSeries(pickCause, CAUSES.filter(function (c) { return c.key === "peerClosed"; }));
     if (normalSeries.length) {
       list.push({ title: "Sessions ended normally", fill: true,
-        hint: "One side hung up, counted once per pair. Should dominate; a fall with steady connections means sessions are ending some other way.",
-        format: fmtCount, series: normalSeries });
+        hint: "One side hung up, counted once per pair, as a rate per minute. Should dominate; a fall with steady connections means sessions are ending some other way.",
+        format: fmtPerMinute, series: normalSeries });
     }
 
     var abnormalSeries = activeSeries(pickCause, CAUSES.filter(function (c) { return c.key !== "peerClosed"; }));
     if (abnormalSeries.length) {
       list.push({ title: "Abnormal teardowns", stacked: true,
-        hint: "Everything that ended a tunnel other than a peer hanging up, summed per bucket.",
+        hint: "Everything that ended a tunnel other than a peer hanging up, as a rate per minute.",
         footnote: triageFor(abnormalSeries),
-        format: fmtCount, series: abnormalSeries });
+        format: fmtPerMinute, series: abnormalSeries });
     }
 
     var reasonKeys = {}, reasonRows = plotRows();
@@ -723,7 +739,7 @@ td.zero { color: var(--text-muted); }
     var reasonSeries = activeSeries(function (row, key) { return row.rejectsByReasonDelta[key]; }, reasonLabels);
     if (reasonSeries.length) {
       list.push({ title: "Rejections by reason", stacked: true,
-        hint: "Stacked per-interval counts. Reasons that never fired are not drawn.", format: fmtCount, series: reasonSeries });
+        hint: "Stacked rate per minute. Reasons that never fired are not drawn.", format: fmtPerMinute, series: reasonSeries });
     }
 
     list.push({ title: "Process CPU", hint: "Percent of one core. Above 100 is possible and real: this counts every thread.", format: fmtPercent, series: [
@@ -984,8 +1000,7 @@ td.zero { color: var(--text-muted); }
     var nowMs = Date.now();
     if (state.previousLive) {
       state.liveRows.push(synthesizeLiveRow(state.previousLive, payload.live, state.previousLiveAtMs, nowMs));
-      var oldestLiveMs = nowMs - LIVE_WINDOW_MS;
-      while (state.liveRows.length && state.liveRows[0].timestampMs < oldestLiveMs) state.liveRows.shift();
+      trimLiveWindow(nowMs);
     }
     state.previousLive = payload.live;
     state.previousLiveAtMs = nowMs;
@@ -1000,6 +1015,39 @@ td.zero { color: var(--text-muted); }
     }
     if (payload.cursorMs) state.cursorMs = payload.cursorMs;
     render();
+  }
+
+  /**
+   * Fills the Live window from history the moment it is opened.
+   *
+   * Without this the view starts empty and grows one point every couple of
+   * seconds, so a button labelled "Live" would show five seconds of data and
+   * the window would silently be "however long you have had this tab open".
+   * Seeding makes it always a real 15 minutes: recorded rows behind, poll rows
+   * in front, refining from 60-second to 2-second resolution as they arrive.
+   * Every count is plotted as a rate, so the change of resolution at the seam
+   * does not show up as a step.
+   */
+  async function seedLiveFromHistory() {
+    try {
+      var response = await fetch("/admin/data?range=" + LIVE_WINDOW_MS, { headers: { accept: "application/json" } });
+      if (response.ok) {
+        var payload = await response.json();
+        var oldestLiveMs = state.liveRows.length ? state.liveRows[0].timestampMs : Infinity;
+        var seed = payload.rows.filter(function (row) { return row.timestampMs < oldestLiveMs; });
+        state.liveRows = seed.concat(state.liveRows);
+        trimLiveWindow(Date.now());
+      }
+    } catch (error) {
+      // Seeding is an improvement, not a requirement: without it the view
+      // still fills in from the poll, just more slowly.
+    }
+    render();
+  }
+
+  function trimLiveWindow(nowMs) {
+    var oldestMs = nowMs - LIVE_WINDOW_MS;
+    while (state.liveRows.length && state.liveRows[0].timestampMs < oldestMs) state.liveRows.shift();
   }
 
   async function load(replace) {
@@ -1035,9 +1083,7 @@ td.zero { color: var(--text-muted); }
     buttons[i].addEventListener("click", function (event) {
       state.rangeMs = Number(event.target.getAttribute("data-range"));
       for (var b = 0; b < buttons.length; b++) buttons[b].setAttribute("aria-pressed", buttons[b] === event.target ? "true" : "false");
-      // Live draws from what the poll already collected, so it needs no fetch;
-      // every other range needs its window pulled from the history store.
-      if (state.rangeMs === LIVE_RANGE) render();
+      if (state.rangeMs === LIVE_RANGE) seedLiveFromHistory();
       else load(true);
     });
     if (Number(buttons[i].getAttribute("data-range")) === state.rangeMs) buttons[i].setAttribute("aria-pressed", "true");
