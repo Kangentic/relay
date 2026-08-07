@@ -122,6 +122,9 @@ export async function handleAdminDataRequest(
       recorderHealthy: recorder?.healthy() ?? false,
       intervalMs: recorder?.intervalMs() ?? 0,
       ringCapacity: recorder?.ringCapacity() ?? 0,
+      // Changes on every relay start, so a reader can tell "the process I was
+      // watching went away" from "nothing new happened".
+      instanceId: recorder?.instanceId() ?? null,
       truncated: read?.truncated ?? false,
       skippedLineCount: read?.skippedLineCount ?? 0,
       unknownVersionLineCount: read?.unknownVersionLineCount ?? 0,

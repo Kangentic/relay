@@ -7,9 +7,11 @@
 // serves the real dashboard against it.
 //
 // Run it with tsx so it can import the relay's own modules rather than
-// reimplementing them:
+// reimplementing them. Prefer watch mode: it restarts on any source edit, and
+// the dashboard reloads itself when it notices the new instance id, so editing
+// adminPage.ts updates the page you are looking at without touching anything.
 //
-//   npx tsx scripts/preview.mjs
+//   npx tsx watch --clear-screen=false scripts/preview.mjs --port 8099
 //   npx tsx scripts/preview.mjs --port 8099 --days 40 --no-traffic
 //
 // Seeding goes through the relay's own serializeHistoryRow, so the preview file
@@ -66,8 +68,11 @@ function buildRow(timestampMs, resolutionSeconds, index, restartCount) {
   const load = loadFactor(timestampMs);
   const jitter = pseudoRandom(index) * 0.3 + 0.85;
   // An occasional burst, so the difference between peak and average is visible
-  // in the tooltip on aggregated buckets.
-  const burst = pseudoRandom(index * 7.7) > 0.985 ? 3.5 : 1;
+  // in the tooltip on aggregated buckets. Kept mild on purpose: a 3x outlier
+  // every few points drags the y-axis up and flattens the body of the chart
+  // into an unreadable line near zero, which makes the preview a worse
+  // likeness of real traffic rather than a better one.
+  const burst = pseudoRandom(index * 7.7) > 0.997 ? 1.9 : 1;
 
   const pairedPeak = Math.round(load * 34 * jitter * burst);
   const pairedMean = Math.round(load * 26 * jitter);

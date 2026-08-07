@@ -75,6 +75,8 @@ export interface HistoryRecorder {
   /** How many recent rows the in-memory ring holds, for the dashboard to explain itself. */
   ringCapacity(): number;
   intervalMs(): number;
+  /** Random per process start. A change means the relay restarted under the reader. */
+  instanceId(): string;
   /** Resolves once every currently-queued file operation has settled. */
   drain(): Promise<void>;
   readSince(sinceMs: number): Promise<HistoryReadResult>;
@@ -406,6 +408,7 @@ export function createHistoryRecorder(deps: HistoryRecorderDeps): HistoryRecorde
     persistence: () => (historyFilePath === null || fileHalfDisabled ? 'memory' : 'file'),
     ringCapacity: () => ringCapacity,
     intervalMs: () => deps.intervalMs,
+    instanceId: () => instanceId,
     drain: () => fileOperationQueue,
 
     readSince: async (sinceMs) => {

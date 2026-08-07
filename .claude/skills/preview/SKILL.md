@@ -39,12 +39,17 @@ than drifting into a comfortable lie.
 ## Steps
 
 1. Ensure dependencies exist (`node_modules` is per-worktree): run `npm install` if missing.
-2. Start it in the background:
+2. Start it in the background, in watch mode:
    ```
-   npx tsx scripts/preview.mjs --port 8099
+   npx tsx watch --clear-screen=false scripts/preview.mjs --port 8099
    ```
    Run it with `run_in_background: true`, then Read the output file for the printed URLs. It
    runs until stopped.
+
+   **Live reload.** `tsx watch` restarts the relay on any source edit, and each start mints a
+   fresh recorder instance id that rides on `/admin/data`. The page notices the id changed and
+   reloads itself, so editing `adminPage.ts` updates the tab you are already looking at. That
+   reload is gated to `127.0.0.1`/`localhost`, so it cannot fire on the production hostname.
 3. Confirm the data layer before looking at pixels, so a blank chart is not ambiguous:
    ```
    node -e "fetch('http://127.0.0.1:8099/admin/data?range=172800000').then(r=>r.json()).then(b=>console.log(b.rows.length,'rows',b.meta.servedFrom))"
