@@ -115,8 +115,13 @@ A green deploy job is necessary, not sufficient. Confirm the product works:
    restart** when a release carries no build-relevant change (a docs-or-changelog-only release);
    that is correct, but it means production keeps running the previous digest. Say which case
    happened rather than implying a fresh rollout.
-2. `curl -sS https://<relay hostname>/healthz` - expect `{"status":"ok"}`. Proves liveness only,
-   not which build.
+2. `curl -sS https://<relay hostname>/healthz` - expect
+   `{"status":"ok","version":"<the tag without its leading v>"}`. This is the cheapest
+   confirmation that production is actually serving the build you just cut. Two failure readings:
+   a `version` still showing the *previous* release means the deploy skipped the restart or rolled
+   back, so reconcile it against the digest from step 1; a *missing* `version` field means the
+   container could not read its own `package.json`, which is worth investigating but is not a
+   liveness failure.
 3. **Run the synthetic pairing probe**, which is the only check that proves the product works end
    to end through Cloudflare and Caddy: `gh workflow run monitor.yml`, find the run
    (`gh run list --workflow monitor.yml --limit 1`), and watch it. It also exercises the

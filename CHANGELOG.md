@@ -7,6 +7,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Added
 
+- **`/healthz` now reports the running build's `version`**, read from `package.json` at import so
+  it cannot drift from the deployed image. The body gains a key but keeps `"status":"ok"` intact
+  as a contiguous substring, so the deploy health gate and any *contains*-matching uptime monitor
+  keep working; a monitor comparing the whole body for equality has to be switched to a contains
+  check. The field is omitted entirely, never faked, if the manifest cannot be read. The desktop
+  app's "Test connection" pill picks this up with no desktop release needed.
 - **First-time pairing now has relay-level proof.** The integration test covered only the KK
   reconnect handshake; it now also drives a real IKpsk0 pairing handshake through a live relay,
   including the pre-pair buffer-and-flush path that carries pairing message one.

@@ -28,11 +28,20 @@ jobs:
           push: false
           load: true
           tags: relay:ci
+      # Asserts on the body, not just the status code. src/version.ts resolves package.json
+      # relative to its own module URL, so the layout it depends on (dist/version.js sitting one
+      # level under the package.json the Dockerfile copies in) only exists in the built image -
+      # every unit test resolves against src/ instead and would stay green if a Dockerfile or
+      # rootDir change broke it. This is the only check that runs the real runtime path, so it
+      # echoes each response: a 200 whose body is missing `version` is the failure it exists to
+      # catch, and the body is what tells you why.
       - name: Smoke-check /healthz
         run: |
           docker run -d --name relay-smoke -p 18080:8080 relay:ci
           for attempt in $(seq 1 10); do
-            if curl -sf http://127.0.0.1:18080/healthz; then exit 0; fi
+            body="$(curl -sf http://127.0.0.1:18080/healthz || true)"
+            echo "attempt $attempt: ${body:-<no response>}"
+            case "$body" in *'"version":"'*) exit 0 ;; esac
             sleep 1
           done
           docker logs relay-smoke
