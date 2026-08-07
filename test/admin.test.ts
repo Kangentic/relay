@@ -353,6 +353,72 @@ describe('/admin when enabled', () => {
     peerB.close();
   });
 
+  it('samples the pre-pair buffer of a peer still waiting for its partner', async () => {
+    // The other queue-depth test pairs both peers first, so nothing is ever
+    // parked and maxParkedBufferBytes stays 0 throughout it. Pre-pair buffering
+    // is its own path (it is how the first-pairing handshake travels), and
+    // wiring pendingBytes to the wrong field would go unnoticed without this.
+    directory = await mkdtemp(join(tmpdir(), 'relay-admin-'));
+    relay = await startTestRelay({
+      adminEnabled: true,
+      metricsHistoryPath: join(directory, 'history.ndjson'),
+      metricsHistoryIntervalMs: 1_000,
+    });
+    // No partner, so these bytes stay in the pre-pair buffer rather than being
+    // forwarded and forgotten.
+    const parkedPeer = await connectTestClient(relay.url, 'f'.repeat(64));
+    parkedPeer.send(Buffer.alloc(4_096, 3));
+
+    let maxParkedBufferBytes = 0;
+    // Inside the 5s default test timeout on purpose: a regression here should
+    // fail on the assertion, saying what was wrong, not as a bare timeout. One
+    // 1s recorder tick is all this needs.
+    const deadline = Date.now() + 3_500;
+    while (maxParkedBufferBytes === 0 && Date.now() < deadline) {
+      const body = (await (await fetch(`${httpBase(relay)}/admin/data?range=3600000`)).json()) as {
+        rows: { maxParkedBufferBytes: number | null }[];
+      };
+      maxParkedBufferBytes = body.rows[body.rows.length - 1]?.maxParkedBufferBytes ?? 0;
+    }
+    expect(maxParkedBufferBytes).toBeGreaterThanOrEqual(4_096);
+
+    parkedPeer.close();
+  });
+
+  it('answers a live cursor from the ring, and only a cold one from the file', async () => {
+    // What makes an open dashboard nearly free: the 2-second poll must be
+    // served from memory. A cursor the ring cannot cover falls through to a
+    // whole-file stream, which is correct but is a page-load cost, not a poll
+    // cost - so a page that polls with a stale or zero cursor would pay it
+    // every time.
+    directory = await mkdtemp(join(tmpdir(), 'relay-admin-'));
+    relay = await startTestRelay({
+      adminEnabled: true,
+      metricsHistoryPath: join(directory, 'history.ndjson'),
+      metricsHistoryIntervalMs: 1_000,
+    });
+    const base = httpBase(relay);
+
+    let cursorMs = 0;
+    const deadline = Date.now() + 3_500;
+    while (cursorMs === 0 && Date.now() < deadline) {
+      cursorMs = ((await (await fetch(`${base}/admin/data?range=3600000`)).json()) as { cursorMs: number })
+        .cursorMs;
+    }
+    expect(cursorMs).toBeGreaterThan(0);
+
+    const fromRing = (await (await fetch(`${base}/admin/data?since=${cursorMs}`)).json()) as {
+      meta: { servedFrom: string };
+    };
+    expect(fromRing.meta.servedFrom).toBe('ring');
+
+    // The epoch is older than the ring's oldest row, so this is the cold path.
+    const fromFile = (await (await fetch(`${base}/admin/data?since=0`)).json()) as {
+      meta: { servedFrom: string };
+    };
+    expect(fromFile.meta.servedFrom).toBe('file');
+  });
+
   it('honors the since cursor, returning only newer rows', async () => {
     directory = await mkdtemp(join(tmpdir(), 'relay-admin-'));
     relay = await startTestRelay({

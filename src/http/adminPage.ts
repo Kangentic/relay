@@ -1115,6 +1115,12 @@ td.zero { color: var(--text-muted); }
         state.previousLive = payload.live;
         state.previousLiveAtMs = nowMs;
         state.lastUpdateMs = nowMs;
+        // Adopting the cursor is what keeps the poll incremental. Left at 0 the
+        // very next poll asks for "?since=0", which no longer matches the ring
+        // (its oldest row is not older than the epoch) and so falls through to
+        // a whole-file read returning every row ever recorded - on the view the
+        // page opens in, on every page load.
+        if (payload.cursorMs) state.cursorMs = payload.cursorMs;
         if (payload.meta.instanceId) state.instanceId = payload.meta.instanceId;
         setStatus("live", "");
       }

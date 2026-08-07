@@ -19,6 +19,13 @@ import {
 } from './rows.js';
 
 const DEFAULT_COMPACTION_INTERVAL_MS = 60 * 60 * 1000;
+/**
+ * How long a repeated append failure stays quiet in the log. Deliberately a
+ * fixed hour rather than the configured compaction interval: it is a log-noise
+ * budget, and a test that compacts every few milliseconds must not also get a
+ * warning every few milliseconds.
+ */
+const APPEND_FAILURE_LOG_SUPPRESSION_MS = 60 * 60 * 1000;
 const DEFAULT_RING_CAPACITY = 120;
 /**
  * Matched to MAX_HISTORY_ROW_COUNT, because a widest-range read spans all three
@@ -128,7 +135,10 @@ export function createHistoryRecorder(deps: HistoryRecorderDeps): HistoryRecorde
   const temporaryFilePath = historyFilePath === null ? null : `${historyFilePath}.tmp`;
 
   const ring: HistoryRow[] = [];
-  let stopped = false;
+  // The in-flight stop, cached rather than a boolean, so a second caller awaits
+  // the same completion instead of resolving immediately while the final row is
+  // still being flushed.
+  let stopPromise: Promise<void> | null = null;
   let fileHalfDisabled = historyFilePath === null;
   let consecutiveFailureCount = 0;
   let lastFailureLoggedAtMs = 0;
@@ -179,7 +189,7 @@ export function createHistoryRecorder(deps: HistoryRecorderDeps): HistoryRecorde
     }
     // Suppress repeats so a persistently full disk cannot flood the log.
     const nowMs = now();
-    if (nowMs - lastFailureLoggedAtMs >= DEFAULT_COMPACTION_INTERVAL_MS || consecutiveFailureCount === 1) {
+    if (nowMs - lastFailureLoggedAtMs >= APPEND_FAILURE_LOG_SUPPRESSION_MS || consecutiveFailureCount === 1) {
       lastFailureLoggedAtMs = nowMs;
       logger.warn('metrics history write failed', { code, error: errorMessageOf(error) });
     }
@@ -451,30 +461,30 @@ export function createHistoryRecorder(deps: HistoryRecorderDeps): HistoryRecorde
       );
     },
 
-    stop: async () => {
-      if (stopped) return;
-      stopped = true;
-      clearInterval(historyTimer);
-
-      // A deploy is exactly when this data matters most, so the trailing
-      // partial interval is flushed rather than dropped. windowMs already says
-      // the row covers a short span, so no extra flag is needed.
-      try {
-        recordSample();
-      } catch (error: unknown) {
-        logger.warn('metrics history final flush failed', { error: errorMessageOf(error) });
-      }
-      processSampler.stop();
-
-      // Raced against a timeout so a hung filesystem cannot stall shutdown
-      // past shutdownGraceMs.
-      await Promise.race([
-        fileOperationQueue,
-        new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, SHUTDOWN_FLUSH_TIMEOUT_MS);
-          timer.unref?.();
-        }),
-      ]);
-    },
+    stop: () => (stopPromise ??= stopRecorder()),
   };
+
+  async function stopRecorder(): Promise<void> {
+    clearInterval(historyTimer);
+
+    // A deploy is exactly when this data matters most, so the trailing partial
+    // interval is flushed rather than dropped. windowMs already says the row
+    // covers a short span, so no extra flag is needed.
+    try {
+      recordSample();
+    } catch (error: unknown) {
+      logger.warn('metrics history final flush failed', { error: errorMessageOf(error) });
+    }
+    processSampler.stop();
+
+    // Raced against a timeout so a hung filesystem cannot stall shutdown past
+    // shutdownGraceMs.
+    await Promise.race([
+      fileOperationQueue,
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, SHUTDOWN_FLUSH_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ]);
+  }
 }
