@@ -6,6 +6,14 @@ services:
       - "127.0.0.1:8080:8080"
     env_file:
       - .env
+    # Uncomment together with the volumes block at the bottom if you set
+    # ADMIN_ENABLED=true and METRICS_HISTORY_PATH=/var/lib/relay/history.ndjson.
+    # Without a named volume the history file lives in the container's writable
+    # layer and every `up -d` discards it. Use a named volume rather than a host
+    # bind mount: the image runs as USER node, and a bind mount arrives
+    # root-owned.
+    # volumes:
+    #   - relay_history:/var/lib/relay
     ulimits:
       nofile:
         soft: 65535
@@ -37,3 +45,4 @@ services:
 
 # volumes:
 #   caddy_data: {}
+#   relay_history: {}

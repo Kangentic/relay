@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path';
 import type { Config, LogLevel } from './types.js';
 import { isValidCidr } from './net/clientIp.js';
 
@@ -109,6 +110,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // live pairing gauges and per-guard reject counters openly has to be an
     // explicit choice rather than an inferred one.
     metricsAllowUnauthenticated: readBoolean(env, 'METRICS_ALLOW_UNAUTHENTICATED', false),
+    // The relay does not authenticate /admin. It carries strictly more than
+    // the metrics surfaces (a year of history plus live gauges), so enabling
+    // it without an upstream gate is a deliberate exposure; the relay logs a
+    // warning at startup saying so. Off by default.
+    adminEnabled: readBoolean(env, 'ADMIN_ENABLED', false),
+    metricsHistoryPath: readOptionalString(env, 'METRICS_HISTORY_PATH'),
+    metricsHistoryIntervalMs: readInt(env, 'METRICS_HISTORY_INTERVAL_MS', 60_000),
     logLevel: readLogLevel(env, 'LOG_LEVEL', 'info'),
     logSlotHashing: readBoolean(env, 'LOG_SLOT_HASHING', true),
     slotLogSalt: readString(env, 'SLOT_LOG_SALT', randomSalt()),
@@ -130,6 +138,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // ceiling below 2 could never let a single pairing complete.
   if (config.maxUnpairedConnections < 2) {
     throw new ConfigError('MAX_UNPAIRED_CONNECTIONS', 'must be at least 2, or no pairing could ever complete');
+  }
+  // readInt accepts 0, and setInterval(fn, 0) is a hot loop that would burn a
+  // core sampling metrics nobody asked for.
+  if (config.metricsHistoryIntervalMs < 1_000) {
+    throw new ConfigError(
+      'METRICS_HISTORY_INTERVAL_MS',
+      `must be at least 1000, got ${config.metricsHistoryIntervalMs}`,
+    );
+  }
+  // A relative path resolves against the container's cwd, which is not a
+  // stable contract, and would silently write history to the ephemeral image
+  // layer where every deploy discards it - the exact failure this store exists
+  // to prevent.
+  if (config.metricsHistoryPath !== null && !isAbsolute(config.metricsHistoryPath)) {
+    throw new ConfigError('METRICS_HISTORY_PATH', `must be an absolute path, got "${config.metricsHistoryPath}"`);
   }
   if (config.trustProxy && config.trustedProxyCidrs.length === 0) {
     throw new ConfigError(

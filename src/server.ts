@@ -3,9 +3,17 @@ import type { Socket } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Config, Conn } from './types.js';
 import { createLogger, type Logger } from './logging.js';
-import { createMetrics, handleMetricsRequest, handleMetriczRequest, type Metrics } from './http/metrics.js';
+import {
+  createMetrics,
+  handleMetricsRequest,
+  handleMetriczRequest,
+  type Metrics,
+  type MetricsProcessExtras,
+} from './http/metrics.js';
 import { handleHealthzRequest, handleReadyzRequest, type HealthState } from './http/health.js';
 import { handleLandingRequest } from './http/landing.js';
+import { handleAdminDataRequest, handleAdminPageRequest } from './http/admin.js';
+import { createHistoryRecorder, type HistoryRecorder } from './history/recorder.js';
 import { resolveClientIp, bucketIp } from './net/clientIp.js';
 import { isValidSlotId } from './guards/slotFormat.js';
 import { RateLimiter } from './guards/rateLimit.js';
@@ -19,6 +27,7 @@ export interface RelayDeps {
   readonly admissionPolicy?: AdmissionPolicy;
   readonly logger?: Logger;
   readonly metrics?: Metrics;
+  readonly historyRecorder?: HistoryRecorder;
 }
 
 export interface Relay {
@@ -76,6 +85,46 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
   const liveConnections = new Set<Conn>();
   const health: HealthState = { draining: false };
 
+  // Null when neither the dashboard nor the history store is asked for, which
+  // is the default. A null recorder is the structural proof of "no timer, no
+  // file handle, no route" - nothing here is flag-checked at runtime.
+  const historyRecorder: HistoryRecorder | null =
+    deps.historyRecorder ??
+    (config.adminEnabled || config.metricsHistoryPath !== null
+      ? createHistoryRecorder({
+          metrics,
+          logger,
+          historyFilePath: config.metricsHistoryPath,
+          intervalMs: config.metricsHistoryIntervalMs,
+        })
+      : null);
+
+  if (config.adminEnabled) {
+    // The relay does not authenticate /admin, by design: it stays a blind
+    // relay that authenticates nothing, and the gate belongs upstream. Said
+    // out loud at startup so no operator enables this without noticing.
+    logger.warn('admin dashboard enabled and NOT authenticated by the relay', {
+      path: '/admin',
+      gateItUpstream: 'Cloudflare Access, a private network, or an SSH tunnel',
+    });
+  }
+
+  function processExtras(): MetricsProcessExtras | null {
+    // Null only when there is no recorder at all, so the extra keys appearing
+    // on /metricz is itself the signal that one is running. Recorder health is
+    // reportable immediately; the sampled values fill in on the first tick.
+    if (historyRecorder === null) return null;
+    const sample = historyRecorder.latestProcessSample();
+    return {
+      cpuPercent: sample?.cpuPercent ?? null,
+      sampleWindowMs: sample?.windowMs ?? null,
+      eventLoopLagP99Ms: sample?.eventLoopLagP99Ms ?? null,
+      rssPercent: sample?.rssPercent ?? null,
+      historyRecorderHealthy: historyRecorder.healthy(),
+      historyPersistence: historyRecorder.persistence(),
+    };
+  }
+
   function handleHttpRequest(request: IncomingMessage, response: ServerResponse): void {
     const url = new URL(request.url ?? '/', 'http://localhost');
     if (url.pathname === '/healthz') {
@@ -91,7 +140,25 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
       return;
     }
     if (url.pathname === '/metricz') {
-      handleMetriczRequest(request, response, metrics, config);
+      handleMetriczRequest(request, response, metrics, config, processExtras());
+      return;
+    }
+    // With ADMIN_ENABLED=false both fall through to the 404 below, so a
+    // disabled dashboard is indistinguishable on the wire from any other
+    // unknown path.
+    if (config.adminEnabled && (url.pathname === '/admin' || url.pathname === '/admin/')) {
+      handleAdminPageRequest(request, response);
+      return;
+    }
+    if (config.adminEnabled && url.pathname === '/admin/data') {
+      handleAdminDataRequest(request, response, { metrics, recorder: historyRecorder }, url).catch(
+        (error: unknown) => {
+          logger.error('admin data request failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          if (!response.headersSent) response.writeHead(500).end();
+        },
+      );
       return;
     }
     if (url.pathname === '/') {
@@ -265,6 +332,11 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
       new Promise((resolve, reject) => {
         health.draining = true;
         keepalive.stop();
+        // Started before connections are torn down, so the final flushed row
+        // captures live state rather than an already-drained relay. The catch
+        // is attached now so a recorder failure can never surface as an
+        // unhandled rejection, nor fail close().
+        const historyStopped = (historyRecorder?.stop() ?? Promise.resolve()).catch(() => undefined);
 
         for (const conn of liveConnections) {
           if (conn.socket.readyState === conn.socket.OPEN) conn.socket.close(1001, 'shutting_down');
@@ -278,8 +350,11 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
         wss.close(() => {
           httpServer.close((error) => {
             clearTimeout(forceTimer);
-            if (error) reject(error);
-            else resolve();
+            if (error) {
+              reject(error);
+              return;
+            }
+            historyStopped.then(() => resolve(), () => resolve());
           });
         });
       }),

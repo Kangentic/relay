@@ -286,4 +286,36 @@ describe('GET /metricz over the live server', () => {
     const disabled = await fetch(`${relay.url.replace('ws://', 'http://')}/metricz`);
     expect(disabled.status).toBe(404);
   });
+
+  it('reports lifetime CPU with no recorder running, and costs nothing to do so', async () => {
+    relay = await startTestRelay({ metricsAllowUnauthenticated: true });
+    const body = (await (await fetch(`${relay.url.replace('ws://', 'http://')}/metricz`)).json()) as Record<
+      string,
+      unknown
+    >;
+
+    // process.cpuUsage() is cumulative, so this needs no background sampler.
+    expect(typeof body['cpuPercent']).toBe('number');
+    // Null window means the figure covers the whole process lifetime.
+    expect(body['cpuPercentWindowMs']).toBeNull();
+    // The event loop delay monitor installs a recurring libuv timer, so it is
+    // only built when the recorder is, keeping "off" genuinely free.
+    expect(body['eventLoopLagP99Ms']).toBeNull();
+    expect(body['rssPercent']).toBeNull();
+  });
+
+  it('reports sampled process health once a recorder is running', async () => {
+    relay = await startTestRelay({
+      metricsAllowUnauthenticated: true,
+      adminEnabled: true,
+      metricsHistoryIntervalMs: 1_000,
+    });
+    const body = (await (await fetch(`${relay.url.replace('ws://', 'http://')}/metricz`)).json()) as Record<
+      string,
+      unknown
+    >;
+
+    expect(body['historyRecorderHealthy']).toBe(true);
+    expect(body['historyPersistence']).toBe('memory');
+  });
 });

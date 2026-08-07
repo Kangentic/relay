@@ -141,6 +141,8 @@ that differ from `src/config.ts`'s defaults are listed; everything else stays de
 | `METRICS_TOKEN` | 32 bytes hex, generated with `openssl rand -hex 32` | Mandatory. Both `/metrics` and `/metricz` sit on the public hostname. The relay now refuses to serve them without a token, so an unset value here means both surfaces 404 rather than leaking telemetry - which fails safe, but also silently breaks the monitor workflow. Set it, and do not set `METRICS_ALLOW_UNAUTHENTICATED` on this deployment. |
 | `SLOT_LOG_SALT` | 32 bytes hex, pinned | **Currently inert** - no relay log line contains a slot id, so nothing hashes one and this salt is never consumed. It stays pinned and secret because it is the configured input to `slotRef()`, which is the only sanctioned path if slot logging is ever added; a pinned salt means such logs would correlate across restarts, and anyone holding the salt could confirm a candidate slot id by comparison. Safe to keep delivering; do not treat its presence as evidence that slot hashing is doing anything today. |
 | `MAX_SESSION_MS` | `0` (default, unchanged) | Deliberately left disabled. A wall-clock cap tears down healthy long-lived pairings mid-use; the byte cap (`MAX_SESSION_BYTES`, unchanged) is the actual runaway-bill bound, and keepalive already reaps dead sockets. |
+| `ADMIN_ENABLED` | `true` | Serves the private dashboard at `/admin`. **The relay does not authenticate it** - Cloudflare Access, scoped to the `/admin*` path on the public hostname, is the gate. See "The `/admin` dashboard and its volume" below before turning this on. |
+| `METRICS_HISTORY_PATH` | `/var/lib/relay/history.ndjson` | The `relay_history` named volume's mount point. Must be absolute. Anywhere outside the volume is discarded by the next deploy. |
 
 **The single most important non-`.env` value is `mem_limit: 1200m`** in
 `infra/compose/docker-compose.prod.yml`. `MAX_CONNECTIONS` cannot bound the buffered-bytes tail by
@@ -260,11 +262,75 @@ count **single sockets**. `sessionTimeCap` should always read zero, since produc
 | `parkTimeout` | Pairings started and abandoned | Client-side pairing UX, or slot scanning |
 | `sessionByteCap` | Legitimate heavy users hitting the byte cap | Revisit the cap if these are real users, not abuse |
 
+## The `/admin` dashboard and its volume
+
+`ADMIN_ENABLED=true` serves a private dashboard at `/admin` on the same listener and the same
+hostname as the WebSocket endpoint. The relay does **not** authenticate it. Cloudflare Access is
+the gate, and it must be scoped to the **`/admin*` path**, never the whole host.
+
+**Scoping this wrong is an immediate outage.** The relay serves the WebSocket upgrade on `/` on
+that same hostname, so an Access application covering the host would put a login page in front of
+every client. `monitor.yml` runs `scripts/deploy/synthetic-pair.mjs` every 30 minutes, which opens
+two real sockets to one slot and asserts a byte-identical round trip through Caddy and Cloudflare,
+so it catches exactly this failure. Watch that run after any Access change. To check by hand:
+
+```
+RELAY_URL=wss://relay.kangentic.com node scripts/deploy/synthetic-pair.mjs
+```
+
+The Access policy allows any `@kangentic.com` email. `Cf-Access-Authenticated-User-Email` is
+treated as display-only and is never an authorization input: the header is trivially forgeable by
+anyone who reaches the origin directly, so trusting it would be theater. The real boundary is the
+Hetzner firewall restricting 80/443 to Cloudflare ranges, plus Caddy's strict Host matching and
+origin certificate. If stronger is ever wanted, the correct mechanism is verifying the Access JWT
+against Cloudflare's public keys, not checking for a header.
+
+### What survives, and what does not
+
+History lives on the **named** Docker volume `relay_history`, mounted at `/var/lib/relay`. Named,
+not a host bind mount, because the container runs `USER node` and a bind mount arrives root-owned:
+the relay could not write it, and the failure would appear in production only while every local
+test passed. The Dockerfile creates and chowns the directory before dropping to `node`, so the
+volume inherits the right ownership on first creation.
+
+| Event | History |
+|---|---|
+| Deploy (`deploy.sh`, `up -d --force-recreate relay`) | **Survives.** Nothing in the deploy path runs `down -v`. |
+| Rollback (same recreate with the previous digest) | **Survives.** |
+| `docker image prune -af` after a successful deploy | **Survives.** Image prune does not touch volumes. |
+| `docker compose down` without `-v` | **Survives.** |
+| `docker compose down -v`, or `docker volume rm relay_history` | **Lost.** |
+| A `provision.sh` server rebuild | **Lost.** Accepted: the relay is deliberately single-instance because the slot table is in-process memory, so there is no second box holding a copy. |
+
+Verify the volume and its ownership on the box:
+
+```
+docker volume inspect relay_history
+docker compose -f infra/compose/docker-compose.prod.yml exec relay ls -la /var/lib/relay
+```
+
+The second command must show the file owned by `node`. Root ownership means the chown step is
+missing from the running image, and the relay is recording nothing.
+
+Retention is tiered automatically (1-minute rows for 48h, 5-minute for 30 days, hourly for a year),
+which settles at roughly 20k rows and a few MB. Compaction runs at most hourly, off the write path,
+and rewrites through a temp file so a crash cannot destroy the original. If the file ever cannot be
+written the relay keeps running and falls back to an in-memory ring, `/metricz` reports
+`historyRecorderHealthy: false`, and the dashboard shows a banner.
+
+**Gauges are point samples.** `activeConnections` and friends are read once per interval, so a
+spike that rises and falls between two ticks is invisible, and an aggregated bucket's maximum is
+the largest sample taken rather than a true peak. Sampling faster is what the performance budget
+rules out.
+
 ## Traffic budget
 
 `bytesForwardedTotal` resets to zero on every process restart, so a naive scrape undercounts. Sample
 it alongside `uptimeSeconds` every 15-30 minutes, treat a decrease in `uptimeSeconds` as a restart
-boundary, and sum deltas across boundaries for a month-to-date estimate. The counter is payload
+boundary, and sum deltas across boundaries for a month-to-date estimate. (The `/admin` recorder
+already does exactly this in process, storing per-interval deltas and marking restart boundaries,
+so its byte chart is correct across deploys. The guidance here still stands for any external
+scraper, including `monitor.yml`.) The counter is payload
 only (no TLS, WebSocket, or TCP framing), so real egress runs roughly 1.1-1.3x higher. Hetzner bills
 egress only; ingress is free. Cross-check monthly against the authoritative figure:
 `hcloud server describe relay-ashburn-us-east -o json` includes outgoing traffic for the billing period.

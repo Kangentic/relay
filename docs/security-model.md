@@ -157,6 +157,27 @@ openly is available but has to be chosen explicitly with `METRICS_ALLOW_UNAUTHEN
 relay deliberately does not try to infer this from the bind address, since a container binds
 `0.0.0.0` whether the host publishes to loopback or to the world.
 
+**The `/admin` dashboard inherits that guarantee and nothing more.** When `ADMIN_ENABLED` is set,
+the relay serves a private page at `/admin` and its data at `/admin/data`, built from the same
+aggregate snapshot `/metricz` serializes plus a history of it over time. It shows counts and rates
+only, never a table of live sessions, because the underlying snapshot carries no slot ids and no
+IPs to show. The history file records the same aggregates, so a stolen copy reveals traffic shape,
+not who was talking to whom.
+
+**Unlike `/metrics` and `/metricz`, the relay does not authenticate `/admin`.** That is deliberate,
+and it is the one place this document asks you to look outward. The relay's whole claim is that it
+authenticates nothing and reads nothing; adding a login would put credential handling in a process
+whose value is that it has none. So the gate belongs upstream. On the hosted instance that gate is
+Cloudflare Access, scoped to the `/admin*` path, with the origin reachable only from Cloudflare's
+ranges by the Hetzner firewall. `ADMIN_ENABLED` defaults to false and the relay logs a warning at
+startup whenever it is true, so no deployment serves this surface by accident.
+
+`Cf-Access-Authenticated-User-Email` is treated as **display-only and never as an authorization
+decision**. A header is trivially forgeable by anyone who reaches the origin directly, so checking
+for its presence would be theater rather than defense. If a future deployment wants real defense in
+depth here, the correct mechanism is verifying the Access JWT against Cloudflare's public keys, not
+trusting a header, and not an in-process login.
+
 ## Admission control
 
 `AdmissionPolicy` (`src/admission.ts`) is the seam a separate, private control plane uses to gate
@@ -201,6 +222,14 @@ Cloudflare removes that party.
 **The reconnect slot id is stable for the life of a pairing**, so an operator can correlate one
 device's reconnects over time. This is a property of how the clients derive it, noted here because
 it is exactly the kind of metadata this section is about.
+
+**With `ADMIN_ENABLED=true`, `/admin` is only as private as whatever sits in front of it.** The
+relay serves it to anyone who can reach the port. On the hosted instance that is Cloudflare Access
+plus a firewall restricting the origin to Cloudflare's ranges, and the edge is genuinely the
+boundary. A self-hoster who enables it on a publicly reachable box publishes a year of traffic
+shape, live pairing gauges, and a per-guard reject breakdown to anyone who asks. It is off by
+default, and the relay says so at startup, but the relay cannot tell from inside the process
+whether it is internet-reachable, so it cannot refuse on your behalf.
 
 **Availability is bounded by the connection caps, on a single instance.** A client with many
 source addresses can occupy connection capacity and cause legitimate pairings to be refused. The

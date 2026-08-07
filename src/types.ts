@@ -28,6 +28,19 @@ export interface Config {
   readonly metricsEnabled: boolean;
   readonly metricsToken: string | null;
   readonly metricsAllowUnauthenticated: boolean;
+  /**
+   * Serves the private /admin dashboard. The relay deliberately does not
+   * authenticate it - gate it upstream (Cloudflare Access, a private network,
+   * an SSH tunnel). Off by default, so the public image is unaffected.
+   */
+  readonly adminEnabled: boolean;
+  /**
+   * Absolute path to the append-only NDJSON metrics history store. Null keeps
+   * the recorder memory-only (the in-process ring still serves /admin), so no
+   * file is ever opened.
+   */
+  readonly metricsHistoryPath: string | null;
+  readonly metricsHistoryIntervalMs: number;
   readonly logLevel: LogLevel;
   readonly logSlotHashing: boolean;
   readonly slotLogSalt: string;
