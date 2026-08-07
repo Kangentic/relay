@@ -145,6 +145,31 @@ button[aria-pressed="true"], .segmented button[aria-pressed="true"] {
   background: var(--series-1); border-color: var(--series-1); color: #fff;
 }
 .segmented button[aria-pressed="true"]:hover { background: var(--series-1); }
+/* Theme switch. Both destinations are on the track at once and the knob marks
+   the active one, using the same accent the segmented range control uses for
+   its selection, so it reads as a two-state choice rather than a button whose
+   label you have to parse. */
+.switch { padding: 0; border: none; background: transparent; border-radius: 999px; line-height: 0; }
+.switch .track {
+  position: relative; display: inline-flex; padding: 2px;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 999px;
+}
+.switch .knob {
+  position: absolute; top: 2px; left: 2px; width: 26px; height: 22px;
+  border-radius: 999px; background: var(--series-1); transition: transform .16s ease;
+}
+.switch[aria-checked="true"] .knob { transform: translateX(26px); }
+.switch .glyph {
+  position: relative; z-index: 1; width: 26px; height: 22px; padding: 5px 7px;
+  color: var(--text-muted); fill: none; stroke: currentColor;
+  stroke-width: 1.5; stroke-linecap: round; transition: color .12s;
+}
+.switch .sun circle { fill: currentColor; stroke: none; }
+.switch .moon path { fill: currentColor; stroke: none; }
+.switch:hover .glyph { color: var(--text-primary); }
+.switch[aria-checked="false"] .sun, .switch[aria-checked="true"] .moon,
+.switch:hover[aria-checked="false"] .sun, .switch:hover[aria-checked="true"] .moon { color: #fff; }
+@media (prefers-reduced-motion: reduce) { .switch .knob { transition: none; } }
 .spacer { flex: 1 1 auto; }
 .status {
   font-size: 12px; color: var(--text-secondary); display: inline-flex; align-items: center;
@@ -272,7 +297,18 @@ td.zero { color: var(--text-muted); }
       <button data-range="31536000000">1y</button>
     </div>
     <span class="spacer"></span>
-    <button id="themeToggle" title="Cycle theme: follow the system, force light, force dark">System</button>
+    <button id="themeToggle" class="switch" role="switch" aria-checked="false" aria-label="Dark mode" title="Switch between light and dark">
+      <span class="track">
+        <svg class="glyph sun" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <circle cx="8" cy="8" r="3.1"/>
+          <path d="M8 .8v2.1M8 13.1v2.1M.8 8h2.1M13.1 8h2.1M2.9 2.9l1.5 1.5M11.6 11.6l1.5 1.5M13.1 2.9l-1.5 1.5M4.4 11.6l-1.5 1.5"/>
+        </svg>
+        <svg class="glyph moon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M13.4 9.6A5.8 5.8 0 0 1 6.4 2.6a5.8 5.8 0 1 0 7 7Z"/>
+        </svg>
+        <span class="knob"></span>
+      </span>
+    </button>
     <button id="tableToggle" aria-pressed="false">Table view</button>
   </div>
 
@@ -1133,44 +1169,57 @@ td.zero { color: var(--text-muted); }
     if (Number(buttons[i].getAttribute("data-range")) === state.rangeMs) buttons[i].setAttribute("aria-pressed", "true");
   }
   /**
-   * Three states rather than two, because "follow the system" is a real
-   * preference and a plain light/dark switch quietly throws it away.
+   * Sun or moon, two states, no third "system" position to explain. Following
+   * the system survives as the *unset* state rather than as a visible option:
+   * nothing is stored until you touch the switch, so a first visit still
+   * matches the machine and only an explicit flip pins it.
    *
    * Re-rendering after a change is required, not cosmetic: chart colours are
    * resolved from computed CSS and baked into the SVG string when it is built,
    * so an already-drawn chart keeps the old palette until it is rebuilt.
    */
   var THEME_KEY = "relayAdminTheme";
-  var THEME_ORDER = ["system", "light", "dark"];
+  var themeSwitch = document.getElementById("themeToggle");
 
-  function readTheme() {
+  function storedTheme() {
     try {
       var stored = localStorage.getItem(THEME_KEY);
-      return stored === "light" || stored === "dark" ? stored : "system";
-    } catch (error) { return "system"; }
+      return stored === "light" || stored === "dark" ? stored : null;
+    } catch (error) { return null; }
   }
 
-  function setTheme(theme) {
-    if (theme === "system") document.documentElement.removeAttribute("data-theme");
-    else document.documentElement.setAttribute("data-theme", theme);
-    try {
-      if (theme === "system") localStorage.removeItem(THEME_KEY);
-      else localStorage.setItem(THEME_KEY, theme);
-    } catch (error) { /* preference just will not persist */ }
-    document.getElementById("themeToggle").textContent = theme.charAt(0).toUpperCase() + theme.slice(1);
+  function systemPrefersDark() {
+    return Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
   }
 
-  document.getElementById("themeToggle").addEventListener("click", function () {
-    setTheme(THEME_ORDER[(THEME_ORDER.indexOf(readTheme()) + 1) % THEME_ORDER.length]);
+  function effectiveTheme() {
+    return storedTheme() || (systemPrefersDark() ? "dark" : "light");
+  }
+
+  function applyTheme(theme, persist) {
+    document.documentElement.setAttribute("data-theme", theme);
+    if (persist) {
+      try { localStorage.setItem(THEME_KEY, theme); } catch (error) { /* preference just will not persist */ }
+    }
+    themeSwitch.setAttribute("aria-checked", theme === "dark" ? "true" : "false");
+  }
+
+  themeSwitch.addEventListener("click", function () {
+    applyTheme(effectiveTheme() === "dark" ? "light" : "dark", true);
     render();
   });
-  setTheme(readTheme());
+  applyTheme(effectiveTheme(), false);
 
-  // Following the system means following it as it changes, not only at load.
+  // Until the switch is touched, following the system means following it as it
+  // changes, not only at load.
   if (window.matchMedia) {
     var schemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
     if (schemeQuery.addEventListener) {
-      schemeQuery.addEventListener("change", function () { if (readTheme() === "system") render(); });
+      schemeQuery.addEventListener("change", function () {
+        if (storedTheme()) return;
+        applyTheme(systemPrefersDark() ? "dark" : "light", false);
+        render();
+      });
     }
   }
 

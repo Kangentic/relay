@@ -104,7 +104,7 @@ describe('/admin when enabled', () => {
   it('defines dark under both the media query and the explicit theme stamp', async () => {
     // The media query alone cannot serve a toggle: on a light OS no dark media
     // block ever matches, so stamping data-theme="dark" would change nothing
-    // and the button would look broken to exactly the people who wanted it.
+    // and the switch would look broken to exactly the people who wanted it.
     relay = await startTestRelay({ adminEnabled: true });
     const html = await (await fetch(`${httpBase(relay)}/admin`)).text();
 
@@ -118,6 +118,25 @@ describe('/admin when enabled', () => {
     expect(darkStepCount).toBe(2);
     // Applied before first paint so a stored dark choice does not flash light.
     expect(html.indexOf('relayAdminTheme')).toBeLessThan(html.indexOf('<style>'));
+  });
+
+  it('exposes the theme control as a two-state switch, not a labelled button', async () => {
+    // A cycling text button made you read a word to learn the current theme and
+    // guess what the next press would do. A sun/moon switch shows both
+    // destinations at once, which is why it carries no text at all.
+    relay = await startTestRelay({ adminEnabled: true });
+    const html = await (await fetch(`${httpBase(relay)}/admin`)).text();
+
+    const control = html.slice(html.indexOf('id="themeToggle"'));
+    expect(control.slice(0, 200)).toContain('role="switch"');
+    // Text-free, so it needs a name of its own for a screen reader.
+    expect(control.slice(0, 200)).toContain('aria-label="Dark mode"');
+    expect(control.slice(0, control.indexOf('</button>'))).toContain('class="glyph sun"');
+    expect(control.slice(0, control.indexOf('</button>'))).toContain('class="glyph moon"');
+    // No "System" position: following the system is the unset state, so nothing
+    // is written until an explicit flip.
+    expect(html).not.toContain('THEME_ORDER');
+    expect(html).toContain('localStorage.setItem(THEME_KEY, theme)');
   });
 
   it('inlines a brandmark that can actually scale', async () => {
