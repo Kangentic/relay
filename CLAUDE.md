@@ -42,7 +42,10 @@ src/
   admission.ts        # AdmissionPolicy interface, allowAllPolicy, webhook policy
   guards/             # slot-id format, rate limiting, connection caps
   net/clientIp.ts     # real client IP behind a trusted proxy, IPv6 bucketing
-  http/               # /healthz (+ build version), /readyz, /metrics (Prometheus), /metricz (JSON + RSS)
+  http/               # /healthz (+ build version), /readyz, /metrics (Prometheus), /metricz (JSON + RSS),
+                      #   /admin dashboard + /admin/data (adminPage.ts holds the inline page)
+  history/            # metrics history recorder: rows.ts (schema + delta/aggregation math),
+                      #   recorder.ts (timer, ring, NDJSON store, compaction), processSampler.ts
   version.ts          # own package.json version, resolved once at import; undefined if unreadable
   logging.ts          # structured JSON logs; slot ids hashed by default
 test/
@@ -88,6 +91,30 @@ matters for docs and tests, not for `src/**`.) `test/blindness.test.ts` mechanic
 enforces the import restriction, and `/code-review` re-runs it as a pre-flight Critical-severity
 gate on every review. Treat any change that would need to import the protocol package into
 `src/**` as a design smell to escalate, not a quick fix.
+
+### The /admin dashboard and metrics history
+
+`ADMIN_ENABLED` serves a private dashboard; `METRICS_HISTORY_PATH` points at an append-only
+NDJSON store the relay samples on a timer. Both default off, and off is **structural**, not a
+runtime flag check: `createHistoryRecorder` is simply never called, so no timer, no file handle,
+no route, and no event-loop-delay monitor exist. Four invariants are load-bearing:
+
+- **The forwarding hot path stays untouched.** `Metrics.onForward()` is two integer increments.
+  Nothing in this feature runs per frame. A change that needs per-frame work here is a redesign,
+  not a tweak.
+- **Counters are stored as per-interval deltas, never raw totals**, since they zero on restart
+  and raw values would draw every deploy as a giant negative spike. The delta baseline is taken
+  at recorder *construction*, not on the first tick, because `createRelay` accepts an injected
+  `Metrics` that may already be warm.
+- **Compaction buckets on epoch-aligned boundaries**, which is what makes it idempotent, and
+  resolution may only ever increase. Bucketing relative to `now` would drift and double count.
+- **The relay does not authenticate `/admin`.** That is deliberate (it stays a relay that
+  authenticates nothing); the gate is Cloudflare Access scoped to `/admin*`. Do not add an
+  in-process login. See `docs/security-model.md`.
+
+`/metricz` is not superseded by this: it is the machine surface `monitor.yml` and
+`scripts/loadTest.mjs` consume, and it keeps its token gate. The two share one data definition
+(`closedByCauseFromSnapshot`) rather than one auth mechanism.
 
 ### Open-core admission seam
 
