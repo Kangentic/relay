@@ -19,6 +19,11 @@ WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
+# Created and chowned while still root, so a named volume mounted here inherits
+# node:node ownership on first initialization. Without this the runtime user
+# cannot write the metrics history file, and the failure appears in production
+# only while every local test passes. Harmless when no volume is mounted.
+RUN mkdir -p /var/lib/relay && chown node:node /var/lib/relay
 USER node
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

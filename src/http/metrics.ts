@@ -40,6 +40,27 @@ export interface Metrics {
   render(): string;
 }
 
+/**
+ * The authoritative "why did connections close" grouping, shared by /metricz
+ * and the /admin dashboard so the two can never disagree.
+ *
+ * Counter units differ by cause. Pair teardowns, counted once per pair (two
+ * sockets each): peerClosed, backpressure, sessionByteCap, sessionTimeCap.
+ * Single-socket closes, counted once per socket: parkedOverflow (a parked
+ * socket overflowing its pre-pair buffer), heartbeat, parkTimeout.
+ */
+export function closedByCauseFromSnapshot(snapshot: MetricsSnapshot): Readonly<Record<string, number>> {
+  return {
+    peerClosed: snapshot.peerClosedTotal,
+    backpressure: snapshot.rejectsByReason.backpressure ?? 0,
+    parkedOverflow: snapshot.rejectsByReason.parked_overflow ?? 0,
+    heartbeat: snapshot.pongTimeoutsTotal,
+    parkTimeout: snapshot.rejectsByReason.park_timeout ?? 0,
+    sessionByteCap: snapshot.rejectsByReason.session_byte_cap ?? 0,
+    sessionTimeCap: snapshot.rejectsByReason.session_time_cap ?? 0,
+  };
+}
+
 export function createMetrics(): Metrics {
   const rejectsByReason = new Map<RejectReason, number>();
   let activeConnections = 0;
@@ -200,6 +221,32 @@ export function handleMetricsRequest(
 }
 
 /**
+ * Process health sampled by the history recorder, when one is running. Passed
+ * in structurally rather than imported, so this module keeps no dependency on
+ * the recorder.
+ */
+export interface MetricsProcessExtras {
+  /** Null until the recorder's first tick; the lifetime average is used then. */
+  readonly cpuPercent: number | null;
+  readonly sampleWindowMs: number | null;
+  readonly eventLoopLagP99Ms: number | null;
+  readonly rssPercent: number | null;
+  readonly historyRecorderHealthy: boolean;
+  readonly historyPersistence: 'memory' | 'file';
+}
+
+/**
+ * Lifetime-average CPU, used when no recorder is running. Free: process.cpuUsage()
+ * with no argument is cumulative since start, so no background sampler is needed.
+ */
+function cpuPercentSinceStart(): number {
+  const uptimeSeconds = process.uptime();
+  if (uptimeSeconds <= 0) return 0;
+  const usage = process.cpuUsage();
+  return Math.round(((usage.user + usage.system) / (uptimeSeconds * 1_000_000)) * 1000) / 10;
+}
+
+/**
  * The JSON twin of /metrics for humans, scripts, and the load-test harness:
  * the same aggregate counters plus process memory, grouped so "why do
  * connections close" is answerable at a glance. Carries no slot ids, no
@@ -210,6 +257,7 @@ export function handleMetriczRequest(
   response: ServerResponse,
   metrics: Metrics,
   config: Pick<Config, 'metricsEnabled' | 'metricsToken' | 'metricsAllowUnauthenticated'>,
+  processExtras: MetricsProcessExtras | null = null,
 ): void {
   if (!authorizeMetricsRequest(request, response, config)) return;
   const currentSnapshot = metrics.snapshot();
@@ -218,6 +266,20 @@ export function handleMetriczRequest(
     uptimeSeconds: Math.round(process.uptime()),
     rssBytes: memory.rss,
     heapUsedBytes: memory.heapUsed,
+    // Percent of ONE core, deliberately unclamped: cpuUsage() covers every
+    // thread, so a saturated libuv threadpool legitimately reads above 100.
+    cpuPercent: processExtras?.cpuPercent ?? cpuPercentSinceStart(),
+    // Null means the figure above covers the whole process lifetime rather
+    // than a recorder sampling window.
+    cpuPercentWindowMs: processExtras?.sampleWindowMs ?? null,
+    eventLoopLagP99Ms: processExtras?.eventLoopLagP99Ms ?? null,
+    rssPercent: processExtras?.rssPercent ?? null,
+    ...(processExtras === null
+      ? {}
+      : {
+          historyRecorderHealthy: processExtras.historyRecorderHealthy,
+          historyPersistence: processExtras.historyPersistence,
+        }),
     activeConnections: currentSnapshot.activeConnections,
     waitingSlots: currentSnapshot.waitingSlots,
     pairedSlots: currentSnapshot.pairedSlots,
@@ -225,20 +287,7 @@ export function handleMetriczRequest(
     sessionsTotal: currentSnapshot.sessionsTotal,
     framesForwardedTotal: currentSnapshot.framesForwardedTotal,
     bytesForwardedTotal: currentSnapshot.bytesForwardedTotal,
-    // Counter units differ by cause. Pair teardowns, counted once per pair
-    // (two sockets each): peerClosed, backpressure, sessionByteCap,
-    // sessionTimeCap. Single-socket closes, counted once per socket:
-    // parkedOverflow (a parked socket overflowing its pre-pair buffer),
-    // heartbeat, parkTimeout.
-    closedByCause: {
-      peerClosed: currentSnapshot.peerClosedTotal,
-      backpressure: currentSnapshot.rejectsByReason.backpressure ?? 0,
-      parkedOverflow: currentSnapshot.rejectsByReason.parked_overflow ?? 0,
-      heartbeat: currentSnapshot.pongTimeoutsTotal,
-      parkTimeout: currentSnapshot.rejectsByReason.park_timeout ?? 0,
-      sessionByteCap: currentSnapshot.rejectsByReason.session_byte_cap ?? 0,
-      sessionTimeCap: currentSnapshot.rejectsByReason.session_time_cap ?? 0,
-    },
+    closedByCause: closedByCauseFromSnapshot(currentSnapshot),
     rejectsByReason: currentSnapshot.rejectsByReason,
   };
   response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body));

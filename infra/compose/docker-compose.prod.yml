@@ -31,6 +31,14 @@ services:
       - "127.0.0.1:8080:8080"
     env_file:
       - /opt/relay/.env
+    # Metrics history for the /admin dashboard. A NAMED volume, not a host bind
+    # mount: a bind mount arrives root-owned and the container runs USER node,
+    # so it would fail in production only. Deploy and rollback both use
+    # `up -d --force-recreate`, and the only prune is `docker image prune`, so
+    # nothing in the deploy path removes this. A provision.sh server rebuild
+    # does discard it; see infra/README.md.
+    volumes:
+      - relay_history:/var/lib/relay
     ulimits:
       nofile:
         soft: 65535
@@ -82,3 +90,4 @@ networks:
 
 volumes:
   caddy_data: {}
+  relay_history: {}

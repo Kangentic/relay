@@ -139,8 +139,26 @@ All configuration is environment variables, documented fully in `.env.example`. 
 | `METRICS_ENABLED` / `METRICS_TOKEN` / `METRICS_ALLOW_UNAUTHENTICATED` | `true` / unset / `false` | Prometheus-format `/metrics` and its JSON twin `/metricz`. They carry no slot ids or IPs, but do expose live pairing gauges and a per-guard reject breakdown. **They require a token**: with none set both answer 404 (not 401, which would advertise them). Set `METRICS_ALLOW_UNAUTHENTICATED=true` to serve them openly on a genuinely private deployment. |
 | `LOG_SLOT_HASHING` / `SLOT_LOG_SALT` | `true` / random per process | Configure `slotRef()`, the salted hash any future slot logging would go through. **Currently inert**: no log line contains a slot id, so nothing calls it. They exist so that adding one is deliberate and safe by default. |
 | `ADMISSION_WEBHOOK_URL` | unset | The open-core seam, for an embedder calling `createRelay({ admissionPolicy })`. **The shipped binary does not construct it**, so setting this alone gates nothing. See below. |
+| `ADMIN_ENABLED` / `METRICS_HISTORY_PATH` / `METRICS_HISTORY_INTERVAL_MS` | `false` / unset / `60000` | A private dashboard at `/admin` showing live activity and historical trends, backed by an append-only NDJSON store. **The relay does not authenticate `/admin`** - it stays a blind relay that authenticates nothing, so gate it upstream (Cloudflare Access scoped to `/admin*`, a private network, an SSH tunnel); the relay warns at startup when it is on. Aggregate counters only, never slot ids or IPs. The path must be absolute and on a mounted volume, or the next deploy discards the history. All three default to off, and cost nothing when off: no timer, no file handle, no route. |
 
 See `.env.example` for the complete list.
+
+### The `/admin` dashboard
+
+Off by default and unaffected by anything else in this table. When enabled, the relay samples its
+own aggregate counters on a timer and appends them to `METRICS_HISTORY_PATH`, so trends survive the
+process restart that zeroes every counter.
+
+- **Counters are stored as per-interval deltas, never raw totals.** A deploy therefore renders as a
+  restart marker rather than a giant negative spike.
+- **Retention is tiered automatically**: 1-minute rows for 48 hours, 5-minute for 30 days, hourly
+  for a year. That settles at roughly 20k rows and a few MB, compacted at most once an hour and
+  never on the write path.
+- **It costs nothing when nobody is looking.** The forwarding hot path is untouched, the page polls
+  rather than holding a socket open, polling stops entirely while the tab is hidden, and a poll
+  answered from the in-memory ring never touches the disk.
+- **It deliberately does not rebuild** host CPU, disk, bandwidth or egress billing (the Hetzner
+  console has those) or edge request and WebSocket counts (Cloudflare has those).
 
 ## Performance and vertical scaling
 

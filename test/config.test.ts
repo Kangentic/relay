@@ -87,3 +87,40 @@ describe('connection cap configuration', () => {
     expect(slotIdPattern.test('123456')).toBe(false);
   });
 });
+
+describe('admin dashboard and metrics history configuration', () => {
+  it('defaults to fully off, so the public image is unaffected', () => {
+    const config = loadConfig({});
+    expect(config.adminEnabled).toBe(false);
+    expect(config.metricsHistoryPath).toBeNull();
+    expect(config.metricsHistoryIntervalMs).toBe(60_000);
+  });
+
+  it('reads all three variables from the environment', () => {
+    const config = loadConfig({
+      ADMIN_ENABLED: 'true',
+      METRICS_HISTORY_PATH: '/var/lib/relay/history.ndjson',
+      METRICS_HISTORY_INTERVAL_MS: '30000',
+    });
+    expect(config.adminEnabled).toBe(true);
+    expect(config.metricsHistoryPath).toBe('/var/lib/relay/history.ndjson');
+    expect(config.metricsHistoryIntervalMs).toBe(30_000);
+  });
+
+  it('rejects a sampling interval that would spin the event loop', () => {
+    // readInt accepts 0, and setInterval(fn, 0) is a hot loop.
+    expect(() => loadConfig({ METRICS_HISTORY_INTERVAL_MS: '0' })).toThrow(/METRICS_HISTORY_INTERVAL_MS/);
+    expect(() => loadConfig({ METRICS_HISTORY_INTERVAL_MS: '999' })).toThrow(/METRICS_HISTORY_INTERVAL_MS/);
+  });
+
+  it('refuses a relative history path, which would write to the ephemeral layer', () => {
+    // A relative path resolves against the container cwd, so history would be
+    // discarded by the very deploy it is supposed to survive.
+    expect(() => loadConfig({ METRICS_HISTORY_PATH: 'history.ndjson' })).toThrow(/METRICS_HISTORY_PATH/);
+    expect(() => loadConfig({ METRICS_HISTORY_PATH: './data/history.ndjson' })).toThrow(/METRICS_HISTORY_PATH/);
+  });
+
+  it('rejects a non-boolean ADMIN_ENABLED rather than silently disabling', () => {
+    expect(() => loadConfig({ ADMIN_ENABLED: 'yes' })).toThrow(/ADMIN_ENABLED/);
+  });
+});
