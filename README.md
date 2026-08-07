@@ -180,8 +180,8 @@ Design points worth knowing before changing it:
   list. The dashboard inherits that from `MetricsSnapshot` rather than choosing it.
 - **One HTML response, no build step, no dependency.** Markup, styles, charts and script are a
   single inlined document with zero external requests, so `ws` stays the only production
-  dependency. Light and dark are both authored (the toggle cycles system / light / dark and
-  persists in `localStorage`), and every chart is hand-rolled SVG.
+  dependency. Light and dark are both authored, with a sun/moon switch that follows the system
+  until you flip it and then remembers, and every chart is hand-rolled SVG.
 - **It deliberately does not rebuild** host CPU, disk, bandwidth or egress billing (the Hetzner
   console has those) or edge request and WebSocket counts (Cloudflare has those).
 
