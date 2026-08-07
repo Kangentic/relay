@@ -101,6 +101,25 @@ describe('/admin when enabled', () => {
     }
   });
 
+  it('defines dark under both the media query and the explicit theme stamp', async () => {
+    // The media query alone cannot serve a toggle: on a light OS no dark media
+    // block ever matches, so stamping data-theme="dark" would change nothing
+    // and the button would look broken to exactly the people who wanted it.
+    relay = await startTestRelay({ adminEnabled: true });
+    const html = await (await fetch(`${httpBase(relay)}/admin`)).text();
+
+    expect(html).toContain('@media (prefers-color-scheme: dark)');
+    // Guarded, so an explicit light choice still beats an OS set to dark.
+    expect(html).toContain(':root:not([data-theme="light"])');
+    expect(html).toContain(':root[data-theme="dark"]');
+
+    // Both scopes must actually carry the dark steps, not just exist.
+    const darkStepCount = html.split('--surface-1: #1a1a19').length - 1;
+    expect(darkStepCount).toBe(2);
+    // Applied before first paint so a stored dark choice does not flash light.
+    expect(html.indexOf('relayAdminTheme')).toBeLessThan(html.indexOf('<style>'));
+  });
+
   it('inlines a brandmark that can actually scale', async () => {
     // The vendored asset has width/height but no viewBox. That is fine for a
     // data-URI favicon and broken inline: with no viewBox there is no mapping
