@@ -27,6 +27,7 @@ function stubSampler(): ProcessSampler {
       return latest;
     },
     latest: () => latest,
+    containerMemoryLimitBytes: () => 1_258_291_200,
     stop: () => undefined,
   };
 }
@@ -204,6 +205,9 @@ describe('history recorder', () => {
           eventLoopLagP99Ms: 1,
           rssBytes: 1_000,
           rssPercent: 1,
+          maxOutboundBufferBytes: null,
+          backloggedConnections: null,
+          maxParkedBufferBytes: null,
         }),
       );
     }
@@ -248,6 +252,9 @@ describe('history recorder', () => {
           eventLoopLagP99Ms: 1,
           rssBytes: 1_000,
           rssPercent: 1,
+          maxOutboundBufferBytes: null,
+          backloggedConnections: null,
+          maxParkedBufferBytes: null,
         }),
       );
     }

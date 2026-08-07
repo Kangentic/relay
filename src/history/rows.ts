@@ -74,6 +74,29 @@ export interface HistoryRow {
   readonly eventLoopLagP99Ms: number | null;
   readonly rssBytes: number | null;
   readonly rssPercent: number | null;
+
+  /**
+   * Peak outbound socket queue depth across live connections. This is the
+   * closest thing the relay has to a latency signal without timestamping
+   * frames: a queue that is growing means that consumer is not keeping up, and
+   * every byte behind it is waiting. Null when no connection sampler ran.
+   */
+  readonly maxOutboundBufferBytes: number | null;
+  /** Connections whose outbound queue passed a quarter of the teardown cap. */
+  readonly backloggedConnections: number | null;
+  /** Peak pre-pair buffer held by a connection still waiting for its partner. */
+  readonly maxParkedBufferBytes: number | null;
+}
+
+/**
+ * Sampled from live connections on the recorder tick, never per frame. Reading
+ * bufferedAmount is O(connections) once an interval, which is far cheaper than
+ * anything that would touch the forwarding path.
+ */
+export interface ConnectionSample {
+  readonly maxOutboundBufferBytes: number;
+  readonly backloggedConnections: number;
+  readonly maxParkedBufferBytes: number;
 }
 
 export interface HistorySampleInput {
@@ -85,6 +108,7 @@ export interface HistorySampleInput {
   readonly previousSnapshot: MetricsSnapshot;
   readonly currentSnapshot: MetricsSnapshot;
   readonly processSample: ProcessSample | null;
+  readonly connectionSample: ConnectionSample | null;
 }
 
 function roundToTenth(value: number): number {
@@ -142,6 +166,9 @@ export function buildHistoryRow(input: HistorySampleInput): HistoryRow {
     eventLoopLagP99Ms: processSample?.eventLoopLagP99Ms ?? null,
     rssBytes: processSample?.rssBytes ?? null,
     rssPercent: processSample?.rssPercent ?? null,
+    maxOutboundBufferBytes: input.connectionSample?.maxOutboundBufferBytes ?? null,
+    backloggedConnections: input.connectionSample?.backloggedConnections ?? null,
+    maxParkedBufferBytes: input.connectionSample?.maxParkedBufferBytes ?? null,
   };
 }
 
@@ -230,6 +257,9 @@ export function aggregateHistoryRows(
   let rssBytes: number | null = null;
   let rssPercent: number | null = null;
   let uptimeSeconds: number | null = null;
+  let maxOutboundBufferBytes: number | null = null;
+  let backloggedConnections: number | null = null;
+  let maxParkedBufferBytes: number | null = null;
 
   const activeConnections: { value: HistorySeriesValue; windowMs: number }[] = [];
   const waitingSlots: { value: HistorySeriesValue; windowMs: number }[] = [];
@@ -259,6 +289,17 @@ export function aggregateHistoryRows(
     if (row.rssBytes !== null) rssBytes = Math.max(rssBytes ?? 0, row.rssBytes);
     if (row.rssPercent !== null) rssPercent = Math.max(rssPercent ?? 0, row.rssPercent);
     if (row.uptimeSeconds !== null) uptimeSeconds = row.uptimeSeconds;
+    // Peak-preserving, like the other headroom signals: a bucket that contained
+    // one badly backed-up consumer must not average that away.
+    if (row.maxOutboundBufferBytes !== null) {
+      maxOutboundBufferBytes = Math.max(maxOutboundBufferBytes ?? 0, row.maxOutboundBufferBytes);
+    }
+    if (row.backloggedConnections !== null) {
+      backloggedConnections = Math.max(backloggedConnections ?? 0, row.backloggedConnections);
+    }
+    if (row.maxParkedBufferBytes !== null) {
+      maxParkedBufferBytes = Math.max(maxParkedBufferBytes ?? 0, row.maxParkedBufferBytes);
+    }
   }
 
   return {
@@ -285,6 +326,9 @@ export function aggregateHistoryRows(
     eventLoopLagP99Ms,
     rssBytes,
     rssPercent,
+    maxOutboundBufferBytes,
+    backloggedConnections,
+    maxParkedBufferBytes,
   };
 }
 
@@ -325,6 +369,9 @@ export function serializeHistoryRow(row: HistoryRow): string {
   if (row.eventLoopLagP99Ms !== null) record['el'] = row.eventLoopLagP99Ms;
   if (row.rssBytes !== null) record['rb'] = row.rssBytes;
   if (row.rssPercent !== null) record['rp'] = row.rssPercent;
+  if (row.maxOutboundBufferBytes !== null) record['ob'] = row.maxOutboundBufferBytes;
+  if (row.backloggedConnections !== null) record['bl'] = row.backloggedConnections;
+  if (row.maxParkedBufferBytes !== null) record['pb'] = row.maxParkedBufferBytes;
   return JSON.stringify(record);
 }
 
@@ -408,6 +455,11 @@ export function parseHistoryRow(line: string): HistoryRowParseResult {
       eventLoopLagP99Ms: readNullableNumber(fields, 'el'),
       rssBytes: readNullableNumber(fields, 'rb'),
       rssPercent: readNullableNumber(fields, 'rp'),
+      // Added after v1 shipped. Absent on older rows, which read as null rather
+      // than zero so a chart shows a gap instead of inventing a flat line.
+      maxOutboundBufferBytes: readNullableNumber(fields, 'ob'),
+      backloggedConnections: readNullableNumber(fields, 'bl'),
+      maxParkedBufferBytes: readNullableNumber(fields, 'pb'),
     },
   };
 }

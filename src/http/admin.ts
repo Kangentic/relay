@@ -21,6 +21,17 @@ const DEFAULT_RANGE_MS = 6 * 60 * 60 * 1000;
 export interface AdminDeps {
   readonly metrics: Metrics;
   readonly recorder: HistoryRecorder | null;
+  /**
+   * The ceilings the relay will actually enforce. Without these the dashboard
+   * can show a number but not whether it is close to anything, which is the
+   * difference between "1240 connections" and "31% of the way to refusing new
+   * ones".
+   */
+  readonly capacity: {
+    readonly maxConnections: number;
+    readonly maxUnpairedConnections: number;
+    readonly maxBufferedBytes: number;
+  };
   readonly now?: () => number;
 }
 
@@ -104,7 +115,10 @@ export async function handleAdminDataRequest(
       closedByCause: closedByCauseFromSnapshot(snapshot),
       rejectsByReason: snapshot.rejectsByReason,
       uptimeSeconds: Math.round(process.uptime()),
-      rssBytes: processSample?.rssBytes ?? process.memoryUsage.rss(),
+      // Read live rather than from the sampler: RSS is free to read, and taking
+      // it from the last tick made the tile up to a full interval stale for no
+      // reason. CPU and loop lag genuinely need the sampler's window.
+      rssBytes: process.memoryUsage.rss(),
       cpuPercent: processSample?.cpuPercent ?? null,
       eventLoopLagP99Ms: processSample?.eventLoopLagP99Ms ?? null,
       rssPercent: processSample?.rssPercent ?? null,
@@ -125,6 +139,12 @@ export async function handleAdminDataRequest(
       // Changes on every relay start, so a reader can tell "the process I was
       // watching went away" from "nothing new happened".
       instanceId: recorder?.instanceId() ?? null,
+      capacity: {
+        maxConnections: deps.capacity.maxConnections,
+        maxUnpairedConnections: deps.capacity.maxUnpairedConnections,
+        maxBufferedBytes: deps.capacity.maxBufferedBytes,
+        memoryLimitBytes: recorder?.containerMemoryLimitBytes() ?? null,
+      },
       truncated: read?.truncated ?? false,
       skippedLineCount: read?.skippedLineCount ?? 0,
       unknownVersionLineCount: read?.unknownVersionLineCount ?? 0,

@@ -114,6 +114,14 @@ function buildRow(timestampMs, resolutionSeconds, index, restartCount) {
     eventLoopLagP99Ms: Math.round((1.1 + load * 5 * burst) * 10) / 10,
     rssBytes: Math.round((78 + load * 26) * 1024 * 1024),
     rssPercent: Math.round(((78 + load * 26) / 1200) * 1000) / 10,
+    // Queue depth mostly idles near zero and occasionally builds, which is what
+    // a real slow consumer looks like. Without the occasional build the
+    // backpressure chart is a flat line and proves nothing about the rendering.
+    maxOutboundBufferBytes: Math.round(
+      pseudoRandom(index * 4.6) > 0.96 ? load * 4_200_000 * burst : load * 26_000 * jitter,
+    ),
+    backloggedConnections: pseudoRandom(index * 4.6) > 0.985 ? Math.ceil(load * 3) : 0,
+    maxParkedBufferBytes: Math.round(load * 9_000 * jitter),
   };
 }
 

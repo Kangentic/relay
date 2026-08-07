@@ -98,7 +98,13 @@ button[aria-pressed="true"] { background: var(--series-1); border-color: var(--s
 @media (max-width: 1040px) { .tiles { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 620px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
 .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 8px 11px; }
-.tile .label { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); }
+.tile .label { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+/* Status is a percentage first and a colour second, so it survives a
+   colour-blind reader, a grayscale print and forced-colors mode. */
+.badge { font-size: 10px; font-weight: 600; padding: 0 5px; border-radius: 999px; letter-spacing: 0; }
+.badge.good { color: var(--good); background: color-mix(in srgb, var(--good) 14%, transparent); }
+.badge.warning { color: var(--warning); background: color-mix(in srgb, var(--warning) 20%, transparent); }
+.badge.critical { color: var(--critical); background: color-mix(in srgb, var(--critical) 16%, transparent); }
 .tile .value { font-size: 20px; font-weight: 600; margin-top: 1px; line-height: 1.25; }
 .tile .note { font-size: 11px; color: var(--text-muted); }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(470px, 1fr)); gap: 14px; }
@@ -107,6 +113,10 @@ button[aria-pressed="true"] { background: var(--series-1); border-color: var(--s
 .card .hint { font-size: 11px; color: var(--text-muted); margin: 0 0 8px; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
+.triage { list-style: none; margin: 10px 0 2px; padding: 0; font-size: 11.5px; color: var(--text-secondary); }
+.triage li { display: flex; align-items: baseline; gap: 6px; margin-bottom: 3px; line-height: 1.45; }
+.triage b { color: var(--text-primary); font-weight: 600; flex: none; }
+.triage .swatch { position: relative; top: -3px; }
 /* A short line key, never a filled box: it reads as "this is the line in the
    chart" rather than as a category chip. */
 .swatch { width: 11px; height: 2px; border-radius: 999px; flex: none; }
@@ -185,7 +195,10 @@ td.zero { color: var(--text-muted); }
 (function () {
   "use strict";
 
-  var POLL_MS = 5000;
+  // 2s. Measured cost of one incremental poll is ~0.3 ms and ~790 bytes, served
+  // from the in-memory ring without touching disk, against roughly 2700
+  // polls/sec of headroom. The tab stops polling entirely when hidden.
+  var POLL_MS = 2000;
   var MAX_PLOT_POINTS = 400;
   var DAY_MS = 86400000;
 
@@ -468,7 +481,8 @@ td.zero { color: var(--text-muted); }
       }
       legend += "</div>";
     }
-    card.innerHTML = "<h2>" + esc(spec.title) + "</h2>" + (spec.hint ? '<p class="hint">' + esc(spec.hint) + "</p>" : "") + '<div class="plot"></div>' + legend;
+    card.innerHTML = "<h2>" + esc(spec.title) + "</h2>" + (spec.hint ? '<p class="hint">' + esc(spec.hint) + "</p>" : "") +
+      '<div class="plot"></div>' + legend + (spec.footnote || "");
     return card;
   }
 
@@ -486,11 +500,23 @@ td.zero { color: var(--text-muted); }
     return out;
   }
 
+  // The triage table from infra/README, on the page rather than in a file
+  // nobody opens mid-incident. Only causes that actually fired are shown.
   var CAUSES = [
-    { key: "peerClosed", label: "peer closed" }, { key: "backpressure", label: "backpressure" },
-    { key: "parkedOverflow", label: "parked overflow" }, { key: "heartbeat", label: "heartbeat" },
-    { key: "parkTimeout", label: "park timeout" }, { key: "sessionByteCap", label: "session byte cap" },
-    { key: "sessionTimeCap", label: "session time cap" }
+    { key: "peerClosed", label: "peer closed",
+      meaning: "Normal. One side hung up; this should dominate." },
+    { key: "backpressure", label: "backpressure",
+      meaning: "Slow consumers hitting the buffer cap, or a saturated uplink. Check bandwidth before raising MAX_BUFFERED_BYTES." },
+    { key: "parkedOverflow", label: "parked overflow",
+      meaning: "A peer sent hard before its partner arrived. Client bug or abuse; correlate with rate_limit_slot." },
+    { key: "heartbeat", label: "heartbeat",
+      meaning: "Phones vanishing without a FIN. Normal at low rates; a spike suggests a network path problem." },
+    { key: "parkTimeout", label: "park timeout",
+      meaning: "Pairings started and abandoned. Client-side pairing UX, or slot scanning." },
+    { key: "sessionByteCap", label: "session byte cap",
+      meaning: "Real users hitting the byte cap. Revisit the cap if these are legitimate rather than abuse." },
+    { key: "sessionTimeCap", label: "session time cap",
+      meaning: "Should always read zero: production leaves MAX_SESSION_MS disabled. Non-zero means the deploy changed." }
   ];
 
   function specs() {
@@ -515,13 +541,42 @@ td.zero { color: var(--text-muted); }
       { title: "New connections and sessions", hint: "Per-interval deltas.", format: fmtCount, series: [
         { label: "connections", color: seriesColor(1), value: function (r) { return r.connectionsDelta; } },
         { label: "sessions paired", color: seriesColor(3), value: function (r) { return r.sessionsDelta; } }
+      ] },
+      { title: "Outbound queue depth",
+        hint: "Peak bytes waiting to flush to the slowest consumer. This is the closest thing to a latency signal the relay has: a queue that grows means that peer is not keeping up. The tunnel is torn down at the buffer cap, so this is the warning before the teardown.",
+        format: fmtBytes, series: [
+        { label: "peak queue", color: seriesColor(2), value: function (r) { return r.maxOutboundBufferBytes; } }
+      ] },
+      { title: "Pairing success",
+        hint: "Share of new connections that found a partner. Sustained below 100% means clients are arriving and failing to pair, which a raw connection count hides entirely.",
+        format: fmtPercent, series: [
+        { label: "paired", color: seriesColor(3), value: function (r) {
+          if (!r.connectionsDelta) return null;
+          return Math.min(100, (r.sessionsDelta * 2 / r.connectionsDelta) * 100);
+        } }
+      ] },
+      { title: "Average frame size",
+        hint: "Bytes per forwarded frame. A step change here means the shape of the traffic changed rather than its volume, which separates a client-behaviour change from a load change.",
+        format: fmtBytes, series: [
+        { label: "mean frame", color: seriesColor(7), value: function (r) {
+          return r.framesForwardedDelta > 0 ? r.bytesForwardedDelta / r.framesForwardedDelta : null;
+        } }
       ] }
     ];
 
     var causeSeries = activeSeries(function (row, key) { return row.closedByCause[key]; }, CAUSES);
     if (causeSeries.length) {
+      var meanings = "";
+      for (var ci = 0; ci < causeSeries.length; ci++) {
+        for (var cj = 0; cj < CAUSES.length; cj++) {
+          if (CAUSES[cj].key !== causeSeries[ci].key) continue;
+          meanings += '<li><i class="swatch" style="background:' + causeSeries[ci].color + '"></i><b>' +
+            esc(CAUSES[cj].label) + "</b> " + esc(CAUSES[cj].meaning) + "</li>";
+        }
+      }
       list.push({ title: "Teardowns by cause", stacked: true,
         hint: "Stacked per-interval counts. Mixed units: peer closed, backpressure and the session caps count pair teardowns (two sockets each); parked overflow, heartbeat and park timeout count single sockets.",
+        footnote: meanings ? '<ul class="triage">' + meanings + "</ul>" : "",
         format: fmtCount, series: causeSeries });
     }
 
@@ -550,23 +605,62 @@ td.zero { color: var(--text-muted); }
     return list;
   }
 
+  function latestRow() {
+    return state.rows.length ? state.rows[state.rows.length - 1] : null;
+  }
+
+  // Headroom, not raw values. "1240 connections" is a number; "31% of the way
+  // to refusing new ones" is an answer. Thresholds are deliberately generous:
+  // this should nag before it is urgent, not after.
+  function statusOf(fraction) {
+    if (fraction === null || fraction === undefined || !isFinite(fraction)) return "";
+    if (fraction >= 0.8) return "critical";
+    if (fraction >= 0.6) return "warning";
+    return "good";
+  }
+
   function renderTiles() {
-    var live = state.live;
-    if (!live) return;
+    var live = state.live, meta = state.meta;
+    if (!live || !meta) return;
+    var caps = meta.capacity || {};
+    var row = latestRow();
+    var buffered = row && row.maxOutboundBufferBytes !== null ? row.maxOutboundBufferBytes : null;
+    var backlogged = row && row.backloggedConnections !== null ? row.backloggedConnections : null;
+
+    var connectionFraction = caps.maxConnections ? live.activeConnections / caps.maxConnections : null;
+    var memoryFraction = live.rssPercent === null ? null : live.rssPercent / 100;
+    var bufferFraction = buffered === null || !caps.maxBufferedBytes ? null : buffered / caps.maxBufferedBytes;
+
     var tiles = [
-      { label: "Active connections", value: fmtCount(live.activeConnections) },
-      { label: "Waiting / paired", value: fmtCount(live.waitingSlots) + " / " + fmtCount(live.pairedSlots) },
-      { label: "Sessions total", value: fmtCount(live.sessionsTotal), note: "since restart" },
-      { label: "Bytes forwarded", value: fmtBytes(live.bytesForwardedTotal), note: "since restart" },
-      { label: "Uptime", value: fmtDuration(live.uptimeSeconds) },
-      { label: "CPU", value: fmtPercent(live.cpuPercent), note: "of one core" },
-      { label: "Event loop p99", value: fmtMs(live.eventLoopLagP99Ms) },
-      { label: "Memory", value: live.rssPercent === null ? fmtBytes(live.rssBytes) : fmtPercent(live.rssPercent), note: fmtBytes(live.rssBytes) }
+      { label: "Connections", value: fmtCount(live.activeConnections) + " / " + fmtCount(caps.maxConnections),
+        note: "cap refuses new sockets at 100%", fraction: connectionFraction },
+      { label: "Live sessions", value: fmtCount(live.pairedSlots),
+        note: fmtCount(live.waitingSlots) + " waiting to pair" },
+      { label: "Slowest consumer", value: buffered === null ? "n/a" : fmtBytes(buffered),
+        note: backlogged === null ? "queue depth, sampled" : fmtCount(backlogged) + " connection(s) backing up",
+        fraction: bufferFraction },
+      { label: "Memory", value: fmtBytes(live.rssBytes),
+        note: caps.memoryLimitBytes ? "of " + fmtBytes(caps.memoryLimitBytes) : "no container limit found",
+        fraction: memoryFraction },
+      { label: "CPU", value: fmtPercent(live.cpuPercent), note: "of one core",
+        fraction: live.cpuPercent === null ? null : live.cpuPercent / 100 },
+      { label: "Event loop p99", value: fmtMs(live.eventLoopLagP99Ms),
+        note: "above ~50 ms delays every forward",
+        fraction: live.eventLoopLagP99Ms === null ? null : live.eventLoopLagP99Ms / 200 },
+      { label: "Uptime", value: fmtDuration(live.uptimeSeconds), note: "since last restart" },
+      { label: "Bytes forwarded", value: fmtBytes(live.bytesForwardedTotal), note: "egress, since restart" }
     ];
+
     var html = "";
     for (var i = 0; i < tiles.length; i++) {
-      html += '<div class="tile"><div class="label">' + esc(tiles[i].label) + '</div><div class="value">' + esc(tiles[i].value) + "</div>" +
-        (tiles[i].note ? '<div class="note">' + esc(tiles[i].note) + "</div>" : "") + "</div>";
+      var tile = tiles[i], status = statusOf(tile.fraction);
+      // The percentage is always spelled out, never carried by the dot colour
+      // alone.
+      var badge = status
+        ? '<span class="badge ' + status + '">' + Math.round(tile.fraction * 100) + "%</span>"
+        : "";
+      html += '<div class="tile"><div class="label">' + esc(tile.label) + badge + '</div><div class="value">' +
+        esc(tile.value) + "</div>" + (tile.note ? '<div class="note">' + esc(tile.note) + "</div>" : "") + "</div>";
     }
     document.getElementById("tiles").innerHTML = html;
   }
