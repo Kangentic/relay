@@ -265,20 +265,49 @@ count **single sockets**. `sessionTimeCap` should always read zero, since produc
 ## The `/admin` dashboard and its volume
 
 `ADMIN_ENABLED=true` serves a private dashboard at `/admin` on the same listener and the same
-hostname as the WebSocket endpoint. The relay does **not** authenticate it. Cloudflare Access is
-the gate, and it must be scoped to the **`/admin*` path**, never the whole host.
+hostname as the WebSocket endpoint. The relay does **not** authenticate it. A Cloudflare Access
+self-hosted application is the gate, scoped to the admin paths and never to the whole host.
 
 **Scoping this wrong is an immediate outage.** The relay serves the WebSocket upgrade on `/` on
-that same hostname, so an Access application covering the host would put a login page in front of
-every client. `monitor.yml` runs `scripts/deploy/synthetic-pair.mjs` every 30 minutes, which opens
-two real sockets to one slot and asserts a byte-identical round trip through Caddy and Cloudflare,
-so it catches exactly this failure. Watch that run after any Access change. To check by hand:
+that same hostname, so an Access application covering the bare host would put a login page in
+front of every client. `monitor.yml` runs `scripts/deploy/synthetic-pair.mjs` every 30 minutes,
+which opens two real sockets to one slot and asserts a byte-identical round trip through Caddy and
+Cloudflare, so it catches exactly this failure. Watch that run after any Access change. To check
+by hand:
 
 ```
 RELAY_URL=wss://relay.kangentic.com node scripts/deploy/synthetic-pair.mjs
 ```
 
-The Access policy allows any `@kangentic.com` email. `Cf-Access-Authenticated-User-Email` is
+### Two traps when configuring the application
+
+**A bare path does not cover its subpaths.** Cloudflare matches `example.com/alpha/*` against
+`/alpha/one` but *not* against `/alpha` itself, and a path of `alpha` does not reach `/alpha/one`.
+So `admin` alone protects the page while leaving `/admin/data` (a year of history) open, and
+`admin/*` alone does the reverse. **Both entries are required.**
+
+**Both public hostnames reach the relay.** `relay.kangentic.com` is a proxied CNAME to
+`relay-ashburn-us-east.kangentic.com`, and `Caddyfile.prod`'s single site block serves both. An
+application covering only the CNAME leaves the region name ungated. The full set is four
+domain-and-path entries:
+
+| Hostname | Path |
+|---|---|
+| `relay.kangentic.com` | `admin` |
+| `relay.kangentic.com` | `admin/*` |
+| `relay-ashburn-us-east.kangentic.com` | `admin` |
+| `relay-ashburn-us-east.kangentic.com` | `admin/*` |
+
+The Access session cookie is set per hostname, so signing in on one name does not authorize the
+other. That is fine; it just means the login prompt appears once per hostname used.
+
+The policy is a single **Allow** with two Include rules, which Cloudflare ORs together: *Emails
+ending in* `@kangentic.com`, plus an *Emails* rule naming the maintainer's personal address as a
+fallback. The fallback exists deliberately: the domain rule is worthless if no `@kangentic.com`
+mailbox can receive the one-time PIN, and locking the only operator out of the dashboard is a
+worse failure than a slightly wider allow list. Drop the fallback once domain mail is confirmed.
+
+`Cf-Access-Authenticated-User-Email` is
 treated as display-only and is never an authorization input: the header is trivially forgeable by
 anyone who reaches the origin directly, so trusting it would be theater. The real boundary is the
 Hetzner firewall restricting 80/443 to Cloudflare ranges, plus Caddy's strict Host matching and
