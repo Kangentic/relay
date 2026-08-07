@@ -55,6 +55,7 @@ function row(overrides: Partial<HistoryRow> = {}): HistoryRow {
       previousSnapshot: snapshot(),
       currentSnapshot: snapshot(),
       processSample,
+      connectionSample: null,
     }),
     ...overrides,
   };
@@ -78,6 +79,7 @@ describe('building a row from two snapshots', () => {
         pairedSlots: 4,
       }),
       processSample,
+      connectionSample: null,
     });
 
     expect(built.framesForwardedDelta).toBe(75);
@@ -100,6 +102,7 @@ describe('building a row from two snapshots', () => {
       previousSnapshot: snapshot({ framesForwardedTotal: 9_000, bytesForwardedTotal: 100_000, peerClosedTotal: 40 }),
       currentSnapshot: snapshot({ framesForwardedTotal: 3, bytesForwardedTotal: 90 }),
       processSample,
+      connectionSample: null,
     });
 
     expect(built.framesForwardedDelta).toBe(0);
@@ -118,6 +121,7 @@ describe('building a row from two snapshots', () => {
       previousSnapshot: snapshot({ rejectsByReason: { park_timeout: 5, slot_busy: 2 } }),
       currentSnapshot: snapshot({ rejectsByReason: { park_timeout: 8, slot_busy: 2 } }),
       processSample,
+      connectionSample: null,
     });
 
     expect(built.rejectsByReasonDelta).toEqual({ park_timeout: 3 });
@@ -230,6 +234,37 @@ describe('aggregation', () => {
     );
     expect(merged.restartCount).toBe(1);
     expect(merged.sourceRowCount).toBe(3);
+  });
+
+  it('keeps the worst queue depth in a bucket rather than averaging it away', () => {
+    // A bucket that contained one badly backed-up consumer has to still say so:
+    // averaging is how a real incident becomes invisible at 30d resolution.
+    const merged = aggregateHistoryRows(
+      [
+        row({ maxOutboundBufferBytes: 1_024, backloggedConnections: 0, maxParkedBufferBytes: 10 }),
+        row({ maxOutboundBufferBytes: 8_000_000, backloggedConnections: 4, maxParkedBufferBytes: 900 }),
+      ],
+      1_700_000_100_000,
+      MID_RESOLUTION_SECONDS,
+    );
+    expect(merged.maxOutboundBufferBytes).toBe(8_000_000);
+    expect(merged.backloggedConnections).toBe(4);
+    expect(merged.maxParkedBufferBytes).toBe(900);
+  });
+
+  it('round-trips the queue fields, and reads older rows that predate them as null', () => {
+    const withQueue = row({ maxOutboundBufferBytes: 4_096, backloggedConnections: 2, maxParkedBufferBytes: 64 });
+    const parsed = parseHistoryRow(serializeHistoryRow(withQueue));
+    if (parsed.kind !== 'row') throw new Error('expected a row');
+    expect(parsed.row.maxOutboundBufferBytes).toBe(4_096);
+    expect(parsed.row.backloggedConnections).toBe(2);
+
+    // A row written before these fields existed must read as null, not zero, so
+    // the chart shows a gap instead of inventing a flat healthy line.
+    const older = parseHistoryRow(JSON.stringify({ v: 1, t: 5, r: 60, w: 60_000 }));
+    if (older.kind !== 'row') throw new Error('expected a row');
+    expect(older.row.maxOutboundBufferBytes).toBeNull();
+    expect(older.row.backloggedConnections).toBeNull();
   });
 
   it('takes the maximum of event loop p99 rather than averaging tail statistics', () => {

@@ -14,6 +14,7 @@ import { handleHealthzRequest, handleReadyzRequest, type HealthState } from './h
 import { handleLandingRequest } from './http/landing.js';
 import { handleAdminDataRequest, handleAdminPageRequest } from './http/admin.js';
 import { createHistoryRecorder, type HistoryRecorder } from './history/recorder.js';
+import type { ConnectionSample } from './history/rows.js';
 import { resolveClientIp, bucketIp } from './net/clientIp.js';
 import { isValidSlotId } from './guards/slotFormat.js';
 import { RateLimiter } from './guards/rateLimit.js';
@@ -85,6 +86,30 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
   const liveConnections = new Set<Conn>();
   const health: HealthState = { draining: false };
 
+  /**
+   * The relay's only latency-shaped signal. A socket's bufferedAmount is what
+   * the kernel and ws have accepted but not yet flushed to that peer, so a
+   * growing queue means that consumer is behind and every byte behind it is
+   * waiting. Timestamping frames would answer this precisely and would also
+   * put work in the forwarding hot path; this reads the same story once per
+   * recorder tick for O(connections) and nothing per frame.
+   */
+  const backlogThresholdBytes = Math.max(1, Math.floor(config.maxBufferedBytes / 4));
+  function sampleConnections(): ConnectionSample {
+    let maxOutboundBufferBytes = 0;
+    let backloggedConnections = 0;
+    let maxParkedBufferBytes = 0;
+    for (const conn of liveConnections) {
+      const buffered = conn.socket.bufferedAmount;
+      if (buffered > maxOutboundBufferBytes) maxOutboundBufferBytes = buffered;
+      // A quarter of the teardown cap: far enough along to mean something, far
+      // enough from the cap to still be a warning rather than a postmortem.
+      if (buffered >= backlogThresholdBytes) backloggedConnections += 1;
+      if (conn.pendingBytes > maxParkedBufferBytes) maxParkedBufferBytes = conn.pendingBytes;
+    }
+    return { maxOutboundBufferBytes, backloggedConnections, maxParkedBufferBytes };
+  }
+
   // Null when neither the dashboard nor the history store is asked for, which
   // is the default. A null recorder is the structural proof of "no timer, no
   // file handle, no route" - nothing here is flag-checked at runtime.
@@ -96,6 +121,7 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
           logger,
           historyFilePath: config.metricsHistoryPath,
           intervalMs: config.metricsHistoryIntervalMs,
+          sampleConnections,
         })
       : null);
 
@@ -151,7 +177,16 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
       return;
     }
     if (config.adminEnabled && url.pathname === '/admin/data') {
-      handleAdminDataRequest(request, response, { metrics, recorder: historyRecorder }, url).catch(
+      const adminDeps = {
+        metrics,
+        recorder: historyRecorder,
+        capacity: {
+          maxConnections: config.maxConnections,
+          maxUnpairedConnections: config.maxUnpairedConnections,
+          maxBufferedBytes: config.maxBufferedBytes,
+        },
+      };
+      handleAdminDataRequest(request, response, adminDeps, url).catch(
         (error: unknown) => {
           logger.error('admin data request failed', {
             error: error instanceof Error ? error.message : String(error),

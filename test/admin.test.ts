@@ -228,8 +228,16 @@ describe('/admin when enabled', () => {
       'recorderHealthy',
       'truncated',
       'skippedLineCount',
+      'instanceId',
+      'capacity',
     ]) {
       expect(payload.meta).toHaveProperty(key);
+    }
+    // Without the ceilings the dashboard can show a number but not whether it
+    // is close to anything, which is the whole point of the headroom tiles.
+    const capacity = (payload.meta as { capacity: Record<string, unknown> }).capacity;
+    for (const key of ['maxConnections', 'maxUnpairedConnections', 'maxBufferedBytes', 'memoryLimitBytes']) {
+      expect(capacity).toHaveProperty(key);
     }
     const row = payload.rows[0];
     if (row === undefined) throw new Error('expected a row');
@@ -243,6 +251,9 @@ describe('/admin when enabled', () => {
       'sessionsDelta',
       'rejectsByReasonDelta',
       'closedByCause',
+      'maxOutboundBufferBytes',
+      'backloggedConnections',
+      'maxParkedBufferBytes',
     ]) {
       expect(row).toHaveProperty(key);
     }
@@ -250,6 +261,39 @@ describe('/admin when enabled', () => {
     expect(row['activeConnections']).toHaveProperty('maximum');
     expect(row['waitingSlots']).toHaveProperty('maximum');
     expect(row['pairedSlots']).toHaveProperty('maximum');
+  });
+
+  it('samples live connection queue depth into the recorded rows', async () => {
+    // The relay has no per-frame latency metric by design, so outbound queue
+    // depth is the only signal that a consumer is falling behind. If this is
+    // not wired the charts render an honest-looking flat line forever.
+    directory = await mkdtemp(join(tmpdir(), 'relay-admin-'));
+    relay = await startTestRelay({
+      adminEnabled: true,
+      metricsHistoryPath: join(directory, 'history.ndjson'),
+      metricsHistoryIntervalMs: 1_000,
+    });
+    const slotId = 'e'.repeat(64);
+    const peerA = await connectTestClient(relay.url, slotId);
+    const peerB = await connectTestClient(relay.url, slotId);
+    peerA.send(Buffer.alloc(4_096, 7));
+    await peerB.nextMessage();
+
+    let rows: { maxOutboundBufferBytes: number | null; backloggedConnections: number | null }[] = [];
+    const deadline = Date.now() + 6_000;
+    while (rows.length === 0 && Date.now() < deadline) {
+      const body = (await (await fetch(`${httpBase(relay)}/admin/data?range=3600000`)).json()) as {
+        rows: typeof rows;
+      };
+      rows = body.rows;
+    }
+    expect(rows.length).toBeGreaterThan(0);
+    // Sampled, so a number rather than the null an unwired sampler would leave.
+    expect(typeof rows[rows.length - 1]?.maxOutboundBufferBytes).toBe('number');
+    expect(typeof rows[rows.length - 1]?.backloggedConnections).toBe('number');
+
+    peerA.close();
+    peerB.close();
   });
 
   it('honors the since cursor, returning only newer rows', async () => {

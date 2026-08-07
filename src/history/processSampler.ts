@@ -28,6 +28,8 @@ export interface ProcessSampler {
   sample(nowMs: number): ProcessSample;
   /** The last sampled value, for readers that must not disturb the window. */
   latest(): ProcessSample | null;
+  /** The resolved container memory ceiling, or null while unresolved or unknowable. */
+  containerMemoryLimitBytes(): number | null;
   stop(): void;
 }
 
@@ -140,6 +142,7 @@ export function createProcessSampler(deps: ProcessSamplerDeps = {}): ProcessSamp
       return latestSample;
     },
     latest: () => latestSample,
+    containerMemoryLimitBytes: () => containerMemoryLimitBytes,
     stop: () => eventLoopDelayHistogram.disable(),
   };
 }

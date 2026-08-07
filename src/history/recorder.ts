@@ -14,6 +14,7 @@ import {
   MAX_HISTORY_ROW_COUNT,
   parseHistoryRow,
   serializeHistoryRow,
+  type ConnectionSample,
   type HistoryRow,
 } from './rows.js';
 
@@ -56,6 +57,8 @@ export interface HistoryRecorderDeps {
   readonly ringCapacity?: number;
   readonly now?: () => number;
   readonly processSampler?: ProcessSampler;
+  /** Reads live connection queue depths. Called once per tick, never per frame. */
+  readonly sampleConnections?: () => ConnectionSample;
 }
 
 export interface HistoryReadResult {
@@ -77,6 +80,8 @@ export interface HistoryRecorder {
   intervalMs(): number;
   /** Random per process start. A change means the relay restarted under the reader. */
   instanceId(): string;
+  /** The resolved container memory ceiling, for headroom reporting. */
+  containerMemoryLimitBytes(): number | null;
   /** Resolves once every currently-queued file operation has settled. */
   drain(): Promise<void>;
   readSince(sinceMs: number): Promise<HistoryReadResult>;
@@ -343,6 +348,7 @@ export function createHistoryRecorder(deps: HistoryRecorderDeps): HistoryRecorde
       previousSnapshot,
       currentSnapshot,
       processSample,
+      connectionSample: deps.sampleConnections?.() ?? null,
     });
 
     previousSnapshot = currentSnapshot;
@@ -409,6 +415,7 @@ export function createHistoryRecorder(deps: HistoryRecorderDeps): HistoryRecorde
     ringCapacity: () => ringCapacity,
     intervalMs: () => deps.intervalMs,
     instanceId: () => instanceId,
+    containerMemoryLimitBytes: () => processSampler.containerMemoryLimitBytes(),
     drain: () => fileOperationQueue,
 
     readSince: async (sinceMs) => {
