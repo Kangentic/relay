@@ -131,6 +131,12 @@ net.
 Delivered to `/opt/relay/.env` by every deploy (see "How secrets reach the box"). Only the values
 that differ from `src/config.ts`'s defaults are listed; everything else stays default.
 
+**This table is a description, not the source.** The file is generated from a heredoc in
+`.github/workflows/deploy.yml` and overwrites `/opt/relay/.env` wholesale on every deploy, so a
+value that is not in that heredoc is not in production no matter what this table says. Editing
+the file over SSH appears to work and is silently reverted by the next deploy. Change the
+workflow.
+
 | Var | Value | Why |
 |---|---|---|
 | `MAX_CONNECTIONS` | `4000` | 2x the 2000 all-concurrent worst case at under 1k users. The default of 10000 cannot bound memory on a 2 GB box given the 16 MiB `MAX_BUFFERED_BYTES` tail per connection - refuse cleanly with a 503 rather than risk an OOM. |
@@ -190,6 +196,23 @@ serving container id changed, its image digest matches what was just pulled, and
 healthcheck and a direct host probe on `127.0.0.1:8080` report healthy. The first condition alone
 would pass against the old container still answering 200, which is why `/healthz` cannot be trusted
 in isolation.
+
+**A deploy that changes nothing skips the restart**, so a docs-only release does not drop every
+live session for no reason. "Changes nothing" is a conjunction of three inputs, and the distinction
+matters because a skipped deploy still reports success:
+
+| Input | How it is detected |
+|---|---|
+| Image | `git diff` over `Dockerfile`, `.dockerignore`, `package.json`, `package-lock.json`, `tsconfig*.json`, `src` |
+| Compose | `git diff` over `infra/compose` (mounts, `mem_limit`, ports are not build inputs but do change the running container) |
+| Environment | `sha256` of `/opt/relay/.env` against `state/last_env_sha256` |
+
+The environment needs its own fingerprint because the file is delivered out of band by the
+workflow moments before `deploy.sh` runs and is deliberately not in git, so no `git diff` can see
+it. Without that check, a deploy whose only change is a new variable skips the restart and reports
+success while the container keeps running the previous configuration. The fingerprint is recorded
+only after a successful deploy, so a rollback leaves the previous value in place and the next
+attempt recreates rather than skipping.
 
 **To roll back manually**, or to redeploy a specific version: trigger `deploy.yml` via
 `workflow_dispatch` with `image_tag` set to the desired tag (or run `deploy.sh` directly on the box
