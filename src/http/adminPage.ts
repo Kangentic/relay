@@ -279,7 +279,10 @@ td.zero { color: var(--text-muted); }
   var LIVE_RANGE = 0;
   var LIVE_WINDOW_MS = 15 * 60 * 1000;
 
-  var state = { rangeMs: DAY_MS, cursorMs: 0, rows: [], live: null, meta: null, table: false, timer: null, failures: 0, instanceId: null, lastUpdateMs: 0, statusText: "connecting", statusClass: "",
+  // Live by default: the first question on opening an operations page is
+  // almost always "what is it doing right now", and the seed below means that
+  // view is a full fifteen minutes on first paint rather than a blank chart.
+  var state = { rangeMs: LIVE_RANGE, cursorMs: 0, rows: [], live: null, meta: null, table: false, timer: null, failures: 0, instanceId: null, lastUpdateMs: 0, statusText: "connecting", statusClass: "",
     liveRows: [], previousLive: null, previousLiveAtMs: 0 };
   // Loopback only. Under tsx watch the relay restarts on every source edit, and
   // a new instance id is the signal that the page being displayed is stale.
@@ -1033,10 +1036,23 @@ td.zero { color: var(--text-muted); }
       var response = await fetch("/admin/data?range=" + LIVE_WINDOW_MS, { headers: { accept: "application/json" } });
       if (response.ok) {
         var payload = await response.json();
+        var nowMs = Date.now();
         var oldestLiveMs = state.liveRows.length ? state.liveRows[0].timestampMs : Infinity;
         var seed = payload.rows.filter(function (row) { return row.timestampMs < oldestLiveMs; });
         state.liveRows = seed.concat(state.liveRows);
-        trimLiveWindow(Date.now());
+        trimLiveWindow(nowMs);
+
+        // This response carries live counters and meta too, so adopting them
+        // here means the tiles are populated on first paint instead of empty
+        // until the first poll lands. Recording it as the previous sample also
+        // lets the very next poll produce a point rather than only priming.
+        state.live = payload.live;
+        state.meta = payload.meta;
+        state.previousLive = payload.live;
+        state.previousLiveAtMs = nowMs;
+        state.lastUpdateMs = nowMs;
+        if (payload.meta.instanceId) state.instanceId = payload.meta.instanceId;
+        setStatus("live", "");
       }
     } catch (error) {
       // Seeding is an improvement, not a requirement: without it the view
@@ -1099,7 +1115,9 @@ td.zero { color: var(--text-muted); }
   var freshnessTimer = setInterval(paintStatus, 1000);
   window.addEventListener("beforeunload", function () { clearInterval(freshnessTimer); });
 
-  load(true).then(startPolling);
+  // Live needs its window seeded, not a history range fetched.
+  var firstPaint = state.rangeMs === LIVE_RANGE ? seedLiveFromHistory() : load(true);
+  firstPaint.then(startPolling);
 })();
 </script>
 </body>
