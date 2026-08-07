@@ -5,6 +5,54 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-07
+
+### Added
+
+- **A private `/admin` dashboard, with history that outlives the process.** `/metrics` and
+  `/metricz` are snapshots of counters that zero on every restart, so the relay could answer "is
+  it up right now" and nothing else. The relay now samples its own aggregate counters on a timer
+  into an append-only NDJSON store, and serves a page built to answer five operational questions:
+  how many users are connected, when a bigger box is needed, whether the relay itself is healthy,
+  how it is performing for users, and what problems clients are hitting. Retention is tiered
+  automatically (1-minute rows for 48 hours, 5-minute for 30 days, hourly for a year), settling at
+  roughly 20k rows and a few MB.
+- **Three new variables, all defaulting off:** `ADMIN_ENABLED`, `METRICS_HISTORY_PATH`, and
+  `METRICS_HISTORY_INTERVAL_MS` (default `60000`). Off is structural rather than a runtime flag
+  check: with them unset there is no timer, no file handle, no route, and no event-loop-delay
+  monitor. **The public image and every self-hoster are unaffected until they opt in.**
+- **`/metricz` gains process health**: `cpuPercent`, `cpuPercentWindowMs`, `eventLoopLagP99Ms`,
+  and `rssPercent`, plus `historyRecorderHealthy` and `historyPersistence` when a recorder is
+  running. Purely additive, and it keeps its token gate: it stays the machine surface CI consumes,
+  where `/admin` is the human surface gated at the edge. Nothing was removed or renamed, so
+  `monitor.yml` and `scripts/loadTest.mjs` need no change.
+- **`/preview`**, a local rig that seeds ~11k rows across 40 days and runs the dashboard against
+  them, since the only way to review a visual surface is to look at it.
+
+### Changed
+
+- **The teardown-cause grouping now has exactly one definition.** `buildClosedByCause` in
+  `src/http/metrics.ts` is fed lifetime totals by `/metricz` and per-interval deltas by the
+  history rows, so adding a cause cannot leave one surface behind. The output shape of
+  `/metricz`'s `closedByCause` is unchanged.
+
+### Operator notes
+
+- **The relay does not authenticate `/admin`, deliberately.** It stays a relay that authenticates
+  nothing, so the gate belongs upstream: Cloudflare Access scoped to the **`/admin*` path**, not
+  the bare hostname. Scoping an Access app to the whole host would break every relay client, since
+  the WebSocket endpoint shares that hostname. Create the Access application **before** setting
+  `ADMIN_ENABLED=true`. The relay logs a warning at startup whenever the surface is on, and
+  `Cf-Access-Authenticated-User-Email` is display-only, never an authorization input.
+- **`METRICS_HISTORY_PATH` must be absolute and on a mounted volume**, and is rejected at startup
+  otherwise. A relative path resolves against the container's working directory and would write
+  history into the ephemeral image layer that the very next deploy discards, which is the exact
+  failure the store exists to prevent. The production compose file declares a named
+  `relay_history` volume for this; a named volume rather than a bind mount, because the image runs
+  as `node` and a bind mount arrives root-owned, failing in production only.
+- Doing nothing is a supported outcome. This release changes no default and requires no action to
+  keep the relay behaving exactly as it did in 0.2.2.
+
 ## [0.2.2] - 2026-08-07
 
 ### Added
