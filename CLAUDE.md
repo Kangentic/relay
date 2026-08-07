@@ -42,7 +42,8 @@ src/
   admission.ts        # AdmissionPolicy interface, allowAllPolicy, webhook policy
   guards/             # slot-id format, rate limiting, connection caps
   net/clientIp.ts     # real client IP behind a trusted proxy, IPv6 bucketing
-  http/               # /healthz, /readyz, /metrics (Prometheus), /metricz (JSON + RSS)
+  http/               # /healthz (+ build version), /readyz, /metrics (Prometheus), /metricz (JSON + RSS)
+  version.ts          # own package.json version, resolved once at import; undefined if unreadable
   logging.ts          # structured JSON logs; slot ids hashed by default
 test/
   helpers/            # relayHarness.ts (real relay on an ephemeral port), wsClient.ts

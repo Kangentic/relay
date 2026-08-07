@@ -197,7 +197,13 @@ horizontal scaling needs no code changes, only slot-sticky routing in front.
 
 ## Observability
 
-- `/healthz` is liveness, `/readyz` flips to 503 while draining for shutdown.
+- `/healthz` is liveness, `/readyz` flips to 503 while draining for shutdown. `/healthz` also
+  reports the running build's `version` (`{"status":"ok","version":"<x.y.z>"}`), read from
+  `package.json` at startup so it cannot drift from the deployed image. The field is omitted
+  rather than faked if the manifest cannot be read. The body is serialized with no spacing, so
+  `"status":"ok"` survives as a contiguous substring and any *contains*-matching health gate or
+  uptime monitor keeps working; a monitor that compares the whole body for equality does not, and
+  has to be switched to a contains check.
 - `GET /` serves a static splash page (the Kangentic mark and a one-line description) so visiting
   the relay's hostname directly in a browser isn't blank. It makes no external requests and has no
   config surface.

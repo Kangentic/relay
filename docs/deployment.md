@@ -96,8 +96,13 @@ three conditions, polled every 2s for up to 60s:
    `127.0.0.1:8080/healthz` (bypassing Caddy and Cloudflare entirely) returns
    `"status":"ok"`.
 
-No application code change was needed to make this work — deliberately, to avoid dragging a
-build-sha endpoint through `docs-stay-in-sync`'s anchor rule for no real benefit.
+No application code change was needed to build this gate, deliberately, to avoid dragging a
+build-sha endpoint through `docs-stay-in-sync`'s anchor rule for no real benefit. That is still
+true even though `/healthz` now reports a `version`: that field was added as a client-facing trust
+signal (the desktop's "Test connection" pill), not as a gate input, and the gate does not read it. It
+narrows the un-replaced-container case, since a stale container answers with the old version, but it
+cannot replace condition 2: a rebuild at the same version is indistinguishable by version string
+alone. The digest check remains the actual gate.
 
 ### Rollback
 
@@ -230,7 +235,9 @@ Two layers, deliberately split by what a free-tier external uptime service can a
 
 - An external SaaS polls `/healthz` on both the region-qualified hostname and the short CNAME
   (catching a CNAME or proxy misconfiguration independently), matching on response body content
-  rather than status code alone, and is **not** given the metrics token.
+  rather than status code alone, and is **not** given the metrics token. That matcher must be a
+  *contains* check for `"status":"ok"`, never an equality check on the whole body: the body also
+  carries a `version` field, which changes on every release.
 - A scheduled `monitor.yml` workflow holds the credential the SaaS can't: it asserts `/metricz`
   fields and runs a synthetic pairing probe (two WebSocket connections round-tripping a byte
   through a real slot) — the only check that proves pairing actually works end to end, since
