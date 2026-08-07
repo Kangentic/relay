@@ -28,7 +28,16 @@ The full text is in [CLA.md](CLA.md).
 
 ## Development setup
 
+**Use Node 22.** `.node-version` and `.nvmrc` pin it, `engines` enforces `>=20 <23`, and CI runs
+20 and 22. This is not a formality: on **Node 24 the Vitest worker crashes on roughly 1 run in
+10**, taking a whole test file's results with it, so `npm test` goes red without any test having
+failed. See [docs/testing.md](docs/testing.md) for the measurements. `.npmrc` sets
+`engine-strict=true`, so `npm install` fails outright on an out-of-range Node rather than warning.
+A version manager that reads `.node-version` (for example
+[fnm](https://github.com/Schniz/fnm)) keeps you on the right runtime automatically.
+
 ```
+node --version   # expect v22.x
 npm install
 npm run typecheck
 npm run lint
