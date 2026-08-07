@@ -12,7 +12,7 @@
  * relief rule applies: every chart ships a legend, series are directly
  * labelled, and a table view is one click away.
  */
-import { BRANDMARK_SMALL_SVG, FAVICON_DATA_URI } from './brand.js';
+import { BRANDMARK_INLINE_SVG, FAVICON_DATA_URI } from './brand.js';
 
 export const ADMIN_PAGE_HTML = `<!doctype html>
 <html lang="en">
@@ -20,7 +20,7 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>Relay admin</title>
+<title>Kangentic Relay - Admin</title>
 <link rel="icon" type="image/svg+xml" href="${FAVICON_DATA_URI}">
 <style>
 :root {
@@ -80,14 +80,19 @@ body {
   font-size: 14px;
   line-height: 1.5;
 }
-.wrap { max-width: 1180px; margin: 0 auto; padding: 22px 20px 64px; }
+/* Wide enough for three chart columns on a 2K display. The grid below is
+   auto-fit, so the column count falls to two and then one on its own as the
+   viewport narrows; this only stops the content stretching indefinitely. */
+.wrap { max-width: 1800px; margin: 0 auto; padding: 22px 24px 64px; }
 .topbar {
   display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
   justify-content: space-between; padding-bottom: 16px; margin-bottom: 18px;
   border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
-.mark { width: 30px; height: 30px; flex: none; display: block; }
+/* overflow:hidden is a backstop: an SVG that ever loses its viewBox again
+   should be clipped to the header, not painted across the document. */
+.mark { width: 30px; height: 30px; flex: none; display: block; overflow: hidden; }
 .mark svg { width: 100%; height: 100%; display: block; }
 .brandtext { min-width: 0; }
 h1 { font-size: 19px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
@@ -129,6 +134,9 @@ button[aria-pressed="true"], .segmented button[aria-pressed="true"] {
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
 .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 18px; }
+/* All eight across on a wide display, so the headroom row reads as one glance
+   rather than two. */
+@media (min-width: 1560px) { .tiles { grid-template-columns: repeat(8, 1fr); } }
 @media (max-width: 1040px) { .tiles { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 620px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
 .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 8px 11px; }
@@ -146,10 +154,22 @@ button[aria-pressed="true"], .segmented button[aria-pressed="true"] {
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(470px, 1fr)); gap: 14px; }
 .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 15px 10px; }
 .card h2 { font-size: 13px; margin: 0 0 1px; font-weight: 600; }
-.card .hint { font-size: 11px; color: var(--text-muted); margin: 0 0 8px; }
+/* Reserve two lines so a one-line hint and a two-line hint still put their
+   charts on the same baseline across a row. */
+.card .hint { font-size: 11px; color: var(--text-muted); margin: 0 0 8px; min-height: 2.7em; }
+.triage li.note { color: var(--text-muted); padding-left: 0; text-indent: 0; margin-bottom: 6px; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
-.triage { list-style: none; margin: 10px 0 2px; padding: 0; font-size: 11.5px; color: var(--text-secondary); }
+.triage-details { margin-top: 8px; font-size: 11.5px; }
+.triage-details summary {
+  cursor: pointer; color: var(--text-muted); list-style: none;
+  display: inline-flex; align-items: center; gap: 5px; user-select: none;
+}
+.triage-details summary::-webkit-details-marker { display: none; }
+.triage-details summary::before { content: "\\203A"; display: inline-block; transition: transform .12s; font-size: 14px; }
+.triage-details[open] summary::before { transform: rotate(90deg); }
+.triage-details summary:hover { color: var(--text-primary); }
+.triage { list-style: none; margin: 8px 0 2px; padding: 0; font-size: 11.5px; color: var(--text-secondary); }
 /* Hanging indent: the swatch and cause name sit in a fixed gutter so wrapped
    explanation lines align under the text, not under the swatch. */
 .triage li { padding-left: 17px; text-indent: -17px; margin-bottom: 4px; line-height: 1.45; }
@@ -201,9 +221,9 @@ td.zero { color: var(--text-muted); }
 <div class="wrap">
   <header class="topbar">
     <div class="brand">
-      <span class="mark" aria-hidden="true">${BRANDMARK_SMALL_SVG}</span>
+      <span class="mark" aria-hidden="true">${BRANDMARK_INLINE_SVG}</span>
       <div class="brandtext">
-        <h1>Relay admin</h1>
+        <h1>Kangentic Relay</h1>
         <p class="sub">Aggregate counters only: no slot ids, no IP addresses, no traffic content.</p>
       </div>
     </div>
@@ -414,7 +434,7 @@ td.zero { color: var(--text-muted); }
     for (var g = 0; g <= tickCount; g++) {
       var gv = step * g, gy = yAt(gv);
       svg += '<line x1="' + PAD_L + '" y1="' + gy + '" x2="' + (W - PAD_R) + '" y2="' + gy + '" stroke="' + css("--grid") + '" stroke-width="1"/>';
-      svg += '<text x="' + (PAD_L - 6) + '" y="' + (gy + 3.5) + '" text-anchor="end" font-size="10" fill="' + css("--text-muted") + '">' + esc(spec.format(gv)) + '</text>';
+      svg += '<text x="' + (PAD_L - 6) + '" y="' + (gy + 3.5) + '" text-anchor="end" font-size="13" fill="' + css("--text-muted") + '">' + esc(spec.format(gv)) + '</text>';
     }
     // Restart markers: a deploy is a counter reset, not a dip in traffic.
     for (var r = 0; r < pts.length; r++) {
@@ -478,7 +498,7 @@ td.zero { color: var(--text-muted); }
       var at = labelCount === 1 ? 0 : Math.round((tick / (labelCount - 1)) * (pts.length - 1));
       var anchor = tick === 0 ? "start" : tick === labelCount - 1 ? "end" : "middle";
       svg += '<text x="' + xAt(at).toFixed(1) + '" y="' + (H - 8) + '" text-anchor="' + anchor +
-        '" font-size="10" fill="' + css("--text-muted") + '">' + esc(fmtTime(pts[at].t)) + '</text>';
+        '" font-size="13" fill="' + css("--text-muted") + '">' + esc(fmtTime(pts[at].t)) + '</text>';
     }
     // A class, not an id: several charts share this document, and duplicate
     // ids would be invalid markup even though the subtree query still works.
@@ -592,7 +612,7 @@ td.zero { color: var(--text-muted); }
 
   function specs() {
     var list = [
-      { title: "Connections", hint: "Point samples, one per interval. The line is the peak; hover for the average once buckets cover more than one sample.", format: fmtCount, series: [
+      { title: "Connections", hint: "Point samples, one per interval. Line is the peak; hover for the average on aggregated buckets.", format: fmtCount, series: [
         { label: "active", color: seriesColor(1), reduce: "max",
           value: function (r) { return r.activeConnections.maximum; },
           mean: function (r) { return r.activeConnections.mean; } },
@@ -614,12 +634,12 @@ td.zero { color: var(--text-muted); }
         { label: "sessions paired", color: seriesColor(3), reduce: "sum", value: function (r) { return r.sessionsDelta; } }
       ] },
       { title: "Outbound queue depth",
-        hint: "Peak bytes waiting to flush to the slowest consumer. This is the closest thing to a latency signal the relay has: a queue that grows means that peer is not keeping up. The tunnel is torn down at the buffer cap, so this is the warning before the teardown.",
+        hint: "Peak bytes waiting to flush to the slowest consumer. A growing queue means that peer is behind; the tunnel is torn down at the buffer cap.",
         format: fmtBytes, fill: true, series: [
         { label: "peak queue", color: seriesColor(2), reduce: "max", value: function (r) { return r.maxOutboundBufferBytes; } }
       ] },
       { title: "Pairing success",
-        hint: "Share of new connections that found a partner, averaged across each bucket. Sustained below 100% means clients are arriving and failing to pair, which a raw connection count hides entirely.",
+        hint: "Share of new connections that found a partner. Sustained below 100% means clients are arriving and failing to pair.",
         format: fmtPercent, series: [
         { label: "paired", color: seriesColor(3), reduce: "mean", value: function (r) {
           if (!r.connectionsDelta) return null;
@@ -627,7 +647,7 @@ td.zero { color: var(--text-muted); }
         } }
       ] },
       { title: "Average frame size",
-        hint: "Bytes per forwarded frame. A step change here means the shape of the traffic changed rather than its volume, which separates a client-behaviour change from a load change.",
+        hint: "Bytes per forwarded frame. A step change means the traffic changed shape rather than volume.",
         format: fmtBytes, series: [
         { label: "mean frame", color: seriesColor(7), reduce: "mean", value: function (r) {
           return r.framesForwardedDelta > 0 ? r.bytesForwardedDelta / r.framesForwardedDelta : null;
@@ -645,7 +665,15 @@ td.zero { color: var(--text-muted); }
             esc(CAUSES[cj].label) + "</b> " + esc(CAUSES[cj].meaning) + "</li>";
         }
       }
-      return meanings ? '<ul class="triage">' + meanings + "</ul>" : "";
+      // Collapsed by default. The explanations are what make the chart
+      // actionable, but left open they add more height than the chart itself
+      // and knock the card out of line with its neighbour.
+      return meanings
+        ? '<details class="triage-details"><summary>What these mean</summary><ul class="triage">' +
+            '<li class="note">Units differ by cause: backpressure and the session caps count pair ' +
+            'teardowns (two sockets each); parked overflow, heartbeat and park timeout count single sockets.</li>' +
+            meanings + "</ul></details>"
+        : "";
     }
 
     // Split deliberately. peer closed is the normal ending and is supposed to
@@ -654,14 +682,14 @@ td.zero { color: var(--text-muted); }
     var normalSeries = activeSeries(pickCause, CAUSES.filter(function (c) { return c.key === "peerClosed"; }));
     if (normalSeries.length) {
       list.push({ title: "Sessions ended normally", fill: true,
-        hint: "One side hung up. Counted once per pair, so this is roughly the rate at which sessions finish. It should dominate; a fall here with steady connections means sessions are ending some other way.",
+        hint: "One side hung up, counted once per pair. Should dominate; a fall with steady connections means sessions are ending some other way.",
         format: fmtCount, series: normalSeries });
     }
 
     var abnormalSeries = activeSeries(pickCause, CAUSES.filter(function (c) { return c.key !== "peerClosed"; }));
     if (abnormalSeries.length) {
       list.push({ title: "Abnormal teardowns", stacked: true,
-        hint: "Everything that ended a tunnel other than a peer hanging up, summed per bucket. Mixed units: backpressure and the session caps count pair teardowns (two sockets each); parked overflow, heartbeat and park timeout count single sockets.",
+        hint: "Everything that ended a tunnel other than a peer hanging up, summed per bucket.",
         footnote: triageFor(abnormalSeries),
         format: fmtCount, series: abnormalSeries });
     }
@@ -838,17 +866,33 @@ td.zero { color: var(--text-muted); }
     paintStatus();
   }
 
-  // "Live" alone cannot go stale-looking, so it would keep claiming everything
-  // is fine after the relay stopped answering. The age since the last
-  // successful poll is the part that actually tells you something.
+  // Three missed polls. Long enough that ordinary jitter never trips it, short
+  // enough that a wedged relay is obvious within a few seconds.
+  var STALE_AFTER_MS = POLL_MS * 3;
+
+  /**
+   * The age is shown only once it means something.
+   *
+   * Reporting it continuously looks more informative than it is: at a 2s poll
+   * the number just oscillates between 0 and 2 forever, so the label rewrites
+   * itself every second while carrying no information, and the motion pulls
+   * the eye away from the charts. Below the staleness threshold this reads a
+   * flat "Live". Past it the number appears and the dot stops pulsing, because
+   * at that point how long ago is exactly the thing you need to know.
+   */
   function paintStatus() {
-    var label = state.statusText;
-    if (state.statusText === "live" && state.lastUpdateMs) {
-      var ageSeconds = Math.max(0, Math.round((Date.now() - state.lastUpdateMs) / 1000));
-      label = "Live &middot; " + (ageSeconds < 1 ? "just now" : ageSeconds + "s ago");
+    var label = state.statusText, statusClass = state.statusClass;
+    if (state.statusText === "live") {
+      var ageMs = state.lastUpdateMs ? Date.now() - state.lastUpdateMs : 0;
+      if (ageMs >= STALE_AFTER_MS) {
+        label = "Stale &middot; " + Math.round(ageMs / 1000) + "s ago";
+        statusClass = "paused";
+      } else {
+        label = "Live";
+      }
     }
     document.getElementById("statusText").innerHTML = label;
-    document.getElementById("dot").className = "dot" + (state.statusClass ? " " + state.statusClass : "");
+    document.getElementById("dot").className = "dot" + (statusClass ? " " + statusClass : "");
   }
 
   function apply(payload, replace) {
