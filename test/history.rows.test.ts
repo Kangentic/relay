@@ -168,6 +168,40 @@ describe('serialization', () => {
     expect(line.length).toBeLessThan(160);
   });
 
+  it('keeps a zero CPU sample distinguishable from no CPU sample at all', () => {
+    // An idle relay rounds to exactly 0.0 constantly, so this is the common
+    // row, not an edge case. cpuPercent is the only nullable series, which
+    // makes absence meaningful: it has to mean "no sampler ran", never "0%".
+    const idle = parseHistoryRow(serializeHistoryRow(row({ cpuPercent: { maximum: 0, mean: null } })));
+    if (idle.kind !== 'row') throw new Error('expected a row');
+    expect(idle.row.cpuPercent).toEqual({ maximum: 0, mean: null });
+
+    const unsampled = parseHistoryRow(serializeHistoryRow(row({ cpuPercent: null })));
+    if (unsampled.kind !== 'row') throw new Error('expected a row');
+    expect(unsampled.row.cpuPercent).toBeNull();
+  });
+
+  it('counts an idle minute in the compacted CPU mean rather than dropping it', () => {
+    // The consequence of the case above, through the path that actually runs:
+    // compaction reads rows back off disk, and aggregation skips rows whose
+    // cpuPercent is null. An idle minute that read back as null would not pull
+    // the hour's mean down, it would vanish from it, and a mostly-idle hour
+    // would report the average of only its busy minutes.
+    const bucketMs = bucketStartMs(1_700_000_000_000, MID_RESOLUTION_SECONDS);
+    const readBack = (source: HistoryRow): HistoryRow => {
+      const parsed = parseHistoryRow(serializeHistoryRow(source));
+      if (parsed.kind !== 'row') throw new Error('expected a row');
+      return parsed.row;
+    };
+    const busy = readBack(row({ timestampMs: bucketMs, cpuPercent: { maximum: 40, mean: null } }));
+    const idle = readBack(row({ timestampMs: bucketMs + 60_000, cpuPercent: { maximum: 0, mean: null } }));
+
+    expect(aggregateHistoryRows([busy, idle], bucketMs, MID_RESOLUTION_SECONDS).cpuPercent).toEqual({
+      maximum: 40,
+      mean: 20,
+    });
+  });
+
   it('reports a malformed line rather than throwing', () => {
     expect(parseHistoryRow('{not json').kind).toBe('malformed');
     expect(parseHistoryRow('{"v":1,"t":"nope","r":60}').kind).toBe('malformed');

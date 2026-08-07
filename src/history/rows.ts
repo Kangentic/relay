@@ -363,7 +363,13 @@ export function serializeHistoryRow(row: HistoryRow): string {
   if (row.pairedSlots.maximum !== 0) record['ps'] = row.pairedSlots.maximum;
   if (row.pairedSlots.mean !== null) record['psm'] = row.pairedSlots.mean;
   if (row.cpuPercent !== null) {
-    if (row.cpuPercent.maximum !== 0) record['cp'] = row.cpuPercent.maximum;
+    // Written even at zero, unlike every other omit-if-zero field. cpuPercent
+    // is the one nullable SERIES, and absence is how the reader tells "no CPU
+    // data" from "0% CPU". An idle relay rounds to exactly 0.0 constantly, so
+    // omitting it would make those rows parse back as null, and aggregation
+    // skips null rows - the compacted hourly mean would then average only the
+    // busy minutes and read far higher than the hour actually was.
+    record['cp'] = row.cpuPercent.maximum;
     if (row.cpuPercent.mean !== null) record['cpm'] = row.cpuPercent.mean;
   }
   if (row.eventLoopLagP99Ms !== null) record['el'] = row.eventLoopLagP99Ms;

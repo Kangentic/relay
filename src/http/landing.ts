@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { FAVICON_DATA_URI } from './brand.js';
 
 /**
  * Vendored verbatim from @kangentic/branding@2.2.0 assets/mascot/overseer.svg
@@ -24,8 +25,6 @@ const MASCOT_WAVE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18
  * ambient idle animation. Never hand-edit; see MASCOT_BASE_SVG's comment.
  */
 const MASCOT_BLINK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 12" width="18" height="12" shape-rendering="crispEdges" role="img" aria-label="Pixel-art Kangentic mascot"><rect x="5" y="0" width="8" height="1" fill="#e8a33d"/><rect x="3" y="1" width="12" height="1" fill="#e8a33d"/><rect x="2" y="2" width="14" height="1" fill="#e8a33d"/><rect x="2" y="3" width="14" height="1" fill="#e8a33d"/><rect x="2" y="4" width="2" height="1" fill="#e8a33d"/><rect x="4" y="4" width="2" height="1" fill="#24201b"/><rect x="6" y="4" width="2" height="1" fill="#e8a33d"/><rect x="8" y="4" width="2" height="1" fill="#24201b"/><rect x="10" y="4" width="2" height="1" fill="#e8a33d"/><rect x="12" y="4" width="2" height="1" fill="#24201b"/><rect x="14" y="4" width="2" height="1" fill="#e8a33d"/><rect x="0" y="5" width="18" height="1" fill="#e8a33d"/><rect x="0" y="6" width="18" height="1" fill="#e8a33d"/><rect x="2" y="7" width="14" height="1" fill="#e8a33d"/><rect x="2" y="8" width="14" height="1" fill="#e8a33d"/><rect x="3" y="9" width="12" height="1" fill="#e8a33d"/><rect x="4" y="10" width="2" height="1" fill="#e8a33d"/><rect x="8" y="10" width="2" height="1" fill="#e8a33d"/><rect x="12" y="10" width="2" height="1" fill="#e8a33d"/><rect x="4" y="11" width="2" height="1" fill="#e8a33d"/><rect x="8" y="11" width="2" height="1" fill="#e8a33d"/><rect x="12" y="11" width="2" height="1" fill="#e8a33d"/></svg>`;
-
-import { FAVICON_DATA_URI } from './brand.js';
 
 /**
  * A static splash page for a plain GET /, so the relay's hostname does not

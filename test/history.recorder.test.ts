@@ -271,6 +271,28 @@ describe('history recorder', () => {
     expect(afterSecond).toEqual(afterFirst);
   });
 
+  it('carries a future schema version through compaction verbatim, so a version bump cannot eat a year of history', async () => {
+    // The whole point of versioning the rows: an older binary rolled back onto
+    // a volume a newer one has written must not treat those rows as corrupt
+    // and compact them away. Compaction rewrites the entire file, so this is
+    // the one operation that could destroy them.
+    const futureLine = JSON.stringify({ v: 2, t: START_MS - 60_000, r: 60, f: 99, fieldAddedLater: 'kept' });
+    await writeFile(historyFilePath, `${futureLine}\n`, 'utf8');
+
+    recorder = build({ compactionIntervalMs: 1 });
+    await tick();
+
+    const lines = (await readFile(historyFilePath, 'utf8')).split('\n').filter((line) => line.trim() !== '');
+    expect(lines).toContain(futureLine);
+    // The unknown line plus the row this recorder just sampled, and nothing
+    // silently dropped between them.
+    expect(lines).toHaveLength(2);
+
+    const result = await recorder.readRange(24 * 60 * 60 * 1000);
+    expect(result.unknownVersionLineCount).toBe(1);
+    expect(result.skippedLineCount).toBe(0);
+  });
+
   it('skips malformed lines and reports how many, instead of failing the read', async () => {
     await writeFile(historyFilePath, 'not json\n{"v":1,"t":"bad","r":60}\n', 'utf8');
     recorder = build();
