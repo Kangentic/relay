@@ -25,26 +25,7 @@ const MASCOT_WAVE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18
  */
 const MASCOT_BLINK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 12" width="18" height="12" shape-rendering="crispEdges" role="img" aria-label="Pixel-art Kangentic mascot"><rect x="5" y="0" width="8" height="1" fill="#e8a33d"/><rect x="3" y="1" width="12" height="1" fill="#e8a33d"/><rect x="2" y="2" width="14" height="1" fill="#e8a33d"/><rect x="2" y="3" width="14" height="1" fill="#e8a33d"/><rect x="2" y="4" width="2" height="1" fill="#e8a33d"/><rect x="4" y="4" width="2" height="1" fill="#24201b"/><rect x="6" y="4" width="2" height="1" fill="#e8a33d"/><rect x="8" y="4" width="2" height="1" fill="#24201b"/><rect x="10" y="4" width="2" height="1" fill="#e8a33d"/><rect x="12" y="4" width="2" height="1" fill="#24201b"/><rect x="14" y="4" width="2" height="1" fill="#e8a33d"/><rect x="0" y="5" width="18" height="1" fill="#e8a33d"/><rect x="0" y="6" width="18" height="1" fill="#e8a33d"/><rect x="2" y="7" width="14" height="1" fill="#e8a33d"/><rect x="2" y="8" width="14" height="1" fill="#e8a33d"/><rect x="3" y="9" width="12" height="1" fill="#e8a33d"/><rect x="4" y="10" width="2" height="1" fill="#e8a33d"/><rect x="8" y="10" width="2" height="1" fill="#e8a33d"/><rect x="12" y="10" width="2" height="1" fill="#e8a33d"/><rect x="4" y="11" width="2" height="1" fill="#e8a33d"/><rect x="8" y="11" width="2" height="1" fill="#e8a33d"/><rect x="12" y="11" width="2" height="1" fill="#e8a33d"/></svg>`;
 
-/**
- * Vendored verbatim from @kangentic/branding@2.2.0 assets/brandmark-small.svg
- * (the F4k board glyph). That package's mark is a two-tier system keyed to
- * displayed size, not raster resolution: the card-K above 48px, this glyph
- * wherever the OS shows the mark small. A favicon renders at 16-32px, so it
- * takes this tier. Never hand-edit this string; pull a fresh copy from
- * https://github.com/Kangentic/branding if the mark changes.
- */
-const BRANDMARK_SMALL_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512">
-    <defs><mask id="m">
-      <circle cx="256" cy="256" r="256" fill="#fff"/>
-      <g transform="scale(5.12)"><g transform="translate(-9,-9) scale(1.18)"><rect x="27" y="25" width="12.5" height="44" rx="3" fill="#000"/>
-            <rect x="43.5" y="25" width="12.5" height="24" rx="3" fill="#000"/>
-            <rect x="60" y="25" width="12.5" height="44" rx="3" fill="#000"/></g></g>
-    </mask></defs>
-    <circle cx="256" cy="256" r="256" fill="#c0562f" mask="url(#m)"/>
-    <g transform="scale(5.12)"><g transform="translate(-9,-9) scale(1.18)"><rect x="43.5" y="55" width="12.5" height="14" rx="3" fill="#e8a33d"/></g></g>
-  </svg>`;
-
-const FAVICON_DATA_URI = `data:image/svg+xml;base64,${Buffer.from(BRANDMARK_SMALL_SVG).toString('base64')}`;
+import { FAVICON_DATA_URI } from './brand.js';
 
 /**
  * A static splash page for a plain GET /, so the relay's hostname does not
