@@ -24,6 +24,7 @@ compose_file="$repo_root/infra/compose/docker-compose.prod.yml"
 env_file="/opt/relay/.env"
 state_dir="/opt/relay/state"
 last_good_file="$state_dir/last_good"
+last_env_file="$state_dir/last_env_sha256"
 
 drill_args=()
 case "$drill" in
@@ -76,22 +77,38 @@ prev_git_ref="$(git -C "$repo_root" rev-parse "HEAD@{1}" 2>/dev/null || echo "")
 
 echo "deploying image_tag=$image_tag drill=$drill (previous digest: ${prev_digest:-none})"
 
-# Skip entirely when nothing that affects the built image changed between
-# the previous deploy and this one. This is NOT decided by comparing image
-# digests (that was the original design and it does not work):
-# docker/metadata-action's default labels include
+# The environment file is delivered out of band by the workflow moments
+# before this script runs and is deliberately not in git, so the git diff
+# below is blind to it. Fingerprint its content instead. Without this, a
+# deploy whose only change is a new variable in /opt/relay/.env skips the
+# restart, reports success, and leaves the container running the previous
+# configuration - a green deploy that changed nothing, which is the most
+# expensive kind of silent failure this script can produce.
+env_sha256="$(sha256sum "$env_file" | cut -d ' ' -f 1)"
+prev_env_sha256="$(cat "$last_env_file" 2>/dev/null || echo "")"
+
+# Skip entirely when nothing that affects the RUNNING CONTAINER changed
+# between the previous deploy and this one. This is NOT decided by
+# comparing image digests (that was the original design and it does not
+# work): docker/metadata-action's default labels include
 # org.opencontainers.image.created, a build timestamp baked into every
 # image's config, so two builds from byte-identical source still produce
-# different digests. Comparing the actual source inputs the Dockerfile
-# reads is the real signal - a docs-only merge (markdown is excluded by
-# .dockerignore, but git diff does not consult that) touches none of these
-# paths, and recreating the container for no reason would drop every live
-# session pointlessly.
-if [ "$drill" = "none" ] && [ -n "$prev_container_id" ] && [ -n "$prev_git_ref" ]; then
+# different digests. Comparing the actual inputs is the real signal - a
+# docs-only merge (markdown is excluded by .dockerignore, but git diff does
+# not consult that) touches none of these paths, and recreating the
+# container for no reason would drop every live session pointlessly.
+#
+# Three classes of input, and all three have to be here. The image is built
+# from the first list. The compose file is not a build input at all, but it
+# decides mounts, limits and ports, so a volume or mem_limit change must
+# recreate. The env file is neither, and is handled above.
+if [ "$drill" = "none" ] && [ -n "$prev_container_id" ] && [ -n "$prev_git_ref" ] \
+  && [ "$env_sha256" = "$prev_env_sha256" ]; then
   if git -C "$repo_root" diff --quiet "$prev_git_ref" HEAD -- \
-    Dockerfile .dockerignore package.json package-lock.json tsconfig.json tsconfig.build.json src
+    Dockerfile .dockerignore package.json package-lock.json tsconfig.json tsconfig.build.json src \
+    infra/compose
   then
-    echo "no build-relevant changes since $prev_git_ref, skipping restart"
+    echo "no build-relevant, compose or env changes since $prev_git_ref, skipping restart"
     exit 0
   fi
 fi
@@ -172,6 +189,14 @@ compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || 
 } > "$last_good_file.tmp"
 chmod 0644 "$last_good_file.tmp"
 mv "$last_good_file.tmp" "$last_good_file"
+
+# Recorded only on success, so a rollback leaves the previous fingerprint
+# in place and the next deploy sees a mismatch and recreates rather than
+# skipping. The container is running the rolled-back IMAGE with the new env
+# file at that point, which is precisely a state no skip should preserve.
+printf '%s\n' "$env_sha256" > "$last_env_file.tmp"
+chmod 0644 "$last_env_file.tmp"
+mv "$last_env_file.tmp" "$last_env_file"
 
 # Prune only after success, and only images older than a week - never
 # prune the digest we might need to roll back to next time.
