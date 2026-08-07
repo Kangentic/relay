@@ -74,6 +74,11 @@ describe('/admin when enabled', () => {
     expect(response.headers.get('content-type')).toContain('text/html');
     expect(response.headers.get('cache-control')).toBe('no-store');
     expect(html).toContain('Kangentic Relay');
+    // Conventional ranges, plus the client-derived Live view. data-range="0" is
+    // the sentinel for "draw from the poll series, do not query history".
+    for (const range of ['data-range="0"', '1h', '6h', '24h', '7d', '30d', '1y']) {
+      expect(html).toContain(range);
+    }
     // A private operational page must not pull in third-party script or fonts.
     expect(html).not.toMatch(/src="https?:\/\//);
     expect(html).not.toMatch(/href="https?:\/\/[^"]*\.(css|js)/);
