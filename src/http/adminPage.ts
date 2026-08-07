@@ -12,6 +12,8 @@
  * relief rule applies: every chart ships a legend, series are directly
  * labelled, and a table view is one click away.
  */
+import { BRANDMARK_SMALL_SVG, FAVICON_DATA_URI } from './brand.js';
+
 export const ADMIN_PAGE_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -19,6 +21,7 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>Relay admin</title>
+<link rel="icon" type="image/svg+xml" href="${FAVICON_DATA_URI}">
 <style>
 :root {
   color-scheme: light;
@@ -77,23 +80,54 @@ body {
   font-size: 14px;
   line-height: 1.5;
 }
-.wrap { max-width: 1180px; margin: 0 auto; padding: 24px 20px 64px; }
-header { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
-h1 { font-size: 20px; margin: 0; font-weight: 600; }
-.sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 20px; }
-.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 20px; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 22px 20px 64px; }
+.topbar {
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+  justify-content: space-between; padding-bottom: 16px; margin-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.mark { width: 30px; height: 30px; flex: none; display: block; }
+.mark svg { width: 100%; height: 100%; display: block; }
+.brandtext { min-width: 0; }
+h1 { font-size: 19px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+.sub { color: var(--text-muted); font-size: 12.5px; margin: 2px 0 0; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 18px; }
 button {
   font: inherit; font-size: 13px; color: var(--text-secondary);
   background: var(--surface-1); border: 1px solid var(--border);
   border-radius: 7px; padding: 5px 11px; cursor: pointer;
+  transition: background .12s, color .12s;
 }
 button:hover { color: var(--text-primary); }
-button[aria-pressed="true"] { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+button:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+/* Segmented control: one bordered track with the buttons inside it, rather
+   than six loose pills, so the range reads as a single choice. */
+.segmented {
+  display: inline-flex; gap: 2px; padding: 2px;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 9px;
+}
+.segmented button { border: none; background: transparent; border-radius: 7px; padding: 4px 11px; }
+.segmented button:hover { background: var(--page); }
+button[aria-pressed="true"], .segmented button[aria-pressed="true"] {
+  background: var(--series-1); border-color: var(--series-1); color: #fff;
+}
+.segmented button[aria-pressed="true"]:hover { background: var(--series-1); }
 .spacer { flex: 1 1 auto; }
-.status { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); flex: none; }
-.dot.paused { background: var(--warning); }
-.dot.bad { background: var(--critical); }
+.status {
+  font-size: 12px; color: var(--text-secondary); display: inline-flex; align-items: center;
+  gap: 7px; background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 999px; padding: 5px 12px; font-variant-numeric: tabular-nums; flex: none;
+}
+.dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--good); flex: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+.dot.paused { background: var(--warning); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 24%, transparent); animation: none; }
+.dot.bad { background: var(--critical); box-shadow: 0 0 0 3px color-mix(in srgb, var(--critical) 24%, transparent); animation: none; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
 .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 18px; }
 @media (max-width: 1040px) { .tiles { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 620px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
@@ -105,7 +139,9 @@ button[aria-pressed="true"] { background: var(--series-1); border-color: var(--s
 .badge.good { color: var(--good); background: color-mix(in srgb, var(--good) 14%, transparent); }
 .badge.warning { color: var(--warning); background: color-mix(in srgb, var(--warning) 20%, transparent); }
 .badge.critical { color: var(--critical); background: color-mix(in srgb, var(--critical) 16%, transparent); }
-.tile .value { font-size: 20px; font-weight: 600; margin-top: 1px; line-height: 1.25; }
+.tile .value { font-size: 20px; font-weight: 600; margin-top: 1px; line-height: 1.25; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.tile { transition: border-color .12s; }
+.tile:hover { border-color: color-mix(in srgb, var(--text-muted) 40%, transparent); }
 .tile .note { font-size: 11px; color: var(--text-muted); }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(470px, 1fr)); gap: 14px; }
 .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 15px 10px; }
@@ -114,9 +150,11 @@ button[aria-pressed="true"] { background: var(--series-1); border-color: var(--s
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .triage { list-style: none; margin: 10px 0 2px; padding: 0; font-size: 11.5px; color: var(--text-secondary); }
-.triage li { display: flex; align-items: baseline; gap: 6px; margin-bottom: 3px; line-height: 1.45; }
-.triage b { color: var(--text-primary); font-weight: 600; flex: none; }
-.triage .swatch { position: relative; top: -3px; }
+/* Hanging indent: the swatch and cause name sit in a fixed gutter so wrapped
+   explanation lines align under the text, not under the swatch. */
+.triage li { padding-left: 17px; text-indent: -17px; margin-bottom: 4px; line-height: 1.45; }
+.triage b { color: var(--text-primary); font-weight: 600; }
+.triage .swatch { display: inline-block; margin-right: 6px; position: relative; top: -3px; }
 /* A short line key, never a filled box: it reads as "this is the line in the
    chart" rather than as a category chip. */
 .swatch { width: 11px; height: 2px; border-radius: 999px; flex: none; }
@@ -161,22 +199,30 @@ td.zero { color: var(--text-muted); }
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <h1>Relay admin</h1>
-    <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting</span></div>
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark" aria-hidden="true">${BRANDMARK_SMALL_SVG}</span>
+      <div class="brandtext">
+        <h1>Relay admin</h1>
+        <p class="sub">Aggregate counters only: no slot ids, no IP addresses, no traffic content.</p>
+      </div>
+    </div>
+    <div class="status" id="status" role="status">
+      <span class="dot" id="dot"></span><span id="statusText">connecting</span>
+    </div>
   </header>
-  <p class="sub">Aggregate counters only. This surface carries no slot ids, no IP addresses and no traffic content, so it cannot show a session list.</p>
 
   <div id="banners"></div>
 
   <div class="controls">
-    <span style="font-size:12px;color:var(--text-muted)">Range</span>
-    <button data-range="3600000">1h</button>
-    <button data-range="21600000">6h</button>
-    <button data-range="86400000">24h</button>
-    <button data-range="604800000">7d</button>
-    <button data-range="2592000000">30d</button>
-    <button data-range="31536000000">1y</button>
+    <div class="segmented" role="group" aria-label="Time range">
+      <button data-range="3600000">1h</button>
+      <button data-range="21600000">6h</button>
+      <button data-range="86400000">24h</button>
+      <button data-range="604800000">7d</button>
+      <button data-range="2592000000">30d</button>
+      <button data-range="31536000000">1y</button>
+    </div>
     <span class="spacer"></span>
     <button id="tableToggle" aria-pressed="false">Table view</button>
   </div>
@@ -202,7 +248,7 @@ td.zero { color: var(--text-muted); }
   var MAX_PLOT_POINTS = 400;
   var DAY_MS = 86400000;
 
-  var state = { rangeMs: DAY_MS, cursorMs: 0, rows: [], live: null, meta: null, table: false, timer: null, failures: 0, instanceId: null };
+  var state = { rangeMs: DAY_MS, cursorMs: 0, rows: [], live: null, meta: null, table: false, timer: null, failures: 0, instanceId: null, lastUpdateMs: 0, statusText: "connecting", statusClass: "" };
   // Loopback only. Under tsx watch the relay restarts on every source edit, and
   // a new instance id is the signal that the page being displayed is stale.
   // Production is served on a real hostname, so this can never fire there.
@@ -223,6 +269,11 @@ td.zero { color: var(--text-muted); }
     var units = ["B", "KiB", "MiB", "GiB", "TiB"], i = 0, n = v;
     while (Math.abs(n) >= 1024 && i < units.length - 1) { n /= 1024; i++; }
     return (Math.round(n * 10) / 10) + " " + units[i];
+  }
+  // Caps are configured values, not measurements: "10,000" is the number
+  // someone typed into MAX_CONNECTIONS, "10.0k" is not.
+  function fmtInt(v) {
+    return v === null || v === undefined || !isFinite(v) ? "n/a" : Math.round(v).toLocaleString();
   }
   function fmtBytesRate(v) { return fmtBytes(v) + "/s"; }
   function fmtPercent(v) { return v === null || v === undefined ? "n/a" : (Math.round(v * 10) / 10) + "%"; }
@@ -257,35 +308,58 @@ td.zero { color: var(--text-muted); }
     return mean === null || mean === undefined || !isFinite(mean) ? null : mean;
   }
 
-  // Buckets to at most MAX_PLOT_POINTS, keeping the maximum in each bucket so a
-  // spike survives downsampling. Matches how the server aggregates gauges.
-  //
+  /**
+   * Buckets to at most MAX_PLOT_POINTS. How a bucket collapses depends on what
+   * the series MEASURES, which is the part that is easy to get wrong:
+   *
+   *   sum  - per-interval counts (teardowns, rejects, new connections). Four
+   *          one-minute intervals collapsing to one point should report what
+   *          happened across all four. Taking the max instead reports the worst
+   *          single minute and draws a picket fence.
+   *   max  - levels and peaks (connections, queue depth). A spike must survive.
+   *   mean - ratios and averages (pairing success, frame size). Neither the sum
+   *          nor the peak of a percentage means anything.
+   */
+  function reduceBucket(chunk, series) {
+    var kind = series.reduce || "max";
+    var total = 0, count = 0, best = null;
+    for (var c = 0; c < chunk.length; c++) {
+      var v = series.value(chunk[c]);
+      if (v === null || v === undefined || !isFinite(v)) continue;
+      count++;
+      total += v;
+      if (best === null || v > best) best = v;
+    }
+    if (count === 0) return null;
+    if (kind === "sum") return total;
+    if (kind === "mean") return total / count;
+    return best;
+  }
+
   // Means are carried alongside, because a maximum alone cannot tell "sat at 38
   // all hour" from "idled at 2 and burst once" - which is the difference
   // between needing a bigger box and having had one busy minute.
-  function downsample(rows, valueFns, meanFns) {
+  function downsample(rows, seriesList) {
     if (rows.length <= MAX_PLOT_POINTS) {
       return rows.map(function (r) {
         return {
           t: r.timestampMs,
           restart: r.restartCount > 0,
-          values: valueFns.map(function (f) { return f(r); }),
-          means: meanFns.map(function (f) { return readMean(f, r); })
+          values: seriesList.map(function (s) { return s.value(r); }),
+          means: seriesList.map(function (s) { return readMean(s.mean, r); })
         };
       });
     }
     var size = Math.ceil(rows.length / MAX_PLOT_POINTS), out = [];
     for (var i = 0; i < rows.length; i += size) {
       var chunk = rows.slice(i, i + size), restart = false, values = [], means = [];
-      for (var s = 0; s < valueFns.length; s++) {
-        var best = null, meanTotal = 0, meanCount = 0;
+      for (var s = 0; s < seriesList.length; s++) {
+        values.push(reduceBucket(chunk, seriesList[s]));
+        var meanTotal = 0, meanCount = 0;
         for (var c = 0; c < chunk.length; c++) {
-          var v = valueFns[s](chunk[c]);
-          if (v !== null && v !== undefined && isFinite(v) && (best === null || v > best)) best = v;
-          var m = readMean(meanFns[s], chunk[c]);
+          var m = readMean(seriesList[s].mean, chunk[c]);
           if (m !== null) { meanTotal += m; meanCount++; }
         }
-        values.push(best);
         means.push(meanCount === 0 ? null : meanTotal / meanCount);
       }
       for (var c2 = 0; c2 < chunk.length; c2++) if (chunk[c2].restartCount > 0) restart = true;
@@ -309,11 +383,7 @@ td.zero { color: var(--text-muted); }
   }
 
   function buildChart(card, spec) {
-    var pts = downsample(
-      state.rows,
-      spec.series.map(function (s) { return s.value; }),
-      spec.series.map(function (s) { return s.mean; })
-    );
+    var pts = downsample(state.rows, spec.series);
     var plot = card.querySelector(".plot");
     if (!pts.length) { plot.innerHTML = '<p class="empty">No history in this range yet.</p>'; return; }
 
@@ -388,10 +458,11 @@ td.zero { color: var(--text-muted); }
           open = true;
         }
         if (!d) continue;
-        // A faint wash under a single series gives the line weight without
-        // competing with it. Skipped for multi-series charts, where overlapping
-        // washes would muddy every colour underneath.
-        if (spec.series.length === 1 && firstX !== null) {
+        // A wash reads as "volume accumulating up from zero", so it is opt-in
+        // and only on throughput. On a level like average frame size or a
+        // percentage, zero is not a meaningful floor and the fill becomes a
+        // solid block that says nothing.
+        if (spec.fill && spec.series.length === 1 && firstX !== null) {
           svg += '<path d="' + d + "L" + lastX.toFixed(1) + " " + yAt(0).toFixed(1) +
             " L" + firstX.toFixed(1) + " " + yAt(0).toFixed(1) + ' Z" fill="' + spec.series[si].color +
             '" fill-opacity="0.14" stroke="none"/>';
@@ -494,7 +565,7 @@ td.zero { color: var(--text-muted); }
       if (!any) continue;
       slot++;
       if (slot > 8) break;
-      out.push({ label: labels[i].label, color: seriesColor(slot), key: key,
+      out.push({ label: labels[i].label, color: seriesColor(slot), key: key, reduce: "sum",
         value: (function (k) { return function (row) { return pick(row, k) || 0; }; })(key) });
     }
     return out;
@@ -522,35 +593,35 @@ td.zero { color: var(--text-muted); }
   function specs() {
     var list = [
       { title: "Connections", hint: "Point samples, one per interval. The line is the peak; hover for the average once buckets cover more than one sample.", format: fmtCount, series: [
-        { label: "active", color: seriesColor(1),
+        { label: "active", color: seriesColor(1), reduce: "max",
           value: function (r) { return r.activeConnections.maximum; },
           mean: function (r) { return r.activeConnections.mean; } },
-        { label: "waiting slots", color: seriesColor(2),
+        { label: "waiting slots", color: seriesColor(2), reduce: "max",
           value: function (r) { return r.waitingSlots.maximum; },
           mean: function (r) { return r.waitingSlots.mean; } },
-        { label: "paired slots", color: seriesColor(3),
+        { label: "paired slots", color: seriesColor(3), reduce: "max",
           value: function (r) { return r.pairedSlots.maximum; },
           mean: function (r) { return r.pairedSlots.mean; } }
       ] },
-      { title: "Frames forwarded", hint: "Rate, derived from per-interval deltas.", format: function (v) { return fmtCount(v) + "/s"; }, series: [
-        { label: "frames/s", color: seriesColor(1), value: function (r) { return perSecond(r, "framesForwardedDelta"); } }
+      { title: "Frames forwarded", hint: "Rate, derived from per-interval deltas.", format: function (v) { return fmtCount(v) + "/s"; }, fill: true, series: [
+        { label: "frames/s", color: seriesColor(1), reduce: "max", value: function (r) { return perSecond(r, "framesForwardedDelta"); } }
       ] },
-      { title: "Bytes forwarded", hint: "Payload only. Real egress runs roughly 1.1 to 1.3x higher.", format: fmtBytesRate, series: [
-        { label: "bytes/s", color: seriesColor(2), value: function (r) { return perSecond(r, "bytesForwardedDelta"); } }
+      { title: "Bytes forwarded", hint: "Payload only. Real egress runs roughly 1.1 to 1.3x higher.", format: fmtBytesRate, fill: true, series: [
+        { label: "bytes/s", color: seriesColor(2), reduce: "max", value: function (r) { return perSecond(r, "bytesForwardedDelta"); } }
       ] },
-      { title: "New connections and sessions", hint: "Per-interval deltas.", format: fmtCount, series: [
-        { label: "connections", color: seriesColor(1), value: function (r) { return r.connectionsDelta; } },
-        { label: "sessions paired", color: seriesColor(3), value: function (r) { return r.sessionsDelta; } }
+      { title: "New connections and sessions", hint: "Per-interval counts, summed across each plotted bucket.", format: fmtCount, series: [
+        { label: "connections", color: seriesColor(1), reduce: "sum", value: function (r) { return r.connectionsDelta; } },
+        { label: "sessions paired", color: seriesColor(3), reduce: "sum", value: function (r) { return r.sessionsDelta; } }
       ] },
       { title: "Outbound queue depth",
         hint: "Peak bytes waiting to flush to the slowest consumer. This is the closest thing to a latency signal the relay has: a queue that grows means that peer is not keeping up. The tunnel is torn down at the buffer cap, so this is the warning before the teardown.",
-        format: fmtBytes, series: [
-        { label: "peak queue", color: seriesColor(2), value: function (r) { return r.maxOutboundBufferBytes; } }
+        format: fmtBytes, fill: true, series: [
+        { label: "peak queue", color: seriesColor(2), reduce: "max", value: function (r) { return r.maxOutboundBufferBytes; } }
       ] },
       { title: "Pairing success",
-        hint: "Share of new connections that found a partner. Sustained below 100% means clients are arriving and failing to pair, which a raw connection count hides entirely.",
+        hint: "Share of new connections that found a partner, averaged across each bucket. Sustained below 100% means clients are arriving and failing to pair, which a raw connection count hides entirely.",
         format: fmtPercent, series: [
-        { label: "paired", color: seriesColor(3), value: function (r) {
+        { label: "paired", color: seriesColor(3), reduce: "mean", value: function (r) {
           if (!r.connectionsDelta) return null;
           return Math.min(100, (r.sessionsDelta * 2 / r.connectionsDelta) * 100);
         } }
@@ -558,26 +629,41 @@ td.zero { color: var(--text-muted); }
       { title: "Average frame size",
         hint: "Bytes per forwarded frame. A step change here means the shape of the traffic changed rather than its volume, which separates a client-behaviour change from a load change.",
         format: fmtBytes, series: [
-        { label: "mean frame", color: seriesColor(7), value: function (r) {
+        { label: "mean frame", color: seriesColor(7), reduce: "mean", value: function (r) {
           return r.framesForwardedDelta > 0 ? r.bytesForwardedDelta / r.framesForwardedDelta : null;
         } }
       ] }
     ];
 
-    var causeSeries = activeSeries(function (row, key) { return row.closedByCause[key]; }, CAUSES);
-    if (causeSeries.length) {
+    function pickCause(row, key) { return row.closedByCause[key]; }
+    function triageFor(series) {
       var meanings = "";
-      for (var ci = 0; ci < causeSeries.length; ci++) {
+      for (var ci = 0; ci < series.length; ci++) {
         for (var cj = 0; cj < CAUSES.length; cj++) {
-          if (CAUSES[cj].key !== causeSeries[ci].key) continue;
-          meanings += '<li><i class="swatch" style="background:' + causeSeries[ci].color + '"></i><b>' +
+          if (CAUSES[cj].key !== series[ci].key) continue;
+          meanings += '<li><i class="swatch" style="background:' + series[ci].color + '"></i><b>' +
             esc(CAUSES[cj].label) + "</b> " + esc(CAUSES[cj].meaning) + "</li>";
         }
       }
-      list.push({ title: "Teardowns by cause", stacked: true,
-        hint: "Stacked per-interval counts. Mixed units: peer closed, backpressure and the session caps count pair teardowns (two sockets each); parked overflow, heartbeat and park timeout count single sockets.",
-        footnote: meanings ? '<ul class="triage">' + meanings + "</ul>" : "",
-        format: fmtCount, series: causeSeries });
+      return meanings ? '<ul class="triage">' + meanings + "</ul>" : "";
+    }
+
+    // Split deliberately. peer closed is the normal ending and is supposed to
+    // dominate, so stacking it with the failures buries exactly the thing you
+    // opened this page to find.
+    var normalSeries = activeSeries(pickCause, CAUSES.filter(function (c) { return c.key === "peerClosed"; }));
+    if (normalSeries.length) {
+      list.push({ title: "Sessions ended normally", fill: true,
+        hint: "One side hung up. Counted once per pair, so this is roughly the rate at which sessions finish. It should dominate; a fall here with steady connections means sessions are ending some other way.",
+        format: fmtCount, series: normalSeries });
+    }
+
+    var abnormalSeries = activeSeries(pickCause, CAUSES.filter(function (c) { return c.key !== "peerClosed"; }));
+    if (abnormalSeries.length) {
+      list.push({ title: "Abnormal teardowns", stacked: true,
+        hint: "Everything that ended a tunnel other than a peer hanging up, summed per bucket. Mixed units: backpressure and the session caps count pair teardowns (two sockets each); parked overflow, heartbeat and park timeout count single sockets.",
+        footnote: triageFor(abnormalSeries),
+        format: fmtCount, series: abnormalSeries });
     }
 
     var reasonKeys = {};
@@ -632,12 +718,12 @@ td.zero { color: var(--text-muted); }
     var bufferFraction = buffered === null || !caps.maxBufferedBytes ? null : buffered / caps.maxBufferedBytes;
 
     var tiles = [
-      { label: "Connections", value: fmtCount(live.activeConnections) + " / " + fmtCount(caps.maxConnections),
+      { label: "Connections", value: fmtInt(live.activeConnections) + " / " + fmtInt(caps.maxConnections),
         note: "cap refuses new sockets at 100%", fraction: connectionFraction },
-      { label: "Live sessions", value: fmtCount(live.pairedSlots),
-        note: fmtCount(live.waitingSlots) + " waiting to pair" },
+      { label: "Live sessions", value: fmtInt(live.pairedSlots),
+        note: fmtInt(live.waitingSlots) + " waiting to pair" },
       { label: "Slowest consumer", value: buffered === null ? "n/a" : fmtBytes(buffered),
-        note: backlogged === null ? "queue depth, sampled" : fmtCount(backlogged) + " connection(s) backing up",
+        note: backlogged === null ? "queue depth, sampled" : fmtInt(backlogged) + " connection(s) backing up",
         fraction: bufferFraction },
       { label: "Memory", value: fmtBytes(live.rssBytes),
         note: caps.memoryLimitBytes ? "of " + fmtBytes(caps.memoryLimitBytes) : "no container limit found",
@@ -747,8 +833,22 @@ td.zero { color: var(--text-muted); }
   }
 
   function setStatus(text, cls) {
-    document.getElementById("statusText").textContent = text;
-    document.getElementById("dot").className = "dot" + (cls ? " " + cls : "");
+    state.statusText = text;
+    state.statusClass = cls || "";
+    paintStatus();
+  }
+
+  // "Live" alone cannot go stale-looking, so it would keep claiming everything
+  // is fine after the relay stopped answering. The age since the last
+  // successful poll is the part that actually tells you something.
+  function paintStatus() {
+    var label = state.statusText;
+    if (state.statusText === "live" && state.lastUpdateMs) {
+      var ageSeconds = Math.max(0, Math.round((Date.now() - state.lastUpdateMs) / 1000));
+      label = "Live &middot; " + (ageSeconds < 1 ? "just now" : ageSeconds + "s ago");
+    }
+    document.getElementById("statusText").innerHTML = label;
+    document.getElementById("dot").className = "dot" + (state.statusClass ? " " + state.statusClass : "");
   }
 
   function apply(payload, replace) {
@@ -776,10 +876,11 @@ td.zero { color: var(--text-muted); }
       if (!response.ok) throw new Error("HTTP " + response.status);
       apply(await response.json(), replace);
       state.failures = 0;
+      state.lastUpdateMs = Date.now();
       setStatus("live", "");
     } catch (error) {
       state.failures++;
-      setStatus("disconnected (" + state.failures + ")", "bad");
+      setStatus("Disconnected (" + state.failures + ")", "bad");
     }
   }
 
@@ -792,7 +893,7 @@ td.zero { color: var(--text-muted); }
   // Polling stops entirely while the tab is hidden, so an open-but-unwatched
   // dashboard costs the relay nothing.
   document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "hidden") { stopPolling(); setStatus("paused", "paused"); }
+    if (document.visibilityState === "hidden") { stopPolling(); setStatus("Paused (tab hidden)", "paused"); }
     else { load(false); startPolling(); }
   });
 
@@ -810,6 +911,11 @@ td.zero { color: var(--text-muted); }
     event.target.setAttribute("aria-pressed", state.table ? "true" : "false");
     render();
   });
+
+  // Repaints only the freshness label, so the age keeps counting up between
+  // polls and visibly stalls if the relay stops answering.
+  var freshnessTimer = setInterval(paintStatus, 1000);
+  window.addEventListener("beforeunload", function () { clearInterval(freshnessTimer); });
 
   load(true).then(startPolling);
 })();
