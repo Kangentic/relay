@@ -73,7 +73,7 @@ describe('/admin when enabled', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');
     expect(response.headers.get('cache-control')).toBe('no-store');
-    expect(html).toContain('Relay admin');
+    expect(html).toContain('Kangentic Relay');
     // A private operational page must not pull in third-party script or fonts.
     expect(html).not.toMatch(/src="https?:\/\//);
     expect(html).not.toMatch(/href="https?:\/\/[^"]*\.(css|js)/);
@@ -94,6 +94,20 @@ describe('/admin when enabled', () => {
       // Compiles without executing, so this is a pure syntax assertion.
       expect(() => new Function(script)).not.toThrow();
     }
+  });
+
+  it('inlines a brandmark that can actually scale', async () => {
+    // The vendored asset has width/height but no viewBox. That is fine for a
+    // data-URI favicon and broken inline: with no viewBox there is no mapping
+    // to the element box, so the mark ignores its 30px container and paints
+    // across the entire page. Rendered output is the only place this shows up.
+    relay = await startTestRelay({ adminEnabled: true });
+    const html = await (await fetch(`${httpBase(relay)}/admin`)).text();
+
+    const inlineMark = html.slice(html.indexOf('class="mark"'), html.indexOf('</span>', html.indexOf('class="mark"')));
+    expect(inlineMark).toContain('<svg');
+    expect(inlineMark).toContain('viewBox="0 0 512 512"');
+    expect(inlineMark).not.toContain('width="512"');
   });
 
   it('warns at startup that the relay does not authenticate the surface', async () => {

@@ -23,3 +23,21 @@ export const BRANDMARK_SMALL_SVG = `<svg xmlns="http://www.w3.org/2000/svg" widt
   </svg>`;
 
 export const FAVICON_DATA_URI = `data:image/svg+xml;base64,${Buffer.from(BRANDMARK_SMALL_SVG).toString('base64')}`;
+
+/**
+ * The same mark, made scalable for inlining directly into a page.
+ *
+ * The vendored source carries width/height but no viewBox. As a data-URI
+ * favicon that is fine: the browser rasterizes the whole 512x512 canvas and
+ * scales the result. Inlined it is not, because without a viewBox there is no
+ * mapping from user units to the element box, so CSS sizing shrinks the
+ * viewport while the artwork keeps drawing at its original 512px and spills
+ * across the page.
+ *
+ * Patched here rather than by editing the vendored string, so re-pulling the
+ * asset from https://github.com/Kangentic/branding stays a straight copy.
+ */
+export const BRANDMARK_INLINE_SVG = BRANDMARK_SMALL_SVG.replace(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512">',
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%" focusable="false">',
+);
