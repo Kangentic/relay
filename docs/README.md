@@ -13,6 +13,7 @@ guarantee, self-hosting quickstart, and full config reference.
 | Understanding how the relay works | [Architecture](architecture.md) |
 | Assessing what the relay protects | [Security model](security-model.md) |
 | Understanding how a commit becomes a running instance | [Deployment architecture](deployment.md) |
+| Running the tests, or chasing a flaky one | [Testing](testing.md) |
 | Operating the hosted instance | [`infra/README.md`](../infra/README.md) |
 
 ## Reference
@@ -35,6 +36,9 @@ guarantee, self-hosting quickstart, and full config reference.
   Origin CA certificate.
 
 ### Project conventions
+- [Testing](testing.md) - The two test tiers, why Node 22 is pinned (Node 24 crashes the Vitest
+  worker on about 1 run in 10), reproducing an intermittent crash with `scripts/flakeHunt.mjs`,
+  and known test hygiene issues.
 - [`CONTRIBUTING.md`](../CONTRIBUTING.md) — Opening a pull request.
 - [`SECURITY.md`](../SECURITY.md) — Reporting a vulnerability.
 - [`CHANGELOG.md`](../CHANGELOG.md) — Notable changes, in Keep a Changelog format.

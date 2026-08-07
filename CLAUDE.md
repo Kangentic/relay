@@ -25,7 +25,8 @@ project with its own board, worktrees, and skills - not a subdirectory of the de
 - **Build:** `tsc` (no bundler)
 - **Tests:** Vitest, two workspace projects (`unit`, `integration`)
 - **Deploy:** Docker (multi-stage, non-root runtime), docker-compose, GitHub Actions CI
-- **Node:** pinned 22 (`.node-version`, `.nvmrc`); `engines.node >= 20`
+- **Node:** pinned 22 (`.node-version`, `.nvmrc`); `engines.node >=20 <23`, made a hard install
+  failure by `.npmrc`'s `engine-strict=true` (see "Node 22 is required" under Testing)
 
 ## Project Structure
 
@@ -55,6 +56,7 @@ test/
   *.test.ts           # one file per module, matching src/ 1:1
 scripts/
   loadTest.mjs        # load-test harness: N slot pairs x M frames x S bytes against a dedicated instance
+  flakeHunt.mjs       # runs the unit suite N times; reports the worker-crash rate and the file that crashed
 ```
 
 ## Commands
@@ -67,6 +69,8 @@ scripts/
 - `npm run lint` - ESLint (`--max-warnings` not set but CI treats any error as a failure)
 - `npm test` - unit tier only
 - `npm run test:integration` - the real-handshake integration test
+- `npm run test:flake` - run the unit suite repeatedly to measure an intermittent worker crash
+  (`-- --runs 30`); see [docs/testing.md](docs/testing.md)
 - `docker compose up -d` - self-host locally
 
 ## Architecture
@@ -142,6 +146,16 @@ Two tiers, no UI/E2E (this is a headless server, not an app):
 
 `/test` runs both; `/pull-request` offloads both to CI and only runs `typecheck` + `lint`
 locally.
+
+**Node 22 is required, and it is load-bearing for the local gate.** On Node 24 the Vitest worker
+dies on roughly 1 run in 10 (native fail-fast, exit `0xC0000409`, no stderr), taking one test
+file's results with it, so `npm test` goes red with nothing having failed. Measured: 5 crashes in
+48 Node 24 runs, 0 in 40 Node 22 runs on the identical checkout. `--pool=threads` is worse, not a
+workaround. If a run dies this way, the file that never reported **is** the file that crashed:
+the forks pool gives each test file its own child process. `scripts/flakeHunt.mjs`
+(`npm run test:flake`) measures the rate and names that file. Full write-up, including two ruled
+out suspects, in [docs/testing.md](docs/testing.md). Do not "fix" a flaky suite here with retries
+or `--no-file-parallelism`.
 
 ## Conventions
 
