@@ -14,6 +14,37 @@
  */
 import { BRANDMARK_INLINE_SVG, FAVICON_DATA_URI } from './brand.js';
 
+/**
+ * The dark palette, written once and applied under two selectors below.
+ *
+ * The media query alone is not enough for a theme toggle: on a machine whose OS
+ * is set to light, no media block ever matches, so stamping data-theme="dark"
+ * would change nothing. The explicit scope is what makes the toggle work in
+ * both directions, and the media block is guarded so an explicit light choice
+ * still beats an OS set to dark.
+ *
+ * These are not the light values inverted. They are the same eight hues stepped
+ * for the dark surface and validated as a set against it.
+ */
+const DARK_TOKENS = `
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;`;
+
 export const ADMIN_PAGE_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -22,6 +53,17 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
 <meta name="robots" content="noindex, nofollow">
 <title>Kangentic Relay - Admin</title>
 <link rel="icon" type="image/svg+xml" href="${FAVICON_DATA_URI}">
+<script>
+  // Applied before first paint, so a stored dark choice does not flash light
+  // first. Wrapped because localStorage throws outright when site data is
+  // blocked, and a theme preference is not worth breaking the page over.
+  (function () {
+    try {
+      var stored = localStorage.getItem("relayAdminTheme");
+      if (stored === "dark" || stored === "light") document.documentElement.setAttribute("data-theme", stored);
+    } catch (error) { /* no stored preference is a fine outcome */ }
+  })();
+</script>
 <style>
 :root {
   color-scheme: light;
@@ -46,25 +88,10 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
   --series-8: #e34948;
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --surface-1: #1a1a19;
-    --page: #0d0d0d;
-    --text-primary: #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted: #898781;
-    --grid: #2c2c2a;
-    --axis: #383835;
-    --border: rgba(255,255,255,0.10);
-    --series-1: #3987e5;
-    --series-2: #d95926;
-    --series-3: #199e70;
-    --series-4: #c98500;
-    --series-5: #d55181;
-    --series-6: #008300;
-    --series-7: #9085e9;
-    --series-8: #e66767;
+  :root:not([data-theme="light"]) {${DARK_TOKENS}
   }
+}
+:root[data-theme="dark"] {${DARK_TOKENS}
 }
 * { box-sizing: border-box; }
 /* The hidden attribute only sets display:none from the UA stylesheet, so any
@@ -245,6 +272,7 @@ td.zero { color: var(--text-muted); }
       <button data-range="31536000000">1y</button>
     </div>
     <span class="spacer"></span>
+    <button id="themeToggle" title="Cycle theme: follow the system, force light, force dark">System</button>
     <button id="tableToggle" aria-pressed="false">Table view</button>
   </div>
 
@@ -1104,6 +1132,48 @@ td.zero { color: var(--text-muted); }
     });
     if (Number(buttons[i].getAttribute("data-range")) === state.rangeMs) buttons[i].setAttribute("aria-pressed", "true");
   }
+  /**
+   * Three states rather than two, because "follow the system" is a real
+   * preference and a plain light/dark switch quietly throws it away.
+   *
+   * Re-rendering after a change is required, not cosmetic: chart colours are
+   * resolved from computed CSS and baked into the SVG string when it is built,
+   * so an already-drawn chart keeps the old palette until it is rebuilt.
+   */
+  var THEME_KEY = "relayAdminTheme";
+  var THEME_ORDER = ["system", "light", "dark"];
+
+  function readTheme() {
+    try {
+      var stored = localStorage.getItem(THEME_KEY);
+      return stored === "light" || stored === "dark" ? stored : "system";
+    } catch (error) { return "system"; }
+  }
+
+  function setTheme(theme) {
+    if (theme === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", theme);
+    try {
+      if (theme === "system") localStorage.removeItem(THEME_KEY);
+      else localStorage.setItem(THEME_KEY, theme);
+    } catch (error) { /* preference just will not persist */ }
+    document.getElementById("themeToggle").textContent = theme.charAt(0).toUpperCase() + theme.slice(1);
+  }
+
+  document.getElementById("themeToggle").addEventListener("click", function () {
+    setTheme(THEME_ORDER[(THEME_ORDER.indexOf(readTheme()) + 1) % THEME_ORDER.length]);
+    render();
+  });
+  setTheme(readTheme());
+
+  // Following the system means following it as it changes, not only at load.
+  if (window.matchMedia) {
+    var schemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    if (schemeQuery.addEventListener) {
+      schemeQuery.addEventListener("change", function () { if (readTheme() === "system") render(); });
+    }
+  }
+
   document.getElementById("tableToggle").addEventListener("click", function (event) {
     state.table = !state.table;
     event.target.setAttribute("aria-pressed", state.table ? "true" : "false");

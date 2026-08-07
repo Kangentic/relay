@@ -149,16 +149,44 @@ Off by default and unaffected by anything else in this table. When enabled, the 
 own aggregate counters on a timer and appends them to `METRICS_HISTORY_PATH`, so trends survive the
 process restart that zeroes every counter.
 
+It is built to answer five questions rather than to display numbers:
+
+| Question | What answers it |
+|---|---|
+| How many users are connected? | Active connections and live sessions, against the configured caps |
+| When do we need a bigger box? | Every capacity tile reads as a percentage of its ceiling, with a status badge at 60% and 80% |
+| How is the server holding up? | CPU, event loop delay p99, resident memory against the container limit |
+| How is the relay performing for users? | Outbound queue depth, the closest thing to a latency signal the relay can produce without touching the forwarding path |
+| What problems are users hitting? | Rejections by reason, and teardowns split into the normal case and the abnormal ones, each explaining what it means |
+
+Design points worth knowing before changing it:
+
 - **Counters are stored as per-interval deltas, never raw totals.** A deploy therefore renders as a
   restart marker rather than a giant negative spike.
 - **Retention is tiered automatically**: 1-minute rows for 48 hours, 5-minute for 30 days, hourly
   for a year. That settles at roughly 20k rows and a few MB, compacted at most once an hour and
   never anywhere near a forwarded frame.
+- **Counts are plotted as rates, never as raw per-interval counts.** Rows do not all cover the same
+  span, so a raw count steps at every tier boundary purely because the bucket got wider.
+- **The `Live` range is not a short history query.** Sampling is once a minute, so 15 minutes of
+  history is 15 points. Live instead derives its own series from the poll the page is already
+  making every 2 seconds, seeded from history so the window is full immediately. It costs the relay
+  nothing extra and is deliberately ephemeral.
 - **It costs nothing when nobody is looking.** The forwarding hot path is untouched, the page polls
   rather than holding a socket open, polling stops entirely while the tab is hidden, and a poll
-  answered from the in-memory ring never touches the disk.
+  answered from the in-memory ring never touches the disk. A measured steady-state poll is about
+  740 gzipped bytes and well under a millisecond of round trip on loopback.
+- **Aggregates only.** No slot ids, no IPs, no traffic content, so there is deliberately no session
+  list. The dashboard inherits that from `MetricsSnapshot` rather than choosing it.
+- **One HTML response, no build step, no dependency.** Markup, styles, charts and script are a
+  single inlined document with zero external requests, so `ws` stays the only production
+  dependency. Light and dark are both authored (the toggle cycles system / light / dark and
+  persists in `localStorage`), and every chart is hand-rolled SVG.
 - **It deliberately does not rebuild** host CPU, disk, bandwidth or egress billing (the Hetzner
   console has those) or edge request and WebSocket counts (Cloudflare has those).
+
+Run `/preview` for a local copy seeded with realistic history, which is the only practical way to
+review anything visual here.
 
 ## Performance and vertical scaling
 

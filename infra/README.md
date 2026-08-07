@@ -360,6 +360,32 @@ spike that rises and falls between two ticks is invisible, and an aggregated buc
 the largest sample taken rather than a true peak. Sampling faster is what the performance budget
 rules out.
 
+### Reading it during an incident
+
+The dashboard is built around five questions. Roughly in the order worth checking:
+
+1. **Are we near a ceiling?** Every capacity tile shows a percentage of its configured cap, badged
+   at 60% and 80%. Connections against `MAX_CONNECTIONS`, resident memory against the container
+   limit, and the slowest consumer's queue against `MAX_BUFFERED_BYTES`.
+2. **Is the relay itself struggling, or is it the network?** Event loop delay p99 above roughly
+   50 ms delays every forward, and that is the relay. Deep outbound queues with a healthy event
+   loop is the opposite: the relay is fine and a consumer's downlink is not.
+3. **Is anyone backing up before it becomes a teardown?** "Outbound queue depth" is the warning
+   that "Abnormal teardowns / backpressure" is the postmortem of.
+4. **Are clients failing to pair?** "Pairing success" below 100% means connections are arriving and
+   not finding a partner, which a raw connection count hides entirely.
+5. **What changed?** Restart markers are dashed vertical rules. "Average frame size" separates a
+   change in traffic shape from a change in traffic volume.
+
+The `Live` range is a 15-minute window at the page's own 2-second poll resolution, seeded from
+history so it is full immediately. It is derived in the browser and never persisted, so it costs
+the relay nothing and does not survive a reload.
+
+Counts are plotted as rates per minute rather than raw per-interval counts, because retention is
+tiered: an hourly row holds twelve times the count of a 5-minute row for identical traffic, and a
+raw count would step at every tier boundary. The table view keeps raw counts on purpose, since it
+carries a resolution column that states the span.
+
 ## Traffic budget
 
 `bytesForwardedTotal` resets to zero on every process restart, so a naive scrape undercounts. Sample
