@@ -113,8 +113,10 @@ no route, and no event-loop-delay monitor exist. Four invariants are load-bearin
   in-process login. See `docs/security-model.md`.
 
 `/metricz` is not superseded by this: it is the machine surface `monitor.yml` and
-`scripts/loadTest.mjs` consume, and it keeps its token gate. The two share one data definition
-(`closedByCauseFromSnapshot`) rather than one auth mechanism.
+`scripts/loadTest.mjs` consume, and it keeps its token gate. The two surfaces share a data
+definition rather than an auth mechanism: `buildClosedByCause` in `src/http/metrics.ts` is the
+single place the teardown-cause grouping is defined, fed lifetime totals by `/metricz` and
+per-interval deltas by the history rows.
 
 ### Open-core admission seam
 

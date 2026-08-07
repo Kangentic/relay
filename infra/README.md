@@ -313,10 +313,18 @@ The second command must show the file owned by `node`. Root ownership means the 
 missing from the running image, and the relay is recording nothing.
 
 Retention is tiered automatically (1-minute rows for 48h, 5-minute for 30 days, hourly for a year),
-which settles at roughly 20k rows and a few MB. Compaction runs at most hourly, off the write path,
-and rewrites through a temp file so a crash cannot destroy the original. If the file ever cannot be
-written the relay keeps running and falls back to an in-memory ring, `/metricz` reports
-`historyRecorderHealthy: false`, and the dashboard shows a banner.
+which settles at roughly 20k rows and a few MB. Compaction runs at most hourly and rewrites through
+a temp file, so a crash cannot destroy the original. It shares one serialized queue with the sample
+appends, which means a slow compaction can delay the next sample write by tens of milliseconds; it
+never touches a forwarded frame. If the file cannot be written at all the relay keeps running and
+falls back to an in-memory ring, `/metricz` reports `historyRecorderHealthy: false`, and the
+dashboard shows a banner.
+
+If compaction itself keeps failing while appends keep succeeding, the file grows at fine resolution
+because the row ceiling is only applied during a successful compaction. The usual cause is another
+process holding a read handle on the file (a backup or antivirus agent). The relay cannot break
+that lock, so after three consecutive failures it stops logging a warning and logs an error naming
+the condition. Treat that error as "investigate what has the file open", not as a relay fault.
 
 **Gauges are point samples.** `activeConnections` and friends are read once per interval, so a
 spike that rises and falls between two ticks is invisible, and an aggregated bucket's maximum is

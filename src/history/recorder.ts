@@ -19,8 +19,17 @@ import {
 
 const DEFAULT_COMPACTION_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_RING_CAPACITY = 120;
-/** Comfortably above a full year of hourly rows, so only pathological files truncate. */
-const MAX_RESPONSE_ROW_COUNT = 10_000;
+/**
+ * Matched to MAX_HISTORY_ROW_COUNT, because a widest-range read spans all three
+ * tiers at once, not just the hourly one: roughly 2880 fine plus 8000 mid plus
+ * 8000 coarse. A smaller cap here would silently drop the oldest half of a
+ * "1 year" request after about a month of uptime, which is ordinary rather than
+ * pathological. A range read is a rare operator action, not a poll, so the
+ * larger bounded payload is the right trade.
+ */
+const MAX_RESPONSE_ROW_COUNT = MAX_HISTORY_ROW_COUNT;
+/** Consecutive failed compactions before the log moves from warn to error. */
+const COMPACTION_FAILURES_BEFORE_ESCALATION = 3;
 const SHUTDOWN_FLUSH_TIMEOUT_MS = 1_000;
 const CONSECUTIVE_FAILURES_BEFORE_DISABLE = 5;
 
@@ -116,6 +125,7 @@ export function createHistoryRecorder(deps: HistoryRecorderDeps): HistoryRecorde
   let fileHalfDisabled = historyFilePath === null;
   let consecutiveFailureCount = 0;
   let lastFailureLoggedAtMs = 0;
+  let consecutiveCompactionFailureCount = 0;
 
   // Baseline taken at CONSTRUCTION, not on the first tick. createRelay accepts
   // an injected Metrics (deps.metrics), which may already be warm, and a
@@ -283,15 +293,32 @@ export function createHistoryRecorder(deps: HistoryRecorderDeps): HistoryRecorde
     void enqueueFileOperation(async () => {
       try {
         await compactHistoryFile();
+        consecutiveCompactionFailureCount = 0;
       } catch (error: unknown) {
         // A failed compaction is not fatal: the original file is untouched by
         // the temp-then-rename ordering, so the next attempt retries. On
         // Windows a rename over a file another handle has open fails EPERM,
         // which is exactly this case.
-        logger.warn('metrics history compaction failed', {
+        //
+        // But appends keep succeeding while renames fail (appending needs no
+        // exclusive access), and the row ceiling is only enforced INSIDE a
+        // successful compaction. So a persistently stuck rename, say an
+        // antivirus or backup agent holding a read handle, grows the file at
+        // fine resolution forever. Nothing in this process can break that lock,
+        // so the escalation is loudness: after a few consecutive failures this
+        // stops being a transient warning and becomes an error an operator is
+        // meant to act on.
+        consecutiveCompactionFailureCount += 1;
+        const details = {
           code: errorCodeOf(error),
           error: errorMessageOf(error),
-        });
+          consecutiveCompactionFailureCount,
+        };
+        if (consecutiveCompactionFailureCount >= COMPACTION_FAILURES_BEFORE_ESCALATION) {
+          logger.error('metrics history compaction failing repeatedly, file will grow unbounded', details);
+        } else {
+          logger.warn('metrics history compaction failed', details);
+        }
       }
     }, undefined);
   }

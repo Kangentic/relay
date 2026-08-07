@@ -209,27 +209,45 @@ th { color: var(--text-muted); font-weight: 500; }
     return row[key] / w;
   }
 
+  function readMean(meanFn, row) {
+    if (!meanFn) return null;
+    var mean = meanFn(row);
+    return mean === null || mean === undefined || !isFinite(mean) ? null : mean;
+  }
+
   // Buckets to at most MAX_PLOT_POINTS, keeping the maximum in each bucket so a
   // spike survives downsampling. Matches how the server aggregates gauges.
-  function downsample(rows, valueFns) {
+  //
+  // Means are carried alongside, because a maximum alone cannot tell "sat at 38
+  // all hour" from "idled at 2 and burst once" - which is the difference
+  // between needing a bigger box and having had one busy minute.
+  function downsample(rows, valueFns, meanFns) {
     if (rows.length <= MAX_PLOT_POINTS) {
       return rows.map(function (r) {
-        return { t: r.timestampMs, restart: r.restartCount > 0, values: valueFns.map(function (f) { return f(r); }) };
+        return {
+          t: r.timestampMs,
+          restart: r.restartCount > 0,
+          values: valueFns.map(function (f) { return f(r); }),
+          means: meanFns.map(function (f) { return readMean(f, r); })
+        };
       });
     }
     var size = Math.ceil(rows.length / MAX_PLOT_POINTS), out = [];
     for (var i = 0; i < rows.length; i += size) {
-      var chunk = rows.slice(i, i + size), restart = false, values = [];
+      var chunk = rows.slice(i, i + size), restart = false, values = [], means = [];
       for (var s = 0; s < valueFns.length; s++) {
-        var best = null;
+        var best = null, meanTotal = 0, meanCount = 0;
         for (var c = 0; c < chunk.length; c++) {
           var v = valueFns[s](chunk[c]);
           if (v !== null && v !== undefined && isFinite(v) && (best === null || v > best)) best = v;
+          var m = readMean(meanFns[s], chunk[c]);
+          if (m !== null) { meanTotal += m; meanCount++; }
         }
         values.push(best);
+        means.push(meanCount === 0 ? null : meanTotal / meanCount);
       }
       for (var c2 = 0; c2 < chunk.length; c2++) if (chunk[c2].restartCount > 0) restart = true;
-      out.push({ t: chunk[0].timestampMs, restart: restart, values: values });
+      out.push({ t: chunk[0].timestampMs, restart: restart, values: values, means: means });
     }
     return out;
   }
@@ -237,7 +255,11 @@ th { color: var(--text-muted); font-weight: 500; }
   var W = 760, H = 190, PAD_L = 46, PAD_R = 12, PAD_T = 10, PAD_B = 22;
 
   function buildChart(card, spec) {
-    var pts = downsample(state.rows, spec.series.map(function (s) { return s.value; }));
+    var pts = downsample(
+      state.rows,
+      spec.series.map(function (s) { return s.value; }),
+      spec.series.map(function (s) { return s.mean; })
+    );
     var plot = card.querySelector(".plot");
     if (!pts.length) { plot.innerHTML = '<p class="empty">No history in this range yet.</p>'; return; }
 
@@ -299,8 +321,14 @@ th { color: var(--text-muted); font-weight: 500; }
       cross.setAttribute("opacity", "1");
       var html = '<div class="when">' + esc(fmtTime(pts[idx].t)) + (pts[idx].restart ? " &middot; restart" : "") + "</div>";
       for (var k = 0; k < spec.series.length; k++) {
-        var value = pts[idx].values[k];
-        html += '<div><span>' + esc(spec.series[k].label) + ":</span> " + esc(value === null || value === undefined ? "n/a" : spec.format(value)) + "</div>";
+        var value = pts[idx].values[k], meanValue = pts[idx].means[k];
+        var shown = value === null || value === undefined ? "n/a" : spec.format(value);
+        // Only worth showing once a bucket covers more than one sample and the
+        // average actually differs from the peak.
+        if (meanValue !== null && value !== null && Math.abs(meanValue - value) > 0.05) {
+          shown += " (avg " + spec.format(meanValue) + ")";
+        }
+        html += '<div><span>' + esc(spec.series[k].label) + ":</span> " + esc(shown) + "</div>";
       }
       tip.innerHTML = html;
       tip.style.opacity = "1";
@@ -352,10 +380,16 @@ th { color: var(--text-muted); font-weight: 500; }
 
   function specs() {
     var list = [
-      { title: "Connections", hint: "Live gauges, sampled once per interval.", format: fmtCount, series: [
-        { label: "active", color: seriesColor(1), value: function (r) { return r.activeConnections.maximum; } },
-        { label: "waiting slots", color: seriesColor(2), value: function (r) { return r.waitingSlots.maximum; } },
-        { label: "paired slots", color: seriesColor(3), value: function (r) { return r.pairedSlots.maximum; } }
+      { title: "Connections", hint: "Point samples, one per interval. The line is the peak; hover for the average once buckets cover more than one sample.", format: fmtCount, series: [
+        { label: "active", color: seriesColor(1),
+          value: function (r) { return r.activeConnections.maximum; },
+          mean: function (r) { return r.activeConnections.mean; } },
+        { label: "waiting slots", color: seriesColor(2),
+          value: function (r) { return r.waitingSlots.maximum; },
+          mean: function (r) { return r.waitingSlots.mean; } },
+        { label: "paired slots", color: seriesColor(3),
+          value: function (r) { return r.pairedSlots.maximum; },
+          mean: function (r) { return r.pairedSlots.mean; } }
       ] },
       { title: "Frames forwarded", hint: "Rate, derived from per-interval deltas.", format: function (v) { return fmtCount(v) + "/s"; }, series: [
         { label: "frames/s", color: seriesColor(1), value: function (r) { return perSecond(r, "framesForwardedDelta"); } }
@@ -387,7 +421,9 @@ th { color: var(--text-muted); font-weight: 500; }
     }
 
     list.push({ title: "Process CPU", hint: "Percent of one core. Above 100 is possible and real: this counts every thread.", format: fmtPercent, series: [
-      { label: "cpu", color: seriesColor(1), value: function (r) { return r.cpuPercent ? r.cpuPercent.maximum : null; } }
+      { label: "cpu", color: seriesColor(1),
+        value: function (r) { return r.cpuPercent ? r.cpuPercent.maximum : null; },
+        mean: function (r) { return r.cpuPercent ? r.cpuPercent.mean : null; } }
     ] });
     list.push({ title: "Event loop delay p99", hint: "Worst tail per interval. Aggregated buckets keep the maximum.", format: fmtMs, series: [
       { label: "p99", color: seriesColor(2), value: function (r) { return r.eventLoopLagP99Ms; } }

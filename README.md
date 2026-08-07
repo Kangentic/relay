@@ -153,7 +153,7 @@ process restart that zeroes every counter.
   restart marker rather than a giant negative spike.
 - **Retention is tiered automatically**: 1-minute rows for 48 hours, 5-minute for 30 days, hourly
   for a year. That settles at roughly 20k rows and a few MB, compacted at most once an hour and
-  never on the write path.
+  never anywhere near a forwarded frame.
 - **It costs nothing when nobody is looking.** The forwarding hot path is untouched, the page polls
   rather than holding a socket open, polling stops entirely while the tab is hidden, and a poll
   answered from the in-memory ring never touches the disk.
