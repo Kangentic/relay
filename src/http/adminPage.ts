@@ -280,12 +280,14 @@ th { color: var(--text-muted); font-weight: 500; }
 
     svg += '<text x="' + PAD_L + '" y="' + (H - 6) + '" font-size="10" fill="' + css("--text-muted") + '">' + esc(fmtTime(pts[0].t)) + '</text>';
     svg += '<text x="' + (W - PAD_R) + '" y="' + (H - 6) + '" text-anchor="end" font-size="10" fill="' + css("--text-muted") + '">' + esc(fmtTime(pts[pts.length - 1].t)) + '</text>';
-    svg += '<line id="cross" x1="0" y1="' + PAD_T + '" x2="0" y2="' + (H - PAD_B) + '" stroke="' + css("--axis") + '" stroke-width="1" opacity="0"/>';
+    // A class, not an id: several charts share this document, and duplicate
+    // ids would be invalid markup even though the subtree query still works.
+    svg += '<line class="cross" x1="0" y1="' + PAD_T + '" x2="0" y2="' + (H - PAD_B) + '" stroke="' + css("--axis") + '" stroke-width="1" opacity="0"/>';
     svg += "</svg>";
 
     plot.innerHTML = svg + '<div class="tip"></div>';
 
-    var svgEl = plot.querySelector("svg"), tip = plot.querySelector(".tip"), cross = plot.querySelector("#cross");
+    var svgEl = plot.querySelector("svg"), tip = plot.querySelector(".tip"), cross = plot.querySelector(".cross");
     svgEl.addEventListener("mousemove", function (event) {
       var box = svgEl.getBoundingClientRect();
       var x = ((event.clientX - box.left) / box.width) * W;
