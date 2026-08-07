@@ -236,6 +236,7 @@ td.zero { color: var(--text-muted); }
 
   <div class="controls">
     <div class="segmented" role="group" aria-label="Time range">
+      <button data-range="0">Live</button>
       <button data-range="3600000">1h</button>
       <button data-range="21600000">6h</button>
       <button data-range="86400000">24h</button>
@@ -267,8 +268,19 @@ td.zero { color: var(--text-muted); }
   var POLL_MS = 2000;
   var MAX_PLOT_POINTS = 400;
   var DAY_MS = 86400000;
+  /**
+   * The Live range is not a shorter history query. The recorder samples once a
+   * minute in production, so a 15-minute history view would be fifteen points.
+   * Instead the page derives its own series from the poll it is already making
+   * every 2 seconds, holding it in memory here. That is a genuinely live view
+   * at poll resolution for no extra server work, no extra disk, and no change
+   * to the sampling interval. It is ephemeral by nature: a reload starts over.
+   */
+  var LIVE_RANGE = 0;
+  var LIVE_WINDOW_MS = 15 * 60 * 1000;
 
-  var state = { rangeMs: DAY_MS, cursorMs: 0, rows: [], live: null, meta: null, table: false, timer: null, failures: 0, instanceId: null, lastUpdateMs: 0, statusText: "connecting", statusClass: "" };
+  var state = { rangeMs: DAY_MS, cursorMs: 0, rows: [], live: null, meta: null, table: false, timer: null, failures: 0, instanceId: null, lastUpdateMs: 0, statusText: "connecting", statusClass: "",
+    liveRows: [], previousLive: null, previousLiveAtMs: 0 };
   // Loopback only. Under tsx watch the relay restarts on every source edit, and
   // a new instance id is the signal that the page being displayed is stale.
   // Production is served on a real hostname, so this can never fire there.
@@ -307,6 +319,10 @@ td.zero { color: var(--text-muted); }
   }
   function fmtTime(ms) {
     var d = new Date(ms);
+    // Seconds only matter on the live view; anywhere else they are noise.
+    if (state.rangeMs === LIVE_RANGE) {
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    }
     if (state.rangeMs > 7 * DAY_MS) return d.toLocaleDateString([], { month: "short", day: "numeric" });
     if (state.rangeMs > DAY_MS) return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit" });
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -403,9 +419,14 @@ td.zero { color: var(--text-muted); }
   }
 
   function buildChart(card, spec) {
-    var pts = downsample(state.rows, spec.series);
+    var pts = downsample(plotRows(), spec.series);
     var plot = card.querySelector(".plot");
-    if (!pts.length) { plot.innerHTML = '<p class="empty">No history in this range yet.</p>'; return; }
+    if (!pts.length) {
+      plot.innerHTML = '<p class="empty">' +
+        (state.rangeMs === LIVE_RANGE ? "Collecting, one point every " + POLL_MS / 1000 + "s..." : "No history in this range yet.") +
+        "</p>";
+      return;
+    }
 
     // Sparse per-interval counts (teardown causes, reject reasons) read as
     // noise when drawn as overlapping lines; stacked they show both the total
@@ -578,10 +599,10 @@ td.zero { color: var(--text-muted); }
   }
 
   function activeSeries(pick, labels) {
-    var out = [], slot = 0;
+    var out = [], slot = 0, rows = plotRows();
     for (var i = 0; i < labels.length; i++) {
       var key = labels[i].key, any = false;
-      for (var r = 0; r < state.rows.length; r++) { if (pick(state.rows[r], key)) { any = true; break; } }
+      for (var r = 0; r < rows.length; r++) { if (pick(rows[r], key)) { any = true; break; } }
       if (!any) continue;
       slot++;
       if (slot > 8) break;
@@ -694,9 +715,9 @@ td.zero { color: var(--text-muted); }
         format: fmtCount, series: abnormalSeries });
     }
 
-    var reasonKeys = {};
-    for (var i = 0; i < state.rows.length; i++) {
-      for (var k in state.rows[i].rejectsByReasonDelta) reasonKeys[k] = true;
+    var reasonKeys = {}, reasonRows = plotRows();
+    for (var i = 0; i < reasonRows.length; i++) {
+      for (var k in reasonRows[i].rejectsByReasonDelta) reasonKeys[k] = true;
     }
     var reasonLabels = Object.keys(reasonKeys).sort().map(function (k) { return { key: k, label: k.replace(/_/g, " ") }; });
     var reasonSeries = activeSeries(function (row, key) { return row.rejectsByReasonDelta[key]; }, reasonLabels);
@@ -719,8 +740,65 @@ td.zero { color: var(--text-muted); }
     return list;
   }
 
+  /** Which series the charts and table draw from. */
+  function plotRows() {
+    return state.rangeMs === LIVE_RANGE ? state.liveRows : state.rows;
+  }
+
   function latestRow() {
-    return state.rows.length ? state.rows[state.rows.length - 1] : null;
+    var rows = state.rows;
+    return rows.length ? rows[rows.length - 1] : null;
+  }
+
+  function subtractMaps(current, previous) {
+    var out = {};
+    for (var key in current) {
+      var difference = current[key] - (previous[key] || 0);
+      if (difference > 0) out[key] = difference;
+    }
+    return out;
+  }
+
+  /**
+   * Builds one history-shaped row from two consecutive live snapshots, so every
+   * chart, the tooltip and the table view all work against the live series
+   * without knowing it came from anywhere different.
+   *
+   * Counters reset when the relay restarts, which shows up as uptime going
+   * backwards; deltas clamp at zero so a restart never draws as a negative.
+   */
+  function synthesizeLiveRow(previous, current, previousAtMs, nowMs) {
+    function delta(key) { return Math.max(0, current[key] - previous[key]); }
+    function level(value) { return { maximum: value, mean: null }; }
+    var closedByCause = subtractMaps(current.closedByCause, previous.closedByCause);
+    return {
+      timestampMs: nowMs,
+      resolutionSeconds: 60,
+      windowMs: Math.max(1, nowMs - previousAtMs),
+      restartCount: current.uptimeSeconds < previous.uptimeSeconds ? 1 : 0,
+      sourceRowCount: 1,
+      connectionsDelta: delta("connectionsTotal"),
+      sessionsDelta: delta("sessionsTotal"),
+      framesForwardedDelta: delta("framesForwardedTotal"),
+      bytesForwardedDelta: delta("bytesForwardedTotal"),
+      peerClosedDelta: closedByCause.peerClosed || 0,
+      pongTimeoutsDelta: closedByCause.heartbeat || 0,
+      rejectsByReasonDelta: subtractMaps(current.rejectsByReason, previous.rejectsByReason),
+      closedByCause: closedByCause,
+      activeConnections: level(current.activeConnections),
+      waitingSlots: level(current.waitingSlots),
+      pairedSlots: level(current.pairedSlots),
+      cpuPercent: current.cpuPercent === null ? null : level(current.cpuPercent),
+      eventLoopLagP99Ms: current.eventLoopLagP99Ms,
+      rssBytes: current.rssBytes,
+      rssPercent: current.rssPercent,
+      // Queue depth is only sampled on the recorder tick, so the live series
+      // has nothing to say about it. Null draws a gap rather than a
+      // reassuring zero.
+      maxOutboundBufferBytes: null,
+      backloggedConnections: null,
+      maxParkedBufferBytes: null
+    };
   }
 
   // Headroom, not raw values. "1240 connections" is a number; "31% of the way
@@ -798,7 +876,7 @@ td.zero { color: var(--text-muted); }
     var host = document.getElementById("tableView");
     host.hidden = !state.table;
     if (!state.table) return;
-    var rows = state.rows.slice(-500).reverse();
+    var rows = plotRows().slice(-500).reverse();
     // Peak and average are separate columns rather than one cell, because the
     // gap between them is the whole point on an aggregated row.
     var html = '<div class="card"><h2>Table view</h2><p class="hint">Most recent ' + rows.length +
@@ -903,12 +981,23 @@ td.zero { color: var(--text-muted); }
     }
     if (seenInstance) state.instanceId = seenInstance;
 
+    var nowMs = Date.now();
+    if (state.previousLive) {
+      state.liveRows.push(synthesizeLiveRow(state.previousLive, payload.live, state.previousLiveAtMs, nowMs));
+      var oldestLiveMs = nowMs - LIVE_WINDOW_MS;
+      while (state.liveRows.length && state.liveRows[0].timestampMs < oldestLiveMs) state.liveRows.shift();
+    }
+    state.previousLive = payload.live;
+    state.previousLiveAtMs = nowMs;
+
     state.live = payload.live;
     state.meta = payload.meta;
     if (replace) state.rows = payload.rows;
     else if (payload.rows.length) state.rows = state.rows.concat(payload.rows);
-    var oldest = payload.meta.serverTimeMs - state.rangeMs;
-    state.rows = state.rows.filter(function (r) { return r.timestampMs >= oldest; });
+    if (state.rangeMs !== LIVE_RANGE) {
+      var oldest = payload.meta.serverTimeMs - state.rangeMs;
+      state.rows = state.rows.filter(function (r) { return r.timestampMs >= oldest; });
+    }
     if (payload.cursorMs) state.cursorMs = payload.cursorMs;
     render();
   }
@@ -946,7 +1035,10 @@ td.zero { color: var(--text-muted); }
     buttons[i].addEventListener("click", function (event) {
       state.rangeMs = Number(event.target.getAttribute("data-range"));
       for (var b = 0; b < buttons.length; b++) buttons[b].setAttribute("aria-pressed", buttons[b] === event.target ? "true" : "false");
-      load(true);
+      // Live draws from what the poll already collected, so it needs no fetch;
+      // every other range needs its window pulled from the history store.
+      if (state.rangeMs === LIVE_RANGE) render();
+      else load(true);
     });
     if (Number(buttons[i].getAttribute("data-range")) === state.rangeMs) buttons[i].setAttribute("aria-pressed", "true");
   }
