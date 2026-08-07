@@ -16,7 +16,7 @@ The second problem is that a freshly started relay has no history, so every pane
 "No history in this range yet". A preview of an empty dashboard answers nothing. This skill
 seeds a realistic file first.
 
-**Usage:** `/preview [--port 8099] [--days 40] [--pairs 3] [--no-traffic]`
+**Usage:** `/preview [--port 8099] [--days 40] [--pairs 3] [--no-traffic] [--viewer <email>] [--no-viewer]`
 
 ## What it does
 
@@ -31,6 +31,11 @@ seeds a realistic file first.
 3. Starts a real relay in-process with `ADMIN_ENABLED=true` pointed at that file, sampling
    every 10 seconds instead of 60 so new points appear while you watch.
 4. Opens a few real WebSocket pairs that keep sending, so the live tiles are not all zeros.
+5. Simulates Cloudflare Access's `Cf-Access-Authenticated-User-Email` header, since the edge sets
+   it and localhost otherwise never would, which would leave the header's identity pill unreviewable
+   until it reached production. Defaults to a generic `dev@example.com`; `--viewer` overrides it and
+   `--no-viewer` shows the page as an SSH tunnel serves it, with no identity at all. The injection
+   sits in front of the relay in `scripts/preview.mjs`; nothing in `src/**` knows it happened.
 
 Seeding goes through the relay's own `serializeHistoryRow`, so the preview file is byte-identical
 in format to what the recorder writes. If the wire format changes, the preview follows it rather

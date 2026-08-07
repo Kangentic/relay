@@ -51,6 +51,34 @@ export function handleAdminPageRequest(_request: IncomingMessage, response: Serv
     .end(ADMIN_PAGE_HTML);
 }
 
+/**
+ * Who Cloudflare Access says is looking, for DISPLAY ONLY.
+ *
+ * This value must never reach an authorization decision. The header is trivially
+ * forgeable by anything that can reach the origin directly, and the relay's whole
+ * claim is that it authenticates nothing: the gate is the Access application, and
+ * a request that arrives here has already passed it or has bypassed the edge
+ * entirely. Treating this as proof of identity would convert a header into a
+ * login, which is exactly the thing this design refuses to grow.
+ *
+ * It exists because a private page that opens instantly, with no sign of a gate,
+ * reads as an ungated page. Naming the account makes the boundary visible.
+ *
+ * Returned as data rather than templated into the HTML, so the page stays one
+ * constant, and the client renders it with textContent - a forged header carrying
+ * markup is inert either way, but that keeps it structurally impossible.
+ */
+function viewerEmailOf(request: IncomingMessage): string | null {
+  const raw = request.headers['cf-access-authenticated-user-email'];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  // Bounded because it is attacker-controlled when the origin is reachable
+  // directly, and an unbounded string would ride on every poll response.
+  if (trimmed.length === 0 || trimmed.length > 320) return null;
+  return trimmed;
+}
+
 function readPositiveInteger(raw: string | null): number | null {
   if (raw === null || raw === '') return null;
   const parsed = Number(raw);
@@ -139,6 +167,7 @@ export async function handleAdminDataRequest(
       // Changes on every relay start, so a reader can tell "the process I was
       // watching went away" from "nothing new happened".
       instanceId: recorder?.instanceId() ?? null,
+      viewer: viewerEmailOf(request),
       capacity: {
         maxConnections: deps.capacity.maxConnections,
         maxUnpairedConnections: deps.capacity.maxUnpairedConnections,

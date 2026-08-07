@@ -178,6 +178,14 @@ for its presence would be theater rather than defense. If a future deployment wa
 depth here, the correct mechanism is verifying the Access JWT against Cloudflare's public keys, not
 trusting a header, and not an in-process login.
 
+The page does show it, in a header pill with a sign-out link, because a private surface that opens
+instantly with no sign of a gate reads as a surface that has none. Three properties keep that from
+becoming a weakness. The value never reaches an authorization decision, so forging it buys access
+to nothing. It is delivered as JSON and written with `textContent`, so a header carrying markup is
+inert by construction rather than by escaping correctly. It is length-bounded before it is echoed,
+since anything that reaches the origin directly controls it. Sign-out links to Cloudflare's own
+`/cdn-cgi/access/logout`; the relay has no session to end.
+
 ## Admission control
 
 `AdmissionPolicy` (`src/admission.ts`) is the seam a separate, private control plane uses to gate
