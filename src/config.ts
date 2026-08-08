@@ -97,6 +97,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // under the teardown threshold. Still env-tunable.
     maxBufferedBytes: readInt(env, 'MAX_BUFFERED_BYTES', 16_777_216),
     pingIntervalMs: readInt(env, 'PING_INTERVAL_MS', 30_000),
+    // 2s: long enough for a real round trip to a phone on a slow mobile link,
+    // short enough that a roaming peer re-pairs in seconds rather than waiting
+    // out a full PING_INTERVAL_MS cycle. 0 disables the probe.
+    contentionProbeTimeoutMs: readInt(env, 'CONTENTION_PROBE_TIMEOUT_MS', 2_000),
     parkTimeoutMs: readInt(env, 'PARK_TIMEOUT_MS', 60_000),
     maxSessionMs: readInt(env, 'MAX_SESSION_MS', 0),
     shutdownGraceMs: readInt(env, 'SHUTDOWN_GRACE_MS', 10_000),

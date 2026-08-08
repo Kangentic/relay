@@ -57,6 +57,7 @@ test/
 scripts/
   loadTest.mjs        # load-test harness: N slot pairs x M frames x S bytes against a dedicated instance
   flakeHunt.mjs       # runs the unit suite N times; reports the worker-crash rate and the file that crashed
+  roamRepro.mjs       # A/B measurement of re-pair time after a roam, contention probe off vs on
 ```
 
 ## Commands
@@ -71,6 +72,8 @@ scripts/
 - `npm run test:integration` - the real-handshake integration test
 - `npm run test:flake` - run the unit suite repeatedly to measure an intermittent worker crash
   (`-- --runs 30`); see [docs/testing.md](docs/testing.md)
+- `npm run test:roam` - measure re-pair time after a roam with the contention probe off vs on
+  (needs `npm run build` first); see [docs/testing.md](docs/testing.md)
 - `docker compose up -d` - self-host locally
 
 ## Architecture

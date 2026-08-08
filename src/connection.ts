@@ -26,6 +26,7 @@ export function createConn(socket: WebSocket, slot: string, ip: string): Conn {
     state: 'waiting',
     partner: null,
     isAlive: true,
+    probePending: false,
     pending: [],
     pendingBytes: 0,
     parkTimer: null,
@@ -52,6 +53,12 @@ export function attachConnectionHandlers(conn: Conn, deps: ConnectionDeps): void
 
   conn.socket.on('pong', () => {
     conn.isAlive = true;
+    // The only place a pong is observed, so it answers both liveness
+    // questions at once: the keepalive loop's periodic one and, when a
+    // newcomer contended this connection's slot, the slot table's one-shot
+    // probe. The two flags stay separate because their owners run on
+    // unrelated clocks.
+    conn.probePending = false;
   });
 
   conn.socket.on('close', () => {

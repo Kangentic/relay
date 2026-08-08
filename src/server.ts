@@ -78,6 +78,7 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
     metrics,
     logger,
     parkTimeoutMs: config.parkTimeoutMs,
+    contentionProbeTimeoutMs: config.contentionProbeTimeoutMs,
     maxSessionMs: config.maxSessionMs,
     maxSessionBytes: config.maxSessionBytes,
     maxBufferedBytes: config.maxBufferedBytes,
@@ -367,6 +368,10 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
       new Promise((resolve, reject) => {
         health.draining = true;
         keepalive.stop();
+        // Before the graceful 1001 sweep below, so an armed probe can never
+        // terminate() a connection the shutdown path is already closing
+        // politely.
+        slotTable.stopContentionProbes();
         // Started before connections are torn down, so the final flushed row
         // captures live state rather than an already-drained relay. The catch
         // is attached now so a recorder failure can never surface as an

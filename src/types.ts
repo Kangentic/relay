@@ -19,6 +19,11 @@ export interface Config {
   readonly maxParkedBufferBytes: number;
   readonly maxBufferedBytes: number;
   readonly pingIntervalMs: number;
+  /**
+   * How long the incumbents of a contended slot have to answer a liveness
+   * probe before the silent one is reaped. 0 disables probing entirely.
+   */
+  readonly contentionProbeTimeoutMs: number;
   readonly parkTimeoutMs: number;
   readonly maxSessionMs: number;
   readonly shutdownGraceMs: number;
@@ -67,6 +72,13 @@ export interface Conn {
   state: ConnState;
   partner: Conn | null;
   isAlive: boolean;
+  /**
+   * Whether a contention probe is currently awaiting this connection's pong.
+   * Deliberately separate from `isAlive`, which the keepalive loop owns on its
+   * own interval: a probe that wrote `isAlive` would race the reaper in both
+   * directions, either rescuing a dead socket or condemning a live one.
+   */
+  probePending: boolean;
   pending: PendingFrame[];
   pendingBytes: number;
   parkTimer: ReturnType<typeof setTimeout> | null;

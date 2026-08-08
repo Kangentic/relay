@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fixed
+
+- **A phone that changed network could not re-pair for 30 to 60 seconds, and then knocked the
+  desktop off too.** Roaming from wifi to cellular, entering a tunnel, or dozing leaves a half-open
+  socket behind with no FIN, and a half-open socket still reads `OPEN`, so the relay had no way to
+  tell the ghost from a live peer. It rejected the returning phone as `slot_busy` on every retry
+  until the ping/pong loop noticed, which takes one to two full `PING_INTERVAL_MS` cycles because a
+  socket that dies just after a tick survives that tick. When the reap finally landed it tore down
+  the healthy desktop as well, so both ends paid a fresh TCP, TLS, WebSocket upgrade and Noise
+  handshake. Now a newcomer arriving on an already-paired slot pings both incumbents and reaps
+  whichever fails to answer within the new `CONTENTION_PROBE_TIMEOUT_MS` (2s). The relay only
+  learned to ask a question it could already answer at the one moment the answer mattered.
+- Nothing about the wire contract changed, and no client change is required. The newcomer still
+  gets the same `4409` with the same reason string, the survivor still gets `4000`, and the
+  sequence of events is the one that already happened, just seconds after the roam instead of a
+  minute. Eviction is earned by failing a liveness probe and never by arriving later, so arriving
+  second buys a client nothing. Note that a 2s probe is a liveness check rather than proof of death:
+  an incumbent draining a large outbound backlog can miss it while alive, so raise
+  `CONTENTION_PROBE_TIMEOUT_MS` or set it to `0` where that trade does not suit. Reaped incumbents
+  are counted as
+  `probe_evicted` in `rejectsByReason` alongside the existing `heartbeat` teardown cause, so an
+  operator can tell contention-triggered reaps from routine ones.
+
 ## [0.3.1] - 2026-08-07
 
 ### Added

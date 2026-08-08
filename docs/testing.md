@@ -88,6 +88,69 @@ the file that crashed, not a bystander. The script recovers it by diffing the fi
 result against every file it has seen report during the session, because a crashed run's
 `--reporter=json` output can be missing or truncated exactly when you need it.
 
+## Measuring the roam stall: `scripts/roamRepro.mjs`
+
+```
+npm run build
+npm run test:roam
+```
+
+Neither test tier can answer "how long is a roaming phone actually stuck", because that number is
+the sum of a relay timeout and two client backoffs. This harness measures it end to end. It spawns
+two real relay instances that differ only in `CONTENTION_PROBE_TIMEOUT_MS`, establishes a pair,
+roams the phone, then drives both peers on the retry cadences their real clients use (the desktop's
+500ms, the phone's 5000ms after a 4409).
+
+The roam is `ws`'s `pause()`: the client stops reading its socket, so it never answers a ping,
+while the TCP connection stays ESTABLISHED and no FIN is sent. That is exactly what the relay can
+observe of a real roam, since a half-open socket still reads `OPEN`, so it drives the production
+code path rather than a mock. It does not blackhole packets in the kernel; for that, run the relay
+under `docker compose` and `docker network disconnect` the client's container.
+
+Measured on Node 24.15.0 at stock defaults (`PING_INTERVAL_MS=30000`), three runs per arm, with
+identical results across all three. Node 24 here, not the repo's pinned 22: `roamRepro.mjs` is a
+plain Node script driving spawned relay processes rather than a Vitest worker, so the crash mode
+that motivates the pin does not apply.
+
+
+
+| Arm | Re-pair time | Phone dials | `slot_busy` | `probe_evicted` | `heartbeat` |
+|---|---|---|---|---|---|
+| Probe off (the old behaviour) | 60.5s | 13 | 12 | 0 | 1 |
+| Probe on (2000ms) | 5.0s | 2 | 1 | 1 | 1 |
+
+Three things that table is worth reading for. The clustered `slot_busy` count in the off arm is
+this bug's fingerprint, and it is what to look for on a live instance. `heartbeat` is 1 in both
+arms, which is the check that the probe moves *when* that teardown cause increments without
+inflating it. And the residual 5.0s is almost entirely the phone's own backoff: re-running the on
+arm with `--phone-backoff 500` gives 2.5s, which is the relay's actual floor of a 2s probe window
+plus a reconnect.
+
+| Flag | Purpose |
+|---|---|
+| `--ping-interval N` | `PING_INTERVAL_MS` for both arms (default 30000). Lower it to run a fast scaled-down version that shows the same ratio |
+| `--probe N` | `CONTENTION_PROBE_TIMEOUT_MS` for the "on" arm (default 2000) |
+| `--phone-backoff N` | the phone's delay after a 4409 (default 5000, the real client's value). Lower it to separate the relay's contribution from the client constant |
+| `--repeats N` | measurements per arm (default 1) |
+| `--timeout-ms N` | give up on a single measurement (default 150000) |
+
+### Cross-checking the simulation against a real blackhole
+
+The `pause()` trick is a simulation, so it was checked once against a genuine one. Build the image
+(`docker build -t relay:roamtest .`), put the relay and a client container on a user-defined
+network, pair them, then `docker network disconnect -f <network> <client>`. That removes the
+client's interface outright: its socket stays ESTABLISHED, no FIN is generated, and nothing it
+sends can arrive, which is what a phone walking off wifi does to a TCP connection.
+
+| Arm | `pause()` harness | docker blackhole |
+|---|---|---|
+| Probe off | 60.5s, 12 `slot_busy` | 60.3s, 12 `slot_busy` |
+| Probe on | 5.0s, 1 `probe_evicted` | 5.1s, 1 `probe_evicted` |
+
+The two agree, and in both the surviving peer is closed with `4000` and reconnects once. So the
+cheap harness above can be trusted for day-to-day work, and the docker setup is only worth
+rebuilding if the transport layer itself changes.
+
 ## Known test hygiene issues
 
 Found during the crash investigation and **not** its cause. Worth fixing on their own merits:
