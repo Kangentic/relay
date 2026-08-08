@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-08
+
 ### Fixed
 
 - **A phone that changed network could not re-pair for 30 to 60 seconds, and then knocked the
