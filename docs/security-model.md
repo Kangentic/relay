@@ -43,6 +43,23 @@ second arrival.
 arrivals with close code 4409 immediately. There is no waiting list, no takeover, and no
 promotion when a paired peer later disconnects.
 
+**Contention triggers a liveness probe, not a takeover.** Because a dead TCP peer with no FIN still
+reads `OPEN`, the relay cannot tell a genuine third party from a peer whose old socket went stale.
+So on contention it pings both incumbents and reaps whichever fails to answer within
+`CONTENTION_PROBE_TIMEOUT_MS`, which is the same reap the ping/pong loop would perform a cycle or
+two later. The rejection itself is unchanged, and the property that matters is preserved: a
+connection is only ever evicted for failing a liveness check, never for arriving later, so arriving
+second buys a client nothing. The probe is invisible to the rejected connection, which still sees
+the same 4409 and the same reason string.
+
+The check is liveness, not proof of death, and 2s is a short window. A ping is written behind
+whatever is already queued to a socket, so an incumbent draining a large backlog (`MAX_BUFFERED_BYTES`
+permits 16 MiB) can miss the window while alive. Contention is therefore a lever a slot-id holder
+can pull against a backlogged peer, where the keepalive loop's 30s cadence effectively offered none.
+The blast radius is bounded to what a slot-id holder could already cause - a reconnect and a fresh
+handshake, no read access to anything - but raise `CONTENTION_PROBE_TIMEOUT_MS` or set it to `0` on
+a deployment where that trade does not suit.
+
 **A connection cannot be misrouted to the wrong peer.** When one half of a pair closes, the slot
 is freed at once while the surviving peer's socket is still completing its close handshake, so
 another connection holding the same slot id can claim the freed slot during that window. It still

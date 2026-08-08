@@ -108,6 +108,18 @@ next pong arrives. This is what reaps a half-open socket — a dead TCP peer wit
 `OPEN` — so parked/paired state and connection caps stay accurate. Traffic-idle is never treated as
 death: a quiet-but-alive paired tunnel is normal and must never be killed by this check.
 
+That loop is the periodic sweep, and on its own it costs one to two full intervals to notice a
+death. The fast path is the contention probe in `SlotTable.probePairedSlot` (`src/rendezvous.ts`):
+a newcomer arriving on an already-paired slot is still rejected with 4409, but the arrival also
+pings both incumbents and reaps whichever fails to answer within `CONTENTION_PROBE_TIMEOUT_MS`.
+That is the roaming case: a phone that changed network without sending a FIN, then dialed back. It
+turns a stall of one to two ping cycles into one of a couple of seconds. The probe reuses
+the ordinary teardown path rather than inventing one: `terminate()` does no slot-table work itself,
+so cleanup runs through the socket's close event exactly as the periodic reap's does, including the
+`4000` sent to the survivor. It is deduped to one probe in flight per slot, tracks its own
+`probePending` flag rather than touching `isAlive` (whose owner runs on a different clock), and
+never fires against a pair that has since been replaced.
+
 ## Real client IP (`src/net/clientIp.ts`)
 
 `resolveClientIp` always trusts the raw socket address when `TRUST_PROXY` is `false` (the

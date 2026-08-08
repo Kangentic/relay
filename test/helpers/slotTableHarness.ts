@@ -51,6 +51,11 @@ export function createSlotTableHarness(
   configOverrides: ByteCapOverrides = {},
   maxConnectionsPerSlot = 2,
   parkTimeoutMs = 60_000,
+  // Off unless a test opts in, unlike production's 2s default: every suite on
+  // this harness predates the contention probe and tests slot-table state
+  // transitions that the probe is orthogonal to. contentionProbe.test.ts
+  // passes an explicit window.
+  contentionProbeTimeoutMs = 0,
 ): SlotTableHarness {
   const metrics = createMetrics();
   const config = {
@@ -68,6 +73,7 @@ export function createSlotTableHarness(
     metrics,
     logger: silentLogger,
     parkTimeoutMs,
+    contentionProbeTimeoutMs,
     maxSessionMs: 0,
     maxSessionBytes: config.maxSessionBytes,
     maxBufferedBytes: config.maxBufferedBytes,

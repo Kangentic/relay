@@ -21,6 +21,7 @@ function fakeConn(readyState = 1): { conn: Conn; socket: FakeSocket } {
     state: 'waiting',
     partner: null,
     isAlive: true,
+    probePending: false,
     pending: [],
     pendingBytes: 0,
     parkTimer: null,

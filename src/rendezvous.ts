@@ -13,6 +13,8 @@ export interface RendezvousDeps {
   readonly metrics: Metrics;
   readonly logger: Logger;
   readonly parkTimeoutMs: number;
+  /** Grace window for the contended-slot liveness probe; 0 disables it. */
+  readonly contentionProbeTimeoutMs: number;
   readonly maxSessionMs: number;
   /** Session byte cap, applied to the pre-pair flush as well as the live path. */
   readonly maxSessionBytes: number;
@@ -48,6 +50,8 @@ function clearTimer(conn: Conn, field: 'parkTimer' | 'sessionTimer'): void {
  */
 export class SlotTable {
   private readonly slots = new Map<string, SlotState>();
+  /** In-flight contention probes, at most one per slot. */
+  private readonly probeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private readonly deps: RendezvousDeps) {}
 
@@ -68,6 +72,7 @@ export class SlotTable {
     const existing = this.slots.get(conn.slot);
 
     if (existing?.status === 'paired') {
+      this.probePairedSlot(conn.slot, existing);
       this.rejectBusy(conn);
       return;
     }
@@ -101,6 +106,12 @@ export class SlotTable {
 
     clearTimer(conn, 'parkTimer');
     clearTimer(conn, 'sessionTimer');
+    // A torn-down connection has no pending probe. What actually keeps a stale
+    // flag harmless is probePairedSlot's identity check, which returns before
+    // reading the flag once this pair no longer owns the slot entry; clearing
+    // here keeps every per-connection latch released in one place rather than
+    // leaving this one to be reasoned about from the probe's side.
+    conn.probePending = false;
     // Only release what this connection actually holds. A connection rejected
     // by rejectBusy never reserved, so releasing unconditionally would
     // decrement the reservation held by a peer that is still connected and
@@ -161,6 +172,85 @@ export class SlotTable {
     clearTimer(pairState.b, 'sessionTimer');
     closeIfOpen(pairState.a.socket, closeCode, reason);
     closeIfOpen(pairState.b.socket, closeCode, reason);
+  }
+
+  /**
+   * Cancels any in-flight contention probes. Called on shutdown, before the
+   * relay closes its live connections gracefully, so a probe can never
+   * terminate() a socket that is already on its way out politely.
+   */
+  stopContentionProbes(): void {
+    for (const timer of this.probeTimers.values()) clearTimeout(timer);
+    this.probeTimers.clear();
+  }
+
+  /**
+   * A newcomer on a paired slot is usually a peer whose old socket went
+   * half-open without a FIN (a phone that roamed off wifi, a laptop that
+   * slept), but the relay cannot tell that from a genuine third party by
+   * looking: a dead TCP peer still reads OPEN. So it asks. Both incumbents
+   * are pinged and given contentionProbeTimeoutMs to answer, and whichever
+   * stays silent is terminated exactly as the keepalive loop would have
+   * terminated it a full ping cycle later. Nothing is ever evicted for being
+   * older, only for failing a liveness check.
+   *
+   * That is a liveness check, not a proof of death, and the window is short.
+   * A ping is written behind whatever is already queued to the socket, so an
+   * incumbent with a large outbound backlog (maxBufferedBytes allows 16 MiB)
+   * can miss a 2s window while perfectly alive. Contention is therefore a
+   * lever a slot-id holder can pull against a backlogged peer, which the
+   * keepalive loop's 30s cadence effectively did not offer.
+   *
+   * The newcomer is still rejected either way. Letting it take the slot in
+   * place would swap the survivor's peer out from under an open socket, which
+   * the desktop client cannot absorb - it re-handshakes on transport
+   * reconnect, not on a peer change.
+   */
+  private probePairedSlot(slot: string, pairState: PairedSlotState): void {
+    if (this.deps.contentionProbeTimeoutMs <= 0) return;
+    // One probe in flight per slot. A rejected client retrying on its own
+    // backoff would otherwise arm a fresh timer on every dial.
+    if (this.probeTimers.has(slot)) return;
+
+    const probed = [pairState.a, pairState.b].filter((half) => half.socket.readyState === half.socket.OPEN);
+    if (probed.length === 0) return;
+
+    for (const half of probed) {
+      half.probePending = true;
+      try {
+        half.socket.ping();
+      } catch {
+        // best-effort; the socket may already be tearing down
+      }
+    }
+
+    const timer = setTimeout(() => {
+      this.probeTimers.delete(slot);
+      // The pair may have been torn down and the slot re-paired inside the
+      // window. A stale probe must never reach a pair it did not test.
+      if (this.slots.get(slot) !== pairState) return;
+
+      for (const half of probed) {
+        if (!half.probePending) continue;
+        half.probePending = false;
+        // Counted in two namespaces on purpose. onPongTimeout keeps the
+        // `heartbeat` teardown cause honest: this is a genuinely failed ping,
+        // and one the keepalive loop would have counted there anyway a cycle
+        // later, so the bucket's meaning and its per-socket unit are
+        // unchanged and only its timing moves. One case is not identical: the
+        // keepalive loop skips a socket that is no longer OPEN, while this
+        // loop gates on probePending alone, so a half still finishing a close
+        // handshake it began after the probe armed is counted here where the
+        // loop would have counted nothing. 'probe_evicted' lands in
+        // rejectsByReason, which closedByCause never reads, and is what lets
+        // an operator tell contention-triggered reaps from routine ones.
+        this.deps.metrics.onPongTimeout();
+        this.deps.metrics.onReject('probe_evicted');
+        half.socket.terminate();
+      }
+    }, this.deps.contentionProbeTimeoutMs);
+    timer.unref?.();
+    this.probeTimers.set(slot, timer);
   }
 
   private releaseSlotReservation(conn: Conn): void {

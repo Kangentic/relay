@@ -6,6 +6,15 @@ describe('loadConfig', () => {
     const config = loadConfig({});
     expect(config.trustProxy).toBe(false);
     expect(config.trustedProxyCidrs).toEqual([]);
+    expect(config.contentionProbeTimeoutMs).toBe(2_000);
+  });
+
+  it('lets CONTENTION_PROBE_TIMEOUT_MS be retuned, and 0 disable the probe entirely', () => {
+    expect(loadConfig({ CONTENTION_PROBE_TIMEOUT_MS: '5000' }).contentionProbeTimeoutMs).toBe(5_000);
+    // 0 is the documented off switch, so it has to survive parsing rather
+    // than falling back to the default the way an empty value does.
+    expect(loadConfig({ CONTENTION_PROBE_TIMEOUT_MS: '0' }).contentionProbeTimeoutMs).toBe(0);
+    expect(() => loadConfig({ CONTENTION_PROBE_TIMEOUT_MS: '-1' })).toThrow(/CONTENTION_PROBE_TIMEOUT_MS/);
   });
 
   it('throws when TRUST_PROXY is true and TRUSTED_PROXY_CIDRS is empty', () => {

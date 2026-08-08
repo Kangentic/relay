@@ -58,6 +58,12 @@ export type RejectReason =
   | 'admission'
   | 'shutting_down'
   | 'slot_busy'
+  // A paired slot's incumbent failed the liveness probe fired when a newcomer
+  // contended the slot, and was reaped. Never reaches the wire: the socket is
+  // terminate()d, which yields the same abnormal 1006 a keepalive reap does.
+  // Counted here rather than only via onPongTimeout so an operator can tell
+  // contention-triggered reaps from routine ones.
+  | 'probe_evicted'
   | 'park_timeout'
   | 'parked_overflow'
   | 'backpressure'

@@ -31,6 +31,7 @@
     "test:integration": "vitest run --project integration",
     "test:all": "vitest run",
     "test:flake": "node scripts/flakeHunt.mjs",
+    "test:roam": "node scripts/roamRepro.mjs",
     "lint": "eslint ."
   },
   "dependencies": {
