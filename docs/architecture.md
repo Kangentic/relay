@@ -13,11 +13,16 @@ no other surface. No database, no session store, no request body is ever parsed.
 Two connections that present the same slot id are paired and every binary message one sends is
 written to the other's socket, unmodified. That is the entire product.
 
+The upgrade reads one other query parameter, the optional `role`, but it is not part of that
+sentence: it is a self-declared hint used only to attribute the waiting-slots gauge, it cannot
+reject, and no routing decision consults it.
+
 ## The connection lifecycle
 
 ```
 'upgrade' event (src/server.ts: handleUpgrade)
   -> slot format check (guards/slotFormat.ts)
+  -> parse the optional role (guards/peerRole.ts); cannot reject, anything unrecognised is 'unknown'
   -> resolve client IP (net/clientIp.ts)
   -> per-IP rate limit, per-slot rate limit (guards/rateLimit.ts)
   -> reserve global + per-IP connection cap (guards/caps.ts)
@@ -78,6 +83,7 @@ close from black-holing a fresh pair or double-counting a teardown.
 | Slot format | `slotFormat.ts` | Length capped at 256 chars *before* the regex runs (a cheap ReDoS/length guard), then matched against `SLOT_ID_PATTERN`. Never case-folds — the slot is an exact-match routing key. |
 | Rate limits | `rateLimit.ts` | Lazy-refill token bucket, keyed by IP bucket or slot id. Refills continuously by elapsed time, not a timer tick. Swept every 5 minutes so idle keys don't leak memory. |
 | Connection caps | `caps.ts` | `ConnectionCaps` (global + per-IP, reserved/released around the connection's lifetime) and `SlotConnectionCaps` (per-slot, since a slot is exactly two peers by definition). |
+| Reported role | `peerRole.ts` | Lives here for the shape, but bounds nothing and **never rejects**: it maps the optional `role` parameter onto a closed three-value enum, collapsing absent, misspelled, oversized, and hostile alike to `unknown`. What it does bound is metric cardinality, by making sure the client's raw string never becomes a label. |
 
 ## The forwarding hot path (`src/connection.ts`)
 

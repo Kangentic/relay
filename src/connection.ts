@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { RawData, WebSocket } from 'ws';
 import { CLOSE_CODE } from './closeCodes.js';
 import type { Conn, Config } from './types.js';
+import type { PeerRole } from './guards/peerRole.js';
 import type { SlotTable } from './rendezvous.js';
 import type { Metrics } from './http/metrics.js';
 import type { Logger } from './logging.js';
@@ -16,12 +17,17 @@ export interface ConnectionDeps {
   readonly onClosed: () => void;
 }
 
-export function createConn(socket: WebSocket, slot: string, ip: string): Conn {
+export function createConn(socket: WebSocket, slot: string, ip: string, role: PeerRole): Conn {
   return {
     id: randomUUID(),
     socket,
     slot,
     ip,
+    // Required rather than defaulted to 'unknown': a default would let a caller
+    // that forgot to thread the parsed value through attribute every peer on
+    // the relay to 'unknown' silently, which is exactly the reading the role
+    // split exists to stop being wrong.
+    role,
     connectedAt: Date.now(),
     state: 'waiting',
     partner: null,

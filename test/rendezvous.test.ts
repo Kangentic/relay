@@ -176,4 +176,25 @@ describe('rendezvous', () => {
     });
     expect(outcome).toBe('error');
   });
+
+  it('attributes a reported role from a real socket through the whole upgrade path', async () => {
+    // Every other role test drives either parsePeerRole directly or a fake
+    // socket over SlotTable. Nothing exercised url.searchParams.get('role')
+    // through a real HTTP upgrade until now, which is the one hop those tests
+    // cannot see.
+    relay = await startTestRelay();
+    const desktop = await connectTestClient(relay.url, randomSlot(), 'desktop');
+    const bogus = await connectTestClient(relay.url, randomSlot(), 'not-a-real-role');
+    const silent = await connectTestClient(relay.url, randomSlot());
+
+    expect(relay.metrics.snapshot().waitingSlotsByRole).toEqual({
+      desktop: 1,
+      mobile: 0,
+      unknown: 2,
+    });
+
+    desktop.close();
+    bogus.close();
+    silent.close();
+  });
 });

@@ -17,6 +17,7 @@ import { createHistoryRecorder, type HistoryRecorder } from './history/recorder.
 import type { ConnectionSample } from './history/rows.js';
 import { resolveClientIp, bucketIp } from './net/clientIp.js';
 import { isValidSlotId } from './guards/slotFormat.js';
+import { parsePeerRole, type PeerRole } from './guards/peerRole.js';
 import { RateLimiter } from './guards/rateLimit.js';
 import { ConnectionCaps, SlotConnectionCaps, UnpairedConnectionCap } from './guards/caps.js';
 import { allowAllPolicy, type AdmissionDecision, type AdmissionPolicy } from './admission.js';
@@ -83,6 +84,14 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
     maxSessionBytes: config.maxSessionBytes,
     maxBufferedBytes: config.maxBufferedBytes,
   });
+
+  // The waiting gauge is derived from the slot table rather than counted as
+  // connections park and leave, so it cannot drift away from the table it
+  // describes. Bound here rather than at createMetrics because the table needs
+  // the metrics object to exist first; an injected deps.metrics is bound to
+  // this relay's table, which is what a caller sharing one across two relays
+  // would need to know.
+  metrics.setWaitingSlotsSource(() => slotTable.waitingByRole());
 
   const liveConnections = new Set<Conn>();
   const health: HealthState = { draining: false };
@@ -212,8 +221,14 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
   // byte savings. Frames pass through byte-for-byte, uncompressed.
   const wss = new WebSocketServer({ noServer: true, maxPayload: config.maxMessageBytes, perMessageDeflate: false });
 
-  function onWebSocketConnection(ws: WebSocket, slotId: string, ip: string, releaseCapReservation: () => void): void {
-    const conn = createConn(ws, slotId, ip);
+  function onWebSocketConnection(
+    ws: WebSocket,
+    slotId: string,
+    ip: string,
+    role: PeerRole,
+    releaseCapReservation: () => void,
+  ): void {
+    const conn = createConn(ws, slotId, ip, role);
     // The unpaired reservation taken during the upgrade now belongs to this
     // connection; the slot table releases it when the connection pairs or
     // closes, whichever comes first.
@@ -247,6 +262,14 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
       destroySocket(socket, 400);
       return;
     }
+
+    // Optional, advisory, and deliberately not a guard: it sits after the slot
+    // check so a malformed slot still costs nothing, and it cannot reject, so
+    // it spends no rate-limit budget and adds no reject reason for a prober to
+    // read. Every client deployed today omits it and is counted as 'unknown'.
+    // Validated to the closed enum here, at the edge, so the client's raw
+    // string never reaches a metric label.
+    const role = parsePeerRole(url.searchParams.get('role'));
 
     const ip = resolveClientIp(request.headers, request.socket.remoteAddress, config);
     const ipBucket = bucketIp(ip, config.ipv6PrefixBits);
@@ -332,7 +355,7 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
           }
           return;
         }
-        onWebSocketConnection(ws, slotId, ip, reservation.release);
+        onWebSocketConnection(ws, slotId, ip, role, reservation.release);
       });
     } finally {
       // ws aborts the handshake without ever invoking the callback for a

@@ -83,6 +83,17 @@ authority such as cookies to a cross-site request. This relay has no cookie, ses
 credential of any kind: the sole credential is the slot id in the URL, which a browser never
 attaches on its own. An allowlist would break the native clients while adding nothing.
 
+**The optional `role` parameter is advisory metadata, not a credential.** A client may send
+`role=desktop` or `role=mobile` alongside its slot id. Anyone can claim either, so a security
+decision built on it would be worthless, and none is: it is read by exactly one thing, the
+attribution of the waiting-slots gauge, and reaches no pairing, routing, cap, or rate-limit
+decision. It cannot fail, either. Absent, misspelled, wrong case, oversized, or actively hostile all
+collapse to `unknown` at the parse, which keeps it from becoming the oracle described below and
+means a client that never heard of it connects exactly as before. The client's raw string is never
+stored, logged, or emitted; only the three-value enum is. Deliberately a parameter the client opts
+into rather than something inferred from `User-Agent`, which would add a fingerprinting surface to
+a relay that has carefully avoided one, and would be unreliable across native clients besides.
+
 ## Why slot ids cannot be guessed
 
 The relay's default `SLOT_ID_PATTERN` accepts 32 or 64 lowercase hex characters, which is 128 or
@@ -108,7 +119,9 @@ Two consequences follow, and both matter more than tuning any limit:
 
 The relay also declines to help an attacker confirm a guess. A slot that is occupied and a slot
 that fails the cap check are rejected with the same close code and the same reason string, and the
-rate-limit rejections do not distinguish which limiter fired.
+rate-limit rejections do not distinguish which limiter fired. The `role` parameter adds nothing to
+that channel, because it never rejects: a value the relay does not recognise is counted as `unknown`
+and the connection proceeds, so there is no outcome for a prober to compare against.
 
 ## Why holding a slot id is not enough to impersonate a peer
 
@@ -169,7 +182,13 @@ logging would have to go through; nothing calls it today, so both are currently 
 make adding one a deliberate act with a safe default.
 
 **Metrics carry no slot ids, no IPs, and no per-slot labels** - only process-wide counters and
-gauges. They do still reveal operationally useful shape: how many pairings are live and when they
+gauges. The one client-supplied dimension is the reported role on the waiting gauge, and it is not a
+per-slot label: it is validated to a closed three-value enum at the upgrade edge, and every surface
+emits all three series from a frozen list rather than from values it has observed, so the series
+count is fixed at three whatever a client sends. That bound is the point. A raw value reaching a
+label would let a stranger mint unlimited label values and grow the registry without end, which is a
+denial of service against the process rather than a disclosure. The metrics do still reveal
+operationally useful shape: how many pairings are live and when they
 form, and which guard rejected a connection. That is a feedback channel worth denying a stranger,
 so `/metrics` and `/metricz` require `METRICS_TOKEN`; with none set they answer 404 rather than
 401, so an untokened deployment does not advertise that a gated surface exists. Serving them
@@ -182,7 +201,10 @@ the relay serves a private page at `/admin` and its data at `/admin/data`, built
 aggregate snapshot `/metricz` serializes plus a history of it over time. It shows counts and rates
 only, never a table of live sessions, because the underlying snapshot carries no slot ids and no
 IPs to show. The history file records the same aggregates, so a stolen copy reveals traffic shape,
-not who was talking to whom.
+not who was talking to whom. Since the waiting gauge is now attributed, a stolen copy additionally
+reveals that shape by device class, for the clients that chose to report one. That is a real if
+modest widening, recorded here rather than left implicit; it still says nothing about which two
+parties were paired.
 
 **Unlike `/metrics` and `/metricz`, the relay does not authenticate `/admin`.** That is deliberate,
 and it is the one place this document asks you to look outward. The relay's whole claim is that it

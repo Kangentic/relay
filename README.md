@@ -15,7 +15,10 @@ decrypt anything.
 
 - The relay routes purely by a `slot` query parameter on the WebSocket URL: it pairs exactly two
   connections that present the same slot id, and forwards every binary message between them
-  byte-for-byte. It does not parse, wrap, or inspect a single byte of frame content.
+  byte-for-byte. It does not parse, wrap, or inspect a single byte of frame content. A client may
+  also send an optional `role=desktop|mobile`, which is a hint for one dashboard gauge and nothing
+  else: it is unauthenticated, it never reaches a pairing, routing, cap, or rate-limit decision,
+  and omitting it or getting it wrong is counted as `unknown` rather than rejected.
 - `src/**` has zero runtime dependency on `@kangentic/protocol` (the end-to-end crypto layer). That
   package appears only as a `devDependency`, imported by exactly one integration test file, which
   proves both of the real handshakes the product performs complete correctly through this relay,
@@ -35,7 +38,7 @@ Kangentic's own hosted one, can still observe:
 - Frame sizes and frequency (traffic shape, not content).
 - The pairing graph: which slot ids co-occur, i.e. which two connections were rendezvoused together.
 
-Two further disclosures, because "blind to content" is easy to over-read:
+Three further disclosures, because "blind to content" is easy to over-read:
 
 - **The slot id travels in the request URL**, and on Kangentic's hosted instance TLS is terminated
   at Cloudflare, so Cloudflare sees it. The slot id is a routing label, not key material: the
@@ -48,6 +51,11 @@ Two further disclosures, because "blind to content" is easy to over-read:
   without Cloudflare removes that party.
 - **The reconnect slot id is stable for the life of a pairing**, so an operator can correlate one
   device's reconnects over time.
+- **A client that sends `role` says which side of the pairing it is**, and that travels in the URL
+  alongside the slot id, so the same parties who see the slot id see it. It tells an observer that a
+  given connection is the desktop or the phone, which they could largely infer from connection
+  timing anyway. Sending it is entirely the client's choice, and a client that omits it discloses
+  nothing new.
 
 This is inherent to operating any relay and is not specific to this implementation. Self-hosting
 removes Kangentic (or anyone else) from that observation entirely. As for the pairing graph itself,
@@ -157,7 +165,8 @@ It is built to answer five questions rather than to display numbers:
 
 | Question | What answers it |
 |---|---|
-| How many users are connected? | Active connections and live sessions, against the configured caps |
+| How many users are connected? | Active connections and live sessions, against the configured caps. A paired tunnel is two sockets and a waiting peer is one, which the tiles now say rather than leaving the reader to derive |
+| Which side is failing to arrive? | Waiting peers split by the role each one reported, so desktops waiting (the normal idle state) reads differently from phones waiting (the signal worth chasing) |
 | When do we need a bigger box? | Every capacity tile reads as a percentage of its ceiling, with a status badge at 60% and 80% |
 | How is the server holding up? | CPU, event loop delay p99, resident memory against the container limit |
 | How is the relay performing for users? | Outbound queue depth, the closest thing to a latency signal the relay can produce without touching the forwarding path |
@@ -263,6 +272,14 @@ horizontal scaling needs no code changes, only slot-sticky routing in front.
   `parkedOverflow` (a parked socket overflowing its pre-pair buffer), `heartbeat`, and
   `parkTimeout` count single sockets. Neither surface ever contains a slot id, an IP, or frame
   content.
+- **Waiting peers are split by the role they reported**, since "N waiting to pair" merged two
+  opposite meanings: desktops waiting says phones are not arriving, phones waiting says the reverse.
+  `/metricz` carries `waitingSlotsByRole` beside the unchanged `waitingSlots` total, and `/metrics`
+  gains `relay_waiting_slots_by_reported_role{role="desktop|mobile|unknown"}` beside the unchanged
+  `relay_waiting_slots`. The three series are always emitted from a frozen list, never from values a
+  client sent, so this is a bounded three-value dimension rather than a label an attacker can grow.
+  Note that a lone parked desktop is the normal resting state of every online desktop, so a non-zero
+  desktop count is healthy idle rather than a stalled pairing.
 - **Both metrics surfaces need a token before they will answer.** They are 404 out of the box.
   Either set `METRICS_TOKEN` and pass `Authorization: Bearer <token>`, or set
   `METRICS_ALLOW_UNAUTHENTICATED=true` if the instance is genuinely private:

@@ -84,6 +84,15 @@ A client dials `${relayUrl}?slot=<32-or-64-char-hex>` with no subprotocol, no he
 frame. The relay pairs exactly two connections presenting the same slot and forwards binary
 messages between them byte-for-byte. See `README.md`'s "The blind-relay guarantee" section.
 
+One optional parameter rides alongside: `&role=desktop|mobile`, parsed by `src/guards/peerRole.ts`.
+It is a self-declared hint that attributes the waiting-slots gauge and nothing else. It is
+unauthenticated, it never reaches a pairing, routing, cap, or rate-limit decision, and it **cannot
+reject**: absent, misspelled, or hostile all collapse to `unknown`, so every client that predates it
+keeps working unchanged. Validate at the edge and never let the raw string reach a metric label,
+or a stranger can mint unbounded Prometheus series. Because the contract is defined by the desktop
+client rather than here, the relay ships this ahead of the clients and reads `unknown` for everyone
+until they send it.
+
 ### The blindness guarantee (load-bearing, self-maintaining)
 
 `src/**` must never import `@kangentic/protocol` at runtime, and no code path may parse,

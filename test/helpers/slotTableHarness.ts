@@ -5,6 +5,7 @@ import { attachConnectionHandlers, createConn } from '../../src/connection.js';
 import { SlotTable } from '../../src/rendezvous.js';
 import { SlotConnectionCaps, UnpairedConnectionCap } from '../../src/guards/caps.js';
 import { createMetrics, type Metrics } from '../../src/http/metrics.js';
+import type { PeerRole } from '../../src/guards/peerRole.js';
 import type { Logger } from '../../src/logging.js';
 import type { Config, Conn } from '../../src/types.js';
 
@@ -27,7 +28,7 @@ export interface SlotTableHarness {
   readonly metrics: Metrics;
   readonly slotCaps: SlotConnectionCaps;
   readonly unpairedCap: UnpairedConnectionCap;
-  connect(slot: string, initialBufferedAmount?: number): { conn: Conn; socket: FakeSocket };
+  connect(slot: string, initialBufferedAmount?: number, role?: PeerRole): { conn: Conn; socket: FakeSocket };
 }
 
 export const silentLogger: Logger = {
@@ -78,16 +79,24 @@ export function createSlotTableHarness(
     maxSessionBytes: config.maxSessionBytes,
     maxBufferedBytes: config.maxBufferedBytes,
   });
+  // Mirrors createRelay: the waiting gauge is read from the slot table, so a
+  // harness that skipped this would report zero waiting peers no matter how
+  // many it parked.
+  metrics.setWaitingSlotsSource(() => slotTable.waitingByRole());
 
   return {
     slotTable,
     metrics,
     slotCaps,
     unpairedCap,
-    connect: (slot: string, initialBufferedAmount = 0) => {
+    connect: (slot: string, initialBufferedAmount = 0, role: PeerRole = 'unknown') => {
       const socket = new FakeSocket();
       socket.bufferedAmount = initialBufferedAmount;
-      const conn = createConn(socket as unknown as WebSocket, slot, '127.0.0.1');
+      // Defaults to 'unknown' here, matching a client that sends no role, which
+      // is what every suite on this harness is about. createConn itself takes
+      // it as a required argument on purpose: a default there would let the
+      // server forget to thread the parsed value through without a word.
+      const conn = createConn(socket as unknown as WebSocket, slot, '127.0.0.1', role);
       // Mirrors server.ts: the reservation is taken during the upgrade and
       // handed to the connection, which releases it on pair or on close.
       unpairedCap.tryReserve();

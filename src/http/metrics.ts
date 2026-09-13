@@ -1,7 +1,13 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { RejectReason } from '../closeCodes.js';
+import { PEER_ROLES, type PeerRole } from '../guards/peerRole.js';
 import type { Config } from '../types.js';
+
+/** Waiting slots split by what each parked peer reported itself to be. */
+export type WaitingSlotsByRole = Readonly<Record<PeerRole, number>>;
+
+const NO_WAITING_SLOTS: WaitingSlotsByRole = Object.freeze({ desktop: 0, mobile: 0, unknown: 0 });
 
 /**
  * A point-in-time copy of every counter and gauge. Aggregate numbers only,
@@ -9,7 +15,14 @@ import type { Config } from '../types.js';
  */
 export interface MetricsSnapshot {
   readonly activeConnections: number;
+  /** The sum of waitingSlotsByRole, so the total can never disagree with the split. */
   readonly waitingSlots: number;
+  /**
+   * A bounded three-value dimension, not a per-slot label: the role is
+   * validated to a closed enum at the upgrade edge and the client's raw string
+   * never reaches here.
+   */
+  readonly waitingSlotsByRole: WaitingSlotsByRole;
   readonly pairedSlots: number;
   readonly connectionsTotal: number;
   readonly sessionsTotal: number;
@@ -35,7 +48,16 @@ export interface Metrics {
   onForward(bytes: number): void;
   onReject(reason: RejectReason): void;
   onPongTimeout(): void;
-  waitingSlots: { increment(): void; decrement(): void };
+  /**
+   * Points the waiting gauge at the slot table, which is the only thing that
+   * knows who is parked. Late-bound because the slot table needs a Metrics to
+   * exist before it can be built, and set by createRelay so an injected
+   * Metrics is bound to THAT relay's table rather than to nothing.
+   *
+   * Until it is called the gauge reads zero rather than guessing, which is
+   * correct for a Metrics that no relay has claimed.
+   */
+  setWaitingSlotsSource(source: () => WaitingSlotsByRole): void;
   snapshot(): MetricsSnapshot;
   render(): string;
 }
@@ -82,7 +104,7 @@ export function createMetrics(): Metrics {
   const rejectsByReason = new Map<RejectReason, number>();
   let activeConnections = 0;
   let pairedSlots = 0;
-  let waitingSlotsCount = 0;
+  let waitingSlotsSource: () => WaitingSlotsByRole = () => NO_WAITING_SLOTS;
   let connectionsTotal = 0;
   let messagesForwardedTotal = 0;
   let bytesForwardedTotal = 0;
@@ -90,10 +112,16 @@ export function createMetrics(): Metrics {
   let peerClosedTotal = 0;
   let pongTimeoutsTotal = 0;
 
+  function waitingSlotsTotal(byRole: WaitingSlotsByRole): number {
+    return byRole.desktop + byRole.mobile + byRole.unknown;
+  }
+
   function snapshot(): MetricsSnapshot {
+    const waitingSlotsByRole = waitingSlotsSource();
     return {
       activeConnections,
-      waitingSlots: waitingSlotsCount,
+      waitingSlots: waitingSlotsTotal(waitingSlotsByRole),
+      waitingSlotsByRole,
       pairedSlots,
       connectionsTotal,
       sessionsTotal,
@@ -133,21 +161,27 @@ export function createMetrics(): Metrics {
     onPongTimeout: () => {
       pongTimeoutsTotal += 1;
     },
-    waitingSlots: {
-      increment: () => {
-        waitingSlotsCount += 1;
-      },
-      decrement: () => {
-        waitingSlotsCount = Math.max(0, waitingSlotsCount - 1);
-      },
+    setWaitingSlotsSource: (source) => {
+      waitingSlotsSource = source;
     },
     snapshot,
     render: () => {
+      const waitingSlotsByRole = waitingSlotsSource();
       const lines = [
         '# TYPE relay_active_connections gauge',
         `relay_active_connections ${activeConnections}`,
         '# TYPE relay_waiting_slots gauge',
-        `relay_waiting_slots ${waitingSlotsCount}`,
+        `relay_waiting_slots ${waitingSlotsTotal(waitingSlotsByRole)}`,
+        // The one metric here carrying a HELP line, because a panel built on it
+        // loses every word of surrounding documentation and the caveat is the
+        // whole point: the role is what the client said, not what it is.
+        '# HELP relay_waiting_slots_by_reported_role Waiting slots by the role the client reported on connect. Self-declared and never verified.',
+        '# TYPE relay_waiting_slots_by_reported_role gauge',
+        // Emitted from the frozen tuple, never from observed values, so the
+        // series count is fixed at three no matter what a client sends.
+        ...PEER_ROLES.map(
+          (role) => `relay_waiting_slots_by_reported_role{role="${role}"} ${waitingSlotsByRole[role]}`,
+        ),
         '# TYPE relay_paired_slots gauge',
         `relay_paired_slots ${pairedSlots}`,
         '# TYPE relay_connections_total counter',
@@ -299,6 +333,7 @@ export function handleMetriczRequest(
         }),
     activeConnections: currentSnapshot.activeConnections,
     waitingSlots: currentSnapshot.waitingSlots,
+    waitingSlotsByRole: currentSnapshot.waitingSlotsByRole,
     pairedSlots: currentSnapshot.pairedSlots,
     connectionsTotal: currentSnapshot.connectionsTotal,
     sessionsTotal: currentSnapshot.sessionsTotal,

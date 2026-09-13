@@ -23,6 +23,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
   return {
     activeConnections: 0,
     waitingSlots: 0,
+    waitingSlotsByRole: { desktop: 0, mobile: 0, unknown: 0 },
     pairedSlots: 0,
     connectionsTotal: 0,
     sessionsTotal: 0,
@@ -299,6 +300,64 @@ describe('aggregation', () => {
     if (older.kind !== 'row') throw new Error('expected a row');
     expect(older.row.maxOutboundBufferBytes).toBeNull();
     expect(older.row.backloggedConnections).toBeNull();
+  });
+
+  it('round-trips the waiting role split', () => {
+    const split = row({
+      waitingSlots: { maximum: 5, mean: null },
+      waitingDesktop: { maximum: 3, mean: null },
+      waitingMobile: { maximum: 2, mean: null },
+      waitingUnknown: { maximum: 0, mean: null },
+    });
+    const parsed = parseHistoryRow(serializeHistoryRow(split));
+    if (parsed.kind !== 'row') throw new Error('expected a row');
+    expect(parsed.row.waitingDesktop).toEqual({ maximum: 3, mean: null });
+    expect(parsed.row.waitingMobile).toEqual({ maximum: 2, mean: null });
+    expect(parsed.row.waitingUnknown).toEqual({ maximum: 0, mean: null });
+  });
+
+  it('reads a row written before roles existed as unknown, never as zero', () => {
+    // Those peers genuinely had no reported role, so unknown is the honest
+    // bucket. Reading them as zero would draw a confident "no desktops, no
+    // phones" across every interval recorded before this shipped.
+    const older = parseHistoryRow(JSON.stringify({ v: 1, t: 5, r: 60, w: 60_000, ws: 3, wsm: 2.5 }));
+    if (older.kind !== 'row') throw new Error('expected a row');
+    expect(older.row.waitingSlots).toEqual({ maximum: 3, mean: 2.5 });
+    expect(older.row.waitingUnknown).toEqual({ maximum: 3, mean: 2.5 });
+    expect(older.row.waitingDesktop).toEqual({ maximum: 0, mean: null });
+    expect(older.row.waitingMobile).toEqual({ maximum: 0, mean: null });
+  });
+
+  it('keeps an all-zero role split distinguishable from a row that predates roles', () => {
+    // The marker key: 'wru' is written even at zero, so a quiet role-aware row
+    // does not get its waiting total back-filled into unknown.
+    const quiet = parseHistoryRow(serializeHistoryRow(row({ waitingSlots: { maximum: 4, mean: null } })));
+    if (quiet.kind !== 'row') throw new Error('expected a row');
+    expect(quiet.row.waitingSlots.maximum).toBe(4);
+    expect(quiet.row.waitingUnknown).toEqual({ maximum: 0, mean: null });
+  });
+
+  it('keeps an aggregated role split intact rather than back-filling it', () => {
+    // On an aggregated row every mean is non-null, so the mean keys are written
+    // on a !== null guard. Matching the surrounding omit-if-zero style here
+    // instead would drop the marker and silently back-fill the split away.
+    const merged = aggregateHistoryRows(
+      [
+        row({ waitingSlots: { maximum: 2, mean: null }, waitingDesktop: { maximum: 2, mean: null } }),
+        row({ waitingSlots: { maximum: 3, mean: null }, waitingMobile: { maximum: 3, mean: null } }),
+      ],
+      1_700_000_100_000,
+      MID_RESOLUTION_SECONDS,
+    );
+    const parsed = parseHistoryRow(serializeHistoryRow(merged));
+    if (parsed.kind !== 'row') throw new Error('expected a row');
+    expect(parsed.row.waitingDesktop.maximum).toBe(2);
+    expect(parsed.row.waitingMobile.maximum).toBe(3);
+    // Aggregation takes the max of each series separately, so the role peaks
+    // need not sum to the waiting peak. That is why the dashboard draws them as
+    // independent lines and never stacks them.
+    expect(parsed.row.waitingSlots.maximum).toBe(3);
+    expect(parsed.row.waitingUnknown.maximum).toBe(0);
   });
 
   it('takes the maximum of event loop p99 rather than averaging tail statistics', () => {

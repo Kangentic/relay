@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startTestRelay, type RelayHarness } from './helpers/relayHarness.js';
 import { connectTestClient } from './helpers/wsClient.js';
+import { PEER_ROLES } from '../src/guards/peerRole.js';
+import { ADMIN_PAGE_HTML } from '../src/http/adminPage.js';
 import type { Logger } from '../src/logging.js';
 
 let relay: RelayHarness | undefined;
@@ -16,6 +18,45 @@ afterEach(async () => {
   if (directory) await rm(directory, { recursive: true, force: true });
   directory = undefined;
 });
+
+/**
+ * Lifts a declaration out of the page's inline script so it can be called
+ * directly. The script lives in a template literal, so nothing else in the
+ * toolchain can reach it: no import, no bundler, no type check. The rate
+ * helpers below are too easy to get subtly wrong to leave at "it parses".
+ *
+ * A name is looked up as a function first and as a top-level `var` second, so
+ * a helper that closes over a constant (waitingNote over WAITING_ROLES) can be
+ * lifted by naming both rather than by hand-copying the constant into the test,
+ * which would defeat the point of extracting it from the page at all.
+ */
+function pageDeclaration(name: string): string {
+  const functionStart = ADMIN_PAGE_HTML.indexOf(`function ${name}(`);
+  if (functionStart !== -1) {
+    let depth = 0;
+    for (let index = ADMIN_PAGE_HTML.indexOf('{', functionStart); index < ADMIN_PAGE_HTML.length; index += 1) {
+      if (ADMIN_PAGE_HTML[index] === '{') depth += 1;
+      else if (ADMIN_PAGE_HTML[index] === '}') {
+        depth -= 1;
+        if (depth === 0) return ADMIN_PAGE_HTML.slice(functionStart, index + 1);
+      }
+    }
+    throw new Error(`unbalanced braces in ${name}`);
+  }
+  const variableStart = ADMIN_PAGE_HTML.indexOf(`var ${name} = `);
+  if (variableStart === -1) throw new Error(`the page no longer defines ${name}`);
+  const end = ADMIN_PAGE_HTML.indexOf(';', variableStart);
+  if (end === -1) throw new Error(`unterminated declaration of ${name}`);
+  return ADMIN_PAGE_HTML.slice(variableStart, end + 1);
+}
+
+function pageFunction(names: readonly string[], returned: string): (intervalMs: number) => unknown {
+  const bodies = names.map(pageDeclaration);
+  return new Function(
+    'intervalMs',
+    `var state = { meta: { intervalMs: intervalMs } };\n${bodies.join('\n')}\nreturn ${returned};`,
+  ) as (intervalMs: number) => unknown;
+}
 
 function httpBase(harness: RelayHarness): string {
   return harness.url.replace('ws://', 'http://');
@@ -83,6 +124,104 @@ describe('/admin when enabled', () => {
     expect(html).not.toMatch(/src="https?:\/\//);
     expect(html).not.toMatch(/href="https?:\/\/[^"]*\.(css|js)/);
     expect(html).not.toContain('cdn.');
+  });
+
+  it('hedges every role it shows, because the client declares it and nothing checks', async () => {
+    // The role is self-declared and unauthenticated, so the page must report
+    // what a peer claimed rather than assert what it is. Nothing else pins
+    // this, and it is the kind of wording that erodes one edit at a time.
+    relay = await startTestRelay({ adminEnabled: true });
+    const html = await (await fetch(`${httpBase(relay)}/admin`)).text();
+
+    expect(html).toContain('Waiting peers by reported role');
+    expect(html).toContain('" waiting to pair"');
+    expect(html).toContain('", reported "');
+    expect(html).toContain('the relay never verifies');
+    // The healthy-idle reading has to be stated, or a parked desktop reads as
+    // a stalled pairing, which is the misreading this whole feature exists to
+    // stop. Both the chart hint and the pairing chart carry it.
+    expect(html).toContain('normal idle state');
+    expect(html).toContain('healthy idle');
+  });
+
+  it('draws a gap for a partial window without blanking the live view or older rows', () => {
+    // The recorder flushes a trailing partial-interval row at shutdown so a
+    // deploy does not lose its last seconds, and delta/windowMs turns four
+    // connections over 200 ms into 1,200/min. Suppressing that is easy; doing
+    // it without also suppressing legitimate rows is what this pins.
+    type Trustworthy = (row: Record<string, unknown>) => boolean;
+    const trustworthyAtInterval = (intervalMs: number) =>
+      pageFunction(['nominalWindowMs', 'rateIsTrustworthy'], 'rateIsTrustworthy')(intervalMs) as Trustworthy;
+
+    const raw = (windowMs: number) => ({ windowMs, resolutionSeconds: 60, sourceRowCount: 1 });
+    const trustworthy = trustworthyAtInterval(60_000);
+
+    expect(trustworthy(raw(200))).toBe(false);
+    expect(trustworthy(raw(60_000))).toBe(true);
+    // Synthesized live rows carry a 2-second poll gap against a resolution of
+    // 60. Judging them by that resolution would blank the entire Live view,
+    // and the flag cannot be inferred: seedLiveFromHistory mixes real recorder
+    // rows into the same array.
+    expect(trustworthy({ ...raw(2_000), live: true })).toBe(true);
+    expect(trustworthy({ ...raw(300), live: true })).toBe(true);
+    // An hourly bucket holding one 60-second row is a correct rate for the
+    // minute the relay was up, not a fragment.
+    expect(trustworthy({ windowMs: 60_000, resolutionSeconds: 3600, sourceRowCount: 1 })).toBe(true);
+
+    // METRICS_HISTORY_INTERVAL_MS is configurable, and rows already on disk
+    // were written under whatever it used to be. Judging them by the CURRENT
+    // interval would blank two days of charts the moment it is raised.
+    expect(trustworthyAtInterval(300_000)(raw(60_000))).toBe(true);
+    expect(trustworthyAtInterval(300_000)(raw(200))).toBe(false);
+    expect(trustworthyAtInterval(15_000)(raw(60_000))).toBe(true);
+    // No recorder at all reports intervalMs 0, which must not divide by zero
+    // into suppressing everything.
+    expect(trustworthyAtInterval(0)(raw(60_000))).toBe(true);
+  });
+
+  it('writes the waiting tile note from the data, not just from the right words being present', () => {
+    // The tile note is the user-facing payload of the whole role split, and the
+    // two tests above only prove the wording exists somewhere in the script.
+    // This runs the function, so reverting it to the old undifferentiated
+    // "N waiting to pair" fails here rather than passing on a substring.
+    type WaitingNote = (live: Record<string, unknown>) => string;
+    const waitingNote = pageFunction(
+      ['fmtInt', 'WAITING_ROLES', 'waitingNote'],
+      'waitingNote',
+    )(60_000) as WaitingNote;
+
+    const note = (desktop: number, mobile: number, unknown: number) =>
+      waitingNote({ waitingSlots: desktop + mobile + unknown, waitingSlotsByRole: { desktop, mobile, unknown } });
+
+    expect(note(0, 0, 0)).toBe('none waiting to pair');
+    // A lone parked desktop is the resting state of every online desktop, so
+    // this is the string an operator reads most often.
+    expect(note(1, 0, 0)).toBe('1 waiting to pair, reported 1 desktop');
+    // Zero-valued roles are omitted: spelling out every zero wraps the note a
+    // line past every other tile at eight across.
+    expect(note(2, 1, 0)).toBe('3 waiting to pair, reported 2 desktop, 1 mobile');
+    expect(note(0, 1, 0)).toBe('1 waiting to pair, reported 1 mobile');
+    expect(note(1, 1, 1)).toBe('3 waiting to pair, reported 1 desktop, 1 mobile, 1 unknown');
+    // Role order follows WAITING_ROLES rather than insertion order, so the note
+    // does not reshuffle between polls.
+    expect(note(0, 0, 2)).toBe('2 waiting to pair, reported 2 unknown');
+    // A payload from a relay that predates the split still reads correctly
+    // rather than throwing or printing "undefined".
+    expect(waitingNote({ waitingSlots: 2 })).toBe('2 waiting to pair');
+  });
+
+  it('lists the same roles the relay reports, so a fourth cannot vanish from the tile', async () => {
+    // The page is a template literal and cannot import, so its role list is a
+    // second hand-maintained copy of PEER_ROLES. Without this, adding a role
+    // would surface it on /metrics and in the chart while the tile silently
+    // ignored it, which is the same class of drift the field-parity test below
+    // exists to catch.
+    relay = await startTestRelay({ adminEnabled: true });
+    const html = await (await fetch(`${httpBase(relay)}/admin`)).text();
+
+    const declaration = html.match(/var WAITING_ROLES = (\[[^\]]*\]);/);
+    expect(declaration).not.toBeNull();
+    expect(JSON.parse((declaration?.[1] ?? '[]').replace(/'/g, '"'))).toEqual([...PEER_ROLES]);
   });
 
   it('ships an inline script that actually parses', async () => {
@@ -317,6 +456,7 @@ describe('/admin when enabled', () => {
     for (const key of [
       'activeConnections',
       'waitingSlots',
+      'waitingSlotsByRole',
       'pairedSlots',
       'sessionsTotal',
       'bytesForwardedTotal',
@@ -369,6 +509,14 @@ describe('/admin when enabled', () => {
     expect(row['activeConnections']).toHaveProperty('maximum');
     expect(row['waitingSlots']).toHaveProperty('maximum');
     expect(row['pairedSlots']).toHaveProperty('maximum');
+    expect(row['waitingDesktop']).toHaveProperty('maximum');
+    expect(row['waitingMobile']).toHaveProperty('maximum');
+    expect(row['waitingUnknown']).toHaveProperty('maximum');
+    // A bounded three-value dimension, so the live split is the same shape on
+    // every response rather than only the roles that happened to connect.
+    expect(payload.live).toHaveProperty('waitingSlotsByRole.desktop');
+    expect(payload.live).toHaveProperty('waitingSlotsByRole.mobile');
+    expect(payload.live).toHaveProperty('waitingSlotsByRole.unknown');
   });
 
   it('samples live connection queue depth into the recorded rows', async () => {

@@ -116,14 +116,18 @@ describe('metrics authorization gate', () => {
 describe('createMetrics', () => {
   it('moves counters and gauges as connections open, pair, forward, and reject', () => {
     const metrics = createMetrics();
+    // The waiting gauge is read from the slot table rather than counted here,
+    // so a test drives it by changing what the source says.
+    let waiting = { desktop: 0, mobile: 0, unknown: 0 };
+    metrics.setWaitingSlotsSource(() => waiting);
 
     metrics.onConnectionOpened();
-    metrics.waitingSlots.increment();
+    waiting = { desktop: 1, mobile: 0, unknown: 0 };
     expect(metrics.render()).toContain('relay_active_connections 1');
     expect(metrics.render()).toContain('relay_waiting_slots 1');
 
     metrics.onPair();
-    metrics.waitingSlots.decrement();
+    waiting = { desktop: 0, mobile: 0, unknown: 0 };
     expect(metrics.render()).toContain('relay_paired_slots 1');
     expect(metrics.render()).toContain('relay_waiting_slots 0');
 
@@ -143,6 +147,25 @@ describe('createMetrics', () => {
     expect(metrics.render()).toContain('relay_active_connections 0');
   });
 
+  it('emits all three role series always, so no client input can mint a label', () => {
+    // The cardinality bound. Series come from the frozen tuple rather than
+    // from whatever roles happened to connect, so the registry cannot grow.
+    const metrics = createMetrics();
+    metrics.setWaitingSlotsSource(() => ({ desktop: 2, mobile: 0, unknown: 0 }));
+
+    const rendered = metrics.render();
+    expect(rendered).toContain('relay_waiting_slots_by_reported_role{role="desktop"} 2');
+    expect(rendered).toContain('relay_waiting_slots_by_reported_role{role="mobile"} 0');
+    expect(rendered).toContain('relay_waiting_slots_by_reported_role{role="unknown"} 0');
+    expect(rendered.match(/relay_waiting_slots_by_reported_role\{/g)).toHaveLength(3);
+    // The caveat rides on the wire, because a dashboard panel built on this
+    // loses every word of surrounding documentation.
+    expect(rendered).toContain('# HELP relay_waiting_slots_by_reported_role');
+    expect(rendered).toContain('never verified');
+    // The unlabelled total stays, so anything reading it today keeps working.
+    expect(rendered).toContain('relay_waiting_slots 2');
+  });
+
   it('never renders a slot id, only aggregate counts', () => {
     const metrics = createMetrics();
     metrics.onReject('slot_busy');
@@ -160,8 +183,8 @@ describe('createMetrics', () => {
 
   it('snapshot mirrors every counter the Prometheus surface renders', () => {
     const metrics = createMetrics();
+    metrics.setWaitingSlotsSource(() => ({ desktop: 1, mobile: 0, unknown: 0 }));
     metrics.onConnectionOpened();
-    metrics.waitingSlots.increment();
     metrics.onPair();
     metrics.onForward(64);
     metrics.onReject('backpressure');
@@ -170,6 +193,7 @@ describe('createMetrics', () => {
     const snapshot = metrics.snapshot();
     expect(snapshot.activeConnections).toBe(1);
     expect(snapshot.waitingSlots).toBe(1);
+    expect(snapshot.waitingSlotsByRole).toEqual({ desktop: 1, mobile: 0, unknown: 0 });
     expect(snapshot.pairedSlots).toBe(1);
     expect(snapshot.connectionsTotal).toBe(1);
     expect(snapshot.sessionsTotal).toBe(1);
@@ -269,6 +293,43 @@ describe('GET /metricz over the live server', () => {
     const afterClose = await fetch(`${relay.url.replace('ws://', 'http://')}/metricz`);
     const afterBody = (await afterClose.json()) as { closedByCause: { peerClosed: number } };
     expect(afterBody.closedByCause.peerClosed).toBe(1);
+  });
+
+  it('attributes a parked peer to the role it sent on the URL, all the way to the wire', async () => {
+    // The one path nothing else covers. Every other role assertion drives the
+    // slot table directly and hands createConn a role, so it would still pass
+    // if server.ts read the wrong query key or passed a constant. This dials a
+    // real socket and reads the number back off the HTTP surfaces, which is
+    // what a client and a scraper actually see.
+    relay = await startTestRelay({ metricsAllowUnauthenticated: true });
+    const desktop = await connectTestClient(relay.url, 'a'.repeat(64), 'desktop');
+    const mobile = await connectTestClient(relay.url, 'b'.repeat(64), 'mobile');
+    // Sent nothing at all, exactly like every client that predates the
+    // parameter, plus one that sent something this relay has never heard of.
+    const silent = await connectTestClient(relay.url, 'c'.repeat(64));
+    const bogus = await connectTestClient(relay.url, 'd'.repeat(64), 'toaster');
+
+    expect(relay.metrics.snapshot().waitingSlotsByRole).toEqual({ desktop: 1, mobile: 1, unknown: 2 });
+
+    const httpBase = relay.url.replace('ws://', 'http://');
+    const metriczBody = (await (await fetch(`${httpBase}/metricz`)).json()) as Record<string, unknown>;
+    // /metricz is the machine surface monitor.yml and loadTest.mjs consume, so
+    // the split has to be on it and not only on /admin/data.
+    expect(metriczBody['waitingSlotsByRole']).toEqual({ desktop: 1, mobile: 1, unknown: 2 });
+    expect(metriczBody['waitingSlots']).toBe(4);
+
+    const prometheusText = await (await fetch(`${httpBase}/metrics`)).text();
+    expect(prometheusText).toContain('relay_waiting_slots_by_reported_role{role="desktop"} 1');
+    expect(prometheusText).toContain('relay_waiting_slots_by_reported_role{role="mobile"} 1');
+    expect(prometheusText).toContain('relay_waiting_slots_by_reported_role{role="unknown"} 2');
+    // The client's raw string never reaches the label set, which is the whole
+    // cardinality bound.
+    expect(prometheusText).not.toContain('toaster');
+
+    desktop.close();
+    mobile.close();
+    silent.close();
+    bogus.close();
   });
 
   it('honors METRICS_ENABLED and METRICS_TOKEN exactly like /metrics', async () => {
