@@ -16,9 +16,20 @@ export interface TestClient {
  * client synchronously as part of pairing, which can beat a lazily
  * attached 'once' listener, and a JS EventEmitter never redelivers an
  * event to a listener registered after it fired.
+ *
+ * `reportedRole` appends the optional `role` parameter, and is a raw string
+ * rather than a PeerRole on purpose: the point of the parameter is that a
+ * client can send anything at all, so a test must be able to send a value the
+ * enum does not contain. Omitting it dials exactly the URL every client that
+ * predates the parameter dials.
  */
-export async function connectTestClient(relayUrl: string, slotId: string): Promise<TestClient> {
-  const socket = new NodeWebSocket(`${relayUrl}?slot=${encodeURIComponent(slotId)}`);
+export async function connectTestClient(
+  relayUrl: string,
+  slotId: string,
+  reportedRole?: string,
+): Promise<TestClient> {
+  const roleParameter = reportedRole === undefined ? '' : `&role=${encodeURIComponent(reportedRole)}`;
+  const socket = new NodeWebSocket(`${relayUrl}?slot=${encodeURIComponent(slotId)}${roleParameter}`);
 
   const messageQueue: Array<{ data: RawData; isBinary: boolean }> = [];
   const pendingWaiters: Array<(message: { data: RawData; isBinary: boolean }) => void> = [];

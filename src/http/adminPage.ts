@@ -193,7 +193,11 @@ button[aria-pressed="true"], .segmented button[aria-pressed="true"] {
    rather than two. */
 @media (min-width: 1560px) { .tiles { grid-template-columns: repeat(8, 1fr); } }
 @media (max-width: 1040px) { .tiles { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 620px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+/* Two across, and a third line reserved for the note: tiles are ~140px wide on
+   a phone, where the waiting note runs to three lines once a third role shows
+   up. Vertical space is the cheap axis here, a row that jumps as peers come and
+   go is not. */
+@media (max-width: 620px) { .tiles { grid-template-columns: repeat(2, 1fr); } .tile .note { min-height: 3.9em; } }
 .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 8px 11px; }
 .tile .label { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 /* Status is a percentage first and a colour second, so it survives a
@@ -205,7 +209,10 @@ button[aria-pressed="true"], .segmented button[aria-pressed="true"] {
 .tile .value { font-size: 20px; font-weight: 600; margin-top: 1px; line-height: 1.25; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
 .tile { transition: border-color .12s; }
 .tile:hover { border-color: color-mix(in srgb, var(--text-muted) 40%, transparent); }
-.tile .note { font-size: 11px; color: var(--text-muted); }
+/* Two lines reserved, for the same reason .card .hint reserves them: the
+   waiting note grows a line the moment a phone shows up, and without this the
+   whole tile row would reflow under the reader as peers come and go. */
+.tile .note { font-size: 11px; color: var(--text-muted); min-height: 2.6em; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(470px, 1fr)); gap: 14px; }
 .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 15px 10px; }
 .card h2 { font-size: 13px; margin: 0 0 1px; font-weight: 600; }
@@ -445,6 +452,56 @@ td.zero { color: var(--text-muted); }
   }
 
   /**
+   * The span a row of this kind was meant to cover. Recorder rows are sampled
+   * on the configured interval whatever tier they later land in, so the
+   * interval is the yardstick for all of them: an hourly bucket that holds a
+   * single 60-second row (the relay was down for the rest of the hour) carries
+   * a perfectly correct rate and must not be treated as a fragment. A live row
+   * is synthesized from the poll gap and has no nominal window at all.
+   */
+  function nominalWindowMs(row) {
+    if (row.live) return row.windowMs;
+    var bucketMs = row.resolutionSeconds * 1000;
+    // Clamped to the row's own bucket, because meta.intervalMs is the interval
+    // the recorder is running NOW and the row may have been written under a
+    // different one. Raising METRICS_HISTORY_INTERVAL_MS from 60s to 300s would
+    // otherwise make every existing 60-second row look like a fifth of an
+    // interval and blank two days of rate charts at a stroke. Raw rows are
+    // always tagged at the fine resolution, so the clamp pins them at 60s
+    // whatever the interval becomes.
+    //
+    // Residual, accepted: an AGGREGATED row covering far less than its bucket
+    // (the relay was down for most of that hour) can still be suppressed after
+    // the interval is raised. That row is genuinely a fragment of its bucket,
+    // and the alternative needs the write-time interval, which no row records.
+    if (state.meta && state.meta.intervalMs > 0) return Math.min(state.meta.intervalMs, bucketMs);
+    return bucketMs;
+  }
+
+  /**
+   * The recorder deliberately flushes a trailing partial-interval row on
+   * shutdown, so a deploy does not lose its final seconds. That row is
+   * arithmetically correct and visually a lie once normalised: four connections
+   * over a 200 ms window is 1,200/min on a relay carrying four clients, landing
+   * on the chart an operator checks immediately after deploying and dwarfing
+   * the real axis for the whole window.
+   *
+   * Below a quarter of the nominal window the count is too small a sample to be
+   * a rate, so it draws as a gap and the restart marker beside it says what
+   * happened. Dropping the row is not an option, since it carries the deploy's
+   * last seconds, and clamping it to something plausible would invent a number.
+   * The table view keeps the raw arithmetic: it prints the count and the
+   * resolution side by side, so a short window is self-evident there.
+   */
+  function rateIsTrustworthy(row) {
+    return row.windowMs >= nominalWindowMs(row) / 4;
+  }
+
+  function chartPerSecond(row, key) {
+    return rateIsTrustworthy(row) ? perSecond(row, key) : null;
+  }
+
+  /**
    * Counts have to be normalised before they are plotted, because rows do not
    * all cover the same span. History is tiered (1-minute, then 5-minute, then
    * hourly), and the Live view mixes 60-second history rows with 2-second poll
@@ -454,6 +511,8 @@ td.zero { color: var(--text-muted); }
    * Per minute reads better than per second for sparse counts like teardowns.
    */
   function perMinute(row, value) {
+    // Chart-only, unlike perSecond, so the suppression lives here directly.
+    if (!rateIsTrustworthy(row)) return null;
     var minutes = row.windowMs > 0 ? row.windowMs / 60000 : 1;
     return value / minutes;
   }
@@ -493,16 +552,30 @@ td.zero { color: var(--text-muted); }
     return best;
   }
 
+  // A point every one of whose series came back null. On a rate chart that is
+  // the partial-window suppression above, which the stacked renderer has to
+  // treat as a hole rather than as a row of zeroes.
+  function allNull(values) {
+    for (var index = 0; index < values.length; index++) {
+      var value = values[index];
+      if (value !== null && value !== undefined && isFinite(value)) return false;
+    }
+    return true;
+  }
+
   // Means are carried alongside, because a maximum alone cannot tell "sat at 38
   // all hour" from "idled at 2 and burst once" - which is the difference
   // between needing a bigger box and having had one busy minute.
   function downsample(rows, seriesList) {
     if (rows.length <= MAX_PLOT_POINTS) {
       return rows.map(function (r) {
+        var values = seriesList.map(function (s) { return s.value(r); });
         return {
           t: r.timestampMs,
           restart: r.restartCount > 0,
-          values: seriesList.map(function (s) { return s.value(r); }),
+          partial: !rateIsTrustworthy(r),
+          gap: allNull(values),
+          values: values,
           means: seriesList.map(function (s) { return readMean(s.mean, r); })
         };
       });
@@ -519,8 +592,15 @@ td.zero { color: var(--text-muted); }
         }
         means.push(meanCount === 0 ? null : meanTotal / meanCount);
       }
-      for (var c2 = 0; c2 < chunk.length; c2++) if (chunk[c2].restartCount > 0) restart = true;
-      out.push({ t: chunk[0].timestampMs, restart: restart, values: values, means: means });
+      var partial = true;
+      for (var c2 = 0; c2 < chunk.length; c2++) {
+        if (chunk[c2].restartCount > 0) restart = true;
+        // A bucket is only a fragment if every row in it was. reduceBucket
+        // already skips the suppressed rows, so one good row carries the point.
+        if (rateIsTrustworthy(chunk[c2])) partial = false;
+      }
+      out.push({ t: chunk[0].timestampMs, restart: restart, partial: partial, gap: allNull(values),
+        values: values, means: means });
     }
     return out;
   }
@@ -595,16 +675,51 @@ td.zero { color: var(--text-muted); }
           if (stackValue === null || stackValue === undefined || !isFinite(stackValue)) stackValue = 0;
           upperBaseline.push(lowerBaseline[u] + stackValue);
         }
-        for (var f = 0; f < pts.length; f++) {
-          area += (f === 0 ? "M" : "L") + xAt(f).toFixed(1) + " " + yAt(upperBaseline[f]).toFixed(1) + " ";
-        }
-        for (var back = pts.length - 1; back >= 0; back--) {
-          area += "L" + xAt(back).toFixed(1) + " " + yAt(lowerBaseline[back]).toFixed(1) + " ";
+        // One closed band per contiguous run of real points. Running the band
+        // straight through a gap would draw the suppressed partial-window row
+        // as a dip to zero, which is an invented number rather than an absent
+        // one - the same mistake the suppression exists to avoid.
+        var runStart = -1;
+        for (var f = 0; f <= pts.length; f++) {
+          var inRun = f < pts.length && !pts[f].gap;
+          if (inRun && runStart === -1) runStart = f;
+          if (inRun || runStart === -1) continue;
+          if (f - runStart === 1) {
+            // A run of exactly one point has no width, and a path enclosing no
+            // area paints nothing at all. The line branch below hits the same
+            // wall and answers it with an explicit dot; a band has no line to
+            // dot, so it gets a sliver half a step wide instead. Reached
+            // whenever partial-window rows flank a single good interval: a
+            // redeploy straight after a deploy, or a crash loop restarting
+            // either side of one surviving minute. Downsampling makes this
+            // rarer rather than commoner, since reduceBucket only yields null
+            // when every row in a chunk was suppressed.
+            var half = Math.max(1, (W - PAD_L - PAD_R) / Math.max(1, pts.length - 1) / 2);
+            // Not named "top": that is the axis maximum this function's yAt
+            // divides by, and var would reassign it rather than shadow it.
+            var centreX = xAt(runStart);
+            var upperY = yAt(upperBaseline[runStart]), lowerY = yAt(lowerBaseline[runStart]);
+            area += "M" + (centreX - half).toFixed(1) + " " + upperY.toFixed(1) +
+              " L" + (centreX + half).toFixed(1) + " " + upperY.toFixed(1) +
+              " L" + (centreX + half).toFixed(1) + " " + lowerY.toFixed(1) +
+              " L" + (centreX - half).toFixed(1) + " " + lowerY.toFixed(1) + " Z ";
+          } else {
+            for (var up = runStart; up < f; up++) {
+              area += (up === runStart ? "M" : "L") + xAt(up).toFixed(1) + " " + yAt(upperBaseline[up]).toFixed(1) + " ";
+            }
+            for (var back = f - 1; back >= runStart; back--) {
+              area += "L" + xAt(back).toFixed(1) + " " + yAt(lowerBaseline[back]).toFixed(1) + " ";
+            }
+            area += "Z ";
+          }
+          runStart = -1;
         }
         // A hairline in the surface colour separates adjacent bands, so two
         // similar hues do not merge into one shape.
-        svg += '<path d="' + area + 'Z" fill="' + spec.series[sa].color + '" fill-opacity="0.85" stroke="' +
-          css("--surface-1") + '" stroke-width="0.5"/>';
+        if (area) {
+          svg += '<path d="' + area + '" fill="' + spec.series[sa].color + '" fill-opacity="0.85" stroke="' +
+            css("--surface-1") + '" stroke-width="0.5"/>';
+        }
         lowerBaseline = upperBaseline;
       }
     } else {
@@ -675,7 +790,17 @@ td.zero { color: var(--text-muted); }
       cross.setAttribute("x1", xAt(idx));
       cross.setAttribute("x2", xAt(idx));
       cross.setAttribute("opacity", "1");
-      var html = '<div class="when">' + esc(fmtTime(pts[idx].t)) + (pts[idx].restart ? " &middot; restart" : "") + "</div>";
+      // "partial window" explains an empty rate rather than leaving the reader
+      // to guess whether the relay was idle or the chart was broken. So it is
+      // shown only where a value was actually suppressed, which is what gap
+      // means: partial is a property of the ROW and is true on every chart at
+      // that timestamp, while only rate charts null anything out for it. On a
+      // point-sample chart (connections, the role split) the count is exact no
+      // matter how short the window was, and captioning an exact number with a
+      // data-quality warning is the opposite of what this caption is for.
+      var shortWindow = pts[idx].partial && pts[idx].gap;
+      var html = '<div class="when">' + esc(fmtTime(pts[idx].t)) + (pts[idx].restart ? " &middot; restart" : "") +
+        (shortWindow ? " &middot; partial window" : "") + "</div>";
       for (var k = 0; k < spec.series.length; k++) {
         var value = pts[idx].values[k], meanValue = pts[idx].means[k];
         var shown = value === null || value === undefined ? "n/a" : spec.format(value);
@@ -768,7 +893,7 @@ td.zero { color: var(--text-muted); }
 
   function specs() {
     var list = [
-      { title: "Connections", hint: "Point samples, one per interval. Line is the peak; hover for the average on aggregated buckets.", format: fmtCount, series: [
+      { title: "Connections", hint: "Point samples, one per interval. Line is the peak; hover for the average on aggregated buckets. Active counts sockets, so a paired tunnel contributes two and a waiting peer one.", format: fmtCount, series: [
         { label: "active", color: seriesColor(1), reduce: "max",
           value: function (r) { return r.activeConnections.maximum; },
           mean: function (r) { return r.activeConnections.mean; } },
@@ -779,11 +904,28 @@ td.zero { color: var(--text-muted); }
           value: function (r) { return r.pairedSlots.maximum; },
           mean: function (r) { return r.pairedSlots.mean; } }
       ] },
+      // Deliberately three independent lines rather than a stack. On an
+      // aggregated bucket these are peaks taken separately, so they need not
+      // add up to the waiting peak, and stacking them would draw a total above
+      // the waiting line on the card directly above.
+      { title: "Waiting peers by reported role",
+        hint: "Role is a hint the client sends on connect and the relay never verifies, so read it as reported rather than as fact. One desktop parked and re-dialling each minute is the normal idle state; a phone waiting is the signal worth chasing. Intervals recorded before clients reported a role read as unknown.",
+        format: fmtCount, series: [
+        { label: "desktop", color: seriesColor(1), reduce: "max",
+          value: function (r) { return r.waitingDesktop ? r.waitingDesktop.maximum : null; },
+          mean: function (r) { return r.waitingDesktop ? r.waitingDesktop.mean : null; } },
+        { label: "mobile", color: seriesColor(2), reduce: "max",
+          value: function (r) { return r.waitingMobile ? r.waitingMobile.maximum : null; },
+          mean: function (r) { return r.waitingMobile ? r.waitingMobile.mean : null; } },
+        { label: "unknown", color: seriesColor(7), reduce: "max",
+          value: function (r) { return r.waitingUnknown ? r.waitingUnknown.maximum : null; },
+          mean: function (r) { return r.waitingUnknown ? r.waitingUnknown.mean : null; } }
+      ] },
       { title: "Frames forwarded", hint: "Rate, derived from per-interval deltas.", format: function (v) { return fmtCount(v) + "/s"; }, fill: true, series: [
-        { label: "frames/s", color: seriesColor(1), reduce: "max", value: function (r) { return perSecond(r, "framesForwardedDelta"); } }
+        { label: "frames/s", color: seriesColor(1), reduce: "max", value: function (r) { return chartPerSecond(r, "framesForwardedDelta"); } }
       ] },
       { title: "Bytes forwarded", hint: "Payload only. Real egress runs roughly 1.1 to 1.3x higher.", format: fmtBytesRate, fill: true, series: [
-        { label: "bytes/s", color: seriesColor(2), reduce: "max", value: function (r) { return perSecond(r, "bytesForwardedDelta"); } }
+        { label: "bytes/s", color: seriesColor(2), reduce: "max", value: function (r) { return chartPerSecond(r, "bytesForwardedDelta"); } }
       ] },
       { title: "New connections and sessions", hint: "Rate per minute, so tiers and the live view stay comparable.", format: fmtPerMinute, series: [
         { label: "connections", color: seriesColor(1), reduce: "max", value: function (r) { return deltaPerMinute(r, "connectionsDelta"); } },
@@ -794,8 +936,12 @@ td.zero { color: var(--text-muted); }
         format: fmtBytes, fill: true, series: [
         { label: "peak queue", color: seriesColor(2), reduce: "max", value: function (r) { return r.maxOutboundBufferBytes; } }
       ] },
-      { title: "Pairing success",
-        hint: "Share of new connections that found a partner. Sustained below 100% means clients are arriving and failing to pair.",
+      // Retitled from "Pairing success": the word invited reading the healthy
+      // resting value as a failure. A relay whose only client is a desktop
+      // re-dialling its park timeout genuinely pairs nothing, and that is the
+      // normal idle state rather than an outage.
+      { title: "Sockets that paired",
+        hint: "Share of new sockets that found a partner, counting two per pairing. A relay whose only client is a desktop re-dialling its park timeout reads near zero, and that is healthy idle. Read it against the waiting split above rather than against 100%: phones waiting is what says a pairing is stalling.",
         format: fmtPercent, series: [
         { label: "paired", color: seriesColor(3), reduce: "mean", value: function (r) {
           if (!r.connectionsDelta) return null;
@@ -906,10 +1052,17 @@ td.zero { color: var(--text-muted); }
     function delta(key) { return Math.max(0, current[key] - previous[key]); }
     function level(value) { return { maximum: value, mean: null }; }
     var closedByCause = subtractMaps(current.closedByCause, previous.closedByCause);
+    var byRole = current.waitingSlotsByRole || { desktop: 0, mobile: 0, unknown: 0 };
     return {
       timestampMs: nowMs,
       resolutionSeconds: 60,
       windowMs: Math.max(1, nowMs - previousAtMs),
+      // Says "my window is the poll gap, not a recorder interval", which is what
+      // exempts these rows from the partial-window rate suppression below. It
+      // cannot be inferred: seedLiveFromHistory mixes real recorder rows into
+      // the same array, and instanceId is falsy on both a synthesized row
+      // (undefined) and an aggregated one (null).
+      live: true,
       restartCount: current.uptimeSeconds < previous.uptimeSeconds ? 1 : 0,
       sourceRowCount: 1,
       connectionsDelta: delta("connectionsTotal"),
@@ -923,6 +1076,9 @@ td.zero { color: var(--text-muted); }
       activeConnections: level(current.activeConnections),
       waitingSlots: level(current.waitingSlots),
       pairedSlots: level(current.pairedSlots),
+      waitingDesktop: level(byRole.desktop || 0),
+      waitingMobile: level(byRole.mobile || 0),
+      waitingUnknown: level(byRole.unknown || 0),
       cpuPercent: current.cpuPercent === null ? null : level(current.cpuPercent),
       eventLoopLagP99Ms: current.eventLoopLagP99Ms,
       rssBytes: current.rssBytes,
@@ -946,6 +1102,39 @@ td.zero { color: var(--text-muted); }
     return "good";
   }
 
+  // The same three values the relay reports, in the order the tile and the
+  // chart both read them.
+  var WAITING_ROLES = ["desktop", "mobile", "unknown"];
+
+  /**
+   * The waiting count, attributed. "2 waiting to pair" merged two opposite
+   * meanings: desktops waiting says phones are not arriving, phones waiting
+   * says the reverse. Always says "reported", because the role is what the
+   * client claimed on connect and the relay verifies nothing.
+   *
+   * A desktop parked alone is the normal idle state of every online desktop,
+   * so the roles are spelled out rather than summarised: the reading that
+   * matters is which side, never how many.
+   */
+  function waitingNote(live) {
+    if (!live.waitingSlots) return "none waiting to pair";
+    var byRole = live.waitingSlotsByRole;
+    var total = fmtInt(live.waitingSlots) + " waiting to pair";
+    if (!byRole) return total;
+    // Only the roles actually present. Spelling out every zero reads as noise
+    // and, at eight tiles across, wraps this note a line past every other one,
+    // which stretches the whole row. Nothing diagnostic is lost: a phone
+    // waiting is the signal worth chasing and a non-zero count is always shown,
+    // while the chart below always draws all three lines.
+    var parts = [];
+    for (var roleIndex = 0; roleIndex < WAITING_ROLES.length; roleIndex++) {
+      var role = WAITING_ROLES[roleIndex], count = byRole[role] || 0;
+      if (count > 0) parts.push(fmtInt(count) + " " + role);
+    }
+    if (!parts.length) return total;
+    return total + ", reported " + parts.join(", ");
+  }
+
   function renderTiles() {
     var live = state.live, meta = state.meta;
     if (!live || !meta) return;
@@ -959,10 +1148,16 @@ td.zero { color: var(--text-muted); }
     var bufferFraction = buffered === null || !caps.maxBufferedBytes ? null : buffered / caps.maxBufferedBytes;
 
     var tiles = [
+      // Composition, not an equation. activeConnections is not exactly
+      // waiting + 2 x paired at every instant (a socket is counted open before
+      // the slot table sees it, and a slot-busy rejection lingers until its
+      // close lands), so an equals sign here would be wrong a fraction of the
+      // time. Saying what a socket IS answers the actual misreading, which is
+      // that the two tiles look like the same number twice on an idle relay.
       { label: "Connections", value: fmtInt(live.activeConnections) + " / " + fmtInt(caps.maxConnections),
-        note: "cap refuses new sockets at 100%", fraction: connectionFraction },
-      { label: "Live sessions", value: fmtInt(live.pairedSlots),
-        note: fmtInt(live.waitingSlots) + " waiting to pair" },
+        note: "2 sockets per paired tunnel, 1 per waiting peer", fraction: connectionFraction,
+        title: "Cap refuses new sockets at 100%" },
+      { label: "Live sessions", value: fmtInt(live.pairedSlots), note: waitingNote(live) },
       { label: "Slowest consumer", value: buffered === null ? "n/a" : fmtBytes(buffered),
         note: backlogged === null ? "queue depth, sampled" : fmtInt(backlogged) + " connection(s) backing up",
         fraction: bufferFraction },
@@ -986,8 +1181,14 @@ td.zero { color: var(--text-muted); }
       var badge = status
         ? '<span class="badge ' + status + '">' + Math.round(tile.fraction * 100) + "%</span>"
         : "";
-      html += '<div class="tile"><div class="label">' + esc(tile.label) + badge + '</div><div class="value">' +
-        esc(tile.value) + "</div>" + (tile.note ? '<div class="note">' + esc(tile.note) + "</div>" : "") + "</div>";
+      // The note line is the tile's one line of prose, so anything secondary
+      // rides in the hover title rather than competing for it. This is the only
+      // attribute-context use of esc on the page; it is safe because esc
+      // escapes the double quote as well as &, < and >. Keep it that way.
+      var titleAttribute = tile.title ? ' title="' + esc(tile.title) + '"' : "";
+      html += '<div class="tile"' + titleAttribute + '><div class="label">' + esc(tile.label) + badge +
+        '</div><div class="value">' + esc(tile.value) + "</div>" +
+        (tile.note ? '<div class="note">' + esc(tile.note) + "</div>" : "") + "</div>";
     }
     document.getElementById("tiles").innerHTML = html;
   }

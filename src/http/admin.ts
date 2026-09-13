@@ -135,6 +135,7 @@ export async function handleAdminDataRequest(
     live: {
       activeConnections: snapshot.activeConnections,
       waitingSlots: snapshot.waitingSlots,
+      waitingSlotsByRole: snapshot.waitingSlotsByRole,
       pairedSlots: snapshot.pairedSlots,
       connectionsTotal: snapshot.connectionsTotal,
       sessionsTotal: snapshot.sessionsTotal,

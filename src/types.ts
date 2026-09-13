@@ -1,5 +1,6 @@
 import type { RawData, WebSocket } from 'ws';
 import type { RejectReason } from './closeCodes.js';
+import type { PeerRole } from './guards/peerRole.js';
 
 export interface Config {
   readonly port: number;
@@ -68,6 +69,15 @@ export interface Conn {
   readonly socket: WebSocket;
   readonly slot: string;
   readonly ip: string;
+  /**
+   * What this peer said it is, from the optional `role` query parameter.
+   * Self-declared and verified by nothing, so it is read by exactly one thing:
+   * attributing the waiting-slots gauge. No pairing, routing, cap, or
+   * rate-limit decision may consult it. Readonly because the gauge is derived
+   * from it, and a role that could change under a parked connection would make
+   * the attribution disagree with itself.
+   */
+  readonly role: PeerRole;
   readonly connectedAt: number;
   state: ConnState;
   partner: Conn | null;

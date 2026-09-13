@@ -2,6 +2,7 @@ import type { WebSocket } from 'ws';
 import { CLOSE_CODE } from './closeCodes.js';
 import type { RejectReason } from './closeCodes.js';
 import type { Conn, PairedSlotState, SlotState } from './types.js';
+import type { PeerRole } from './guards/peerRole.js';
 import type { Metrics } from './http/metrics.js';
 import type { Logger } from './logging.js';
 import type { SlotConnectionCaps, UnpairedConnectionCap } from './guards/caps.js';
@@ -55,16 +56,29 @@ export class SlotTable {
 
   constructor(private readonly deps: RendezvousDeps) {}
 
-  get waitingCount(): number {
-    let count = 0;
-    for (const state of this.slots.values()) if (state.status === 'waiting') count += 1;
-    return count;
-  }
-
-  get pairedCount(): number {
-    let count = 0;
-    for (const state of this.slots.values()) if (state.status === 'paired') count += 1;
-    return count;
+  /**
+   * Waiting slots, split by what each parked peer said it is.
+   *
+   * Derived by walking the table rather than maintained as a counter, and the
+   * distinction is load-bearing rather than stylistic. A parked peer whose
+   * socket is already CLOSING gets overwritten by a fresh arrival in
+   * handleConnection's park-fresh branch, and when its close finally fires the
+   * identity check in handleClose sees the entry now belongs to someone else
+   * and returns without decrementing. An incremented counter would never come
+   * back down, so an idle relay would accumulate phantom waiting peers, each
+   * attributed to a role, each reading exactly like a real parked client. The
+   * map is the only thing that cannot say that, because the entry is simply
+   * gone.
+   *
+   * O(slots) per call, and the callers are a recorder tick, a dashboard poll,
+   * and a metrics scrape. Nothing here runs per frame.
+   */
+  waitingByRole(): Readonly<Record<PeerRole, number>> {
+    const counts: Record<PeerRole, number> = { desktop: 0, mobile: 0, unknown: 0 };
+    for (const state of this.slots.values()) {
+      if (state.status === 'waiting') counts[state.peer.role] += 1;
+    }
+    return counts;
   }
 
   /** The single entry point invoked right after a WebSocket connection is accepted. */
@@ -123,7 +137,6 @@ export class SlotTable {
       const state = this.slots.get(conn.slot);
       if (state?.status === 'waiting' && state.peer === conn) {
         this.slots.delete(conn.slot);
-        this.deps.metrics.waitingSlots.decrement();
       }
       return;
     }
@@ -273,14 +286,12 @@ export class SlotTable {
   private park(conn: Conn): void {
     this.slots.set(conn.slot, { status: 'waiting', peer: conn });
     conn.state = 'waiting';
-    this.deps.metrics.waitingSlots.increment();
 
     const timer = setTimeout(() => {
       conn.parkTimer = null;
       const state = this.slots.get(conn.slot);
       if (state?.status === 'waiting' && state.peer === conn) {
         this.slots.delete(conn.slot);
-        this.deps.metrics.waitingSlots.decrement();
       }
       this.deps.metrics.onReject('park_timeout');
       conn.socket.close(CLOSE_CODE.PARK_TIMEOUT, 'park_timeout');
@@ -291,7 +302,6 @@ export class SlotTable {
 
   private pair(waiting: Conn, incoming: Conn): void {
     clearTimer(waiting, 'parkTimer');
-    this.deps.metrics.waitingSlots.decrement();
 
     // Both halves stop being unpaired here, not when they eventually close.
     // Releasing only on close would let the unpaired count track total live

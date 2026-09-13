@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- **The `/admin` dashboard can finally say *which* side is failing to pair.** `waitingSlots` was one
+  undifferentiated number shown as "N waiting to pair", and the two cases it merged mean opposite
+  things: desktops waiting says phones are not arriving, phones waiting says desktops are not
+  reachable. The relay had no way to tell them apart, by construction rather than by omission, since
+  both peers dial identically. Clients may now send an optional `role=desktop|mobile` alongside the
+  slot, and the waiting count is split by it on the tiles, on `/metricz` as `waitingSlotsByRole`, and
+  on `/metrics` as `relay_waiting_slots_by_reported_role`. The unlabelled `waitingSlots` total is
+  unchanged, so nothing reading it today breaks.
+- **Nothing about the existing wire contract changed, and no client change is required.** The
+  parameter is optional in both directions: a client that omits it, misspells it, or sends something
+  hostile is counted as `unknown` and connects exactly as before. It never rejects, so it spends no
+  rate-limit budget and produces no reject reason for a prober to compare against. It is a hint and
+  never a control: pairing still requires an exact match of the entire slot id, exactly the first two
+  connections still pair, and a third is still rejected rather than queued. Anyone can claim any
+  role, which is precisely why no decision is allowed to consult one. The desktop and mobile clients
+  send it in their own time; until they do, every peer reads `unknown` and the dashboard says so.
+  Two limits worth stating: the value is unverified, so the UI says "reported" rather than "is", and
+  because it travels in the URL it is visible to whoever already sees the slot id, which on the
+  hosted instance includes Cloudflare. A stolen history file now also reveals traffic shape by device
+  class, and still nothing about who talked to whom.
+
 ### Fixed
 
 - **The docs overstated this relay's own risk.** `README.md` and `docs/security-model.md` claimed
@@ -55,6 +78,36 @@ All notable changes to this project are documented in this file. The format is b
   recreated the container as an accident of the stale baseline. If you were using a redeploy to
   force a relay restart, that no longer works. Changing anything in `/opt/relay/.env` still forces
   a recreate via the environment fingerprint, and `drill=healthcheck` still always recreates.
+- **A deploy drew a traffic spike that never happened.** `stop()` deliberately flushes a trailing
+  partial-interval row so the final seconds before a deploy are not lost, and the charts normalise
+  every count as `delta / windowMs` per minute. When that last window is a fraction of a second the
+  arithmetic is correct and the picture is a lie: four connections over 200 ms renders as 1,200 per
+  minute, landing on the chart an operator checks immediately after deploying and flattening the real
+  traffic into the baseline for the whole window. Rates are now drawn as a gap when a row covers less
+  than a quarter of its intended window, with the point labelled "partial window" on hover next to
+  the restart marker that already explains it. The row is still written, because losing a deploy's
+  last seconds is the worse trade, and it is never clamped to a plausible-looking number, because an
+  invented value is worse than an absent one. The table view showed this correctly all along, with
+  raw counts beside a resolution column, and is unchanged.
+- **Two connection tiles presented the same figure as though they were independent measurements.**
+  On an idle relay `2 / 4,000` connections sat beside `0` live sessions and `2 waiting to pair`, and
+  nothing on the page said whether that was two sockets or four. It is two: a paired tunnel is two
+  sockets and a waiting peer is one, which the tiles now state outright. The relationship is only
+  degenerate at rest, so no tile was removed; under real load all three numbers carry independent
+  information.
+- **"Pairing success" read a healthy idle relay as a failure.** A desktop with the app running is
+  essentially always parked on its slot, re-dialling within a second of each 60s park timeout, so a
+  relay whose only client is that desktop genuinely pairs nothing and the chart sat near zero while
+  the help text said clients were "arriving and failing to pair". It is now titled "Sockets that
+  paired" and says that near-zero is the resting state, pointing at the waiting split for direction.
+  The figure itself is unchanged.
+- **The waiting gauge could drift upward and never recover.** It was a hand-maintained counter, and a
+  parked peer whose socket was already closing could be overwritten by a fresh arrival; when the old
+  peer's close finally landed, the identity check saw the slot belonged to someone else and returned
+  without decrementing. An idle relay accumulated phantom waiting peers that no reconnect cleared.
+  The count is now derived from the slot table itself on read, so there is one source of truth and
+  nothing left to drift. Found while adding the role split, which would otherwise have attributed
+  each phantom to a role and made it read exactly like a real parked client.
 
 ## [0.3.2] - 2026-08-08
 

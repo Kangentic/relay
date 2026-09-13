@@ -69,6 +69,24 @@ export interface HistoryRow {
   readonly waitingSlots: HistorySeriesValue;
   readonly pairedSlots: HistorySeriesValue;
 
+  /**
+   * waitingSlots split by the role each parked peer reported. Three flat
+   * siblings rather than one nested record, so aggregation stays the same
+   * straight-line shape as every other series here.
+   *
+   * On a RAW row these sum exactly to waitingSlots, because they partition one
+   * point sample. On an AGGREGATED row the maxima do not: a bucket holding one
+   * minute of two parked desktops and another of three parked phones merges to
+   * a desktop peak of 2 and a phone peak of 3 against a waiting peak of 3, not
+   * 5. The means still sum, since mergeSeries weights every series by the same
+   * window. That is why the dashboard draws these as independent lines and
+   * never as a stack: each line is true on its own, and nothing should imply
+   * they add.
+   */
+  readonly waitingDesktop: HistorySeriesValue;
+  readonly waitingMobile: HistorySeriesValue;
+  readonly waitingUnknown: HistorySeriesValue;
+
   readonly cpuPercent: HistorySeriesValue | null;
   /** Max only when aggregated: averaging p99 values across buckets is meaningless. */
   readonly eventLoopLagP99Ms: number | null;
@@ -162,6 +180,9 @@ export function buildHistoryRow(input: HistorySampleInput): HistoryRow {
     activeConnections: pointSample(currentSnapshot.activeConnections),
     waitingSlots: pointSample(currentSnapshot.waitingSlots),
     pairedSlots: pointSample(currentSnapshot.pairedSlots),
+    waitingDesktop: pointSample(currentSnapshot.waitingSlotsByRole.desktop),
+    waitingMobile: pointSample(currentSnapshot.waitingSlotsByRole.mobile),
+    waitingUnknown: pointSample(currentSnapshot.waitingSlotsByRole.unknown),
     cpuPercent: processSample === null ? null : pointSample(processSample.cpuPercent),
     eventLoopLagP99Ms: processSample?.eventLoopLagP99Ms ?? null,
     rssBytes: processSample?.rssBytes ?? null,
@@ -264,6 +285,9 @@ export function aggregateHistoryRows(
   const activeConnections: { value: HistorySeriesValue; windowMs: number }[] = [];
   const waitingSlots: { value: HistorySeriesValue; windowMs: number }[] = [];
   const pairedSlots: { value: HistorySeriesValue; windowMs: number }[] = [];
+  const waitingDesktop: { value: HistorySeriesValue; windowMs: number }[] = [];
+  const waitingMobile: { value: HistorySeriesValue; windowMs: number }[] = [];
+  const waitingUnknown: { value: HistorySeriesValue; windowMs: number }[] = [];
   const cpuPercent: { value: HistorySeriesValue; windowMs: number }[] = [];
 
   for (const row of rows) {
@@ -282,6 +306,9 @@ export function aggregateHistoryRows(
     activeConnections.push({ value: row.activeConnections, windowMs: row.windowMs });
     waitingSlots.push({ value: row.waitingSlots, windowMs: row.windowMs });
     pairedSlots.push({ value: row.pairedSlots, windowMs: row.windowMs });
+    waitingDesktop.push({ value: row.waitingDesktop, windowMs: row.windowMs });
+    waitingMobile.push({ value: row.waitingMobile, windowMs: row.windowMs });
+    waitingUnknown.push({ value: row.waitingUnknown, windowMs: row.windowMs });
     if (row.cpuPercent !== null) cpuPercent.push({ value: row.cpuPercent, windowMs: row.windowMs });
     if (row.eventLoopLagP99Ms !== null) {
       eventLoopLagP99Ms = Math.max(eventLoopLagP99Ms ?? 0, row.eventLoopLagP99Ms);
@@ -322,6 +349,9 @@ export function aggregateHistoryRows(
     activeConnections: mergeSeries(activeConnections),
     waitingSlots: mergeSeries(waitingSlots),
     pairedSlots: mergeSeries(pairedSlots),
+    waitingDesktop: mergeSeries(waitingDesktop),
+    waitingMobile: mergeSeries(waitingMobile),
+    waitingUnknown: mergeSeries(waitingUnknown),
     cpuPercent: cpuPercent.length === 0 ? null : mergeSeries(cpuPercent),
     eventLoopLagP99Ms,
     rssBytes,
@@ -362,6 +392,22 @@ export function serializeHistoryRow(row: HistoryRow): string {
   if (row.waitingSlots.mean !== null) record['wsm'] = row.waitingSlots.mean;
   if (row.pairedSlots.maximum !== 0) record['ps'] = row.pairedSlots.maximum;
   if (row.pairedSlots.mean !== null) record['psm'] = row.pairedSlots.mean;
+  // Waiting split by reported role. The key is 'wr' plus the role's initial,
+  // and a trailing 'm' is the mean, matching ws/wsm above.
+  if (row.waitingDesktop.maximum !== 0) record['wrd'] = row.waitingDesktop.maximum;
+  if (row.waitingDesktop.mean !== null) record['wrdm'] = row.waitingDesktop.mean;
+  if (row.waitingMobile.maximum !== 0) record['wrm'] = row.waitingMobile.maximum;
+  if (row.waitingMobile.mean !== null) record['wrmm'] = row.waitingMobile.mean;
+  // 'wru' is written even at zero, the one deviation in this trio. It is the
+  // marker that says this row was written by code that knew about roles at all,
+  // which is what lets parseHistoryRow tell "nobody was waiting" from "written
+  // before roles existed, so everyone waiting is unknown". Absence of the whole
+  // group would in fact be provable from ws alone, since on a role-aware row a
+  // non-zero ws forces some role maximum non-zero, but that argument depends on
+  // a relationship between two fields and would fail silently if either changed.
+  // A marker's invariant is local.
+  record['wru'] = row.waitingUnknown.maximum;
+  if (row.waitingUnknown.mean !== null) record['wrum'] = row.waitingUnknown.mean;
   if (row.cpuPercent !== null) {
     // Written even at zero, unlike every other omit-if-zero field. cpuPercent
     // is the one nullable SERIES, and absence is how the reader tells "no CPU
@@ -435,6 +481,20 @@ export function parseHistoryRow(line: string): HistoryRowParseResult {
   }
 
   const instanceId = fields['i'];
+  const waitingSlots = readSeries(fields, 'ws', 'wsm');
+  // A row written before roles existed carries none of these six keys. Its
+  // waiting peers genuinely had no reported role, so they read back as unknown
+  // rather than as zero: zero would draw a confident "no desktops, no phones"
+  // across a year of history that never recorded either. The whole group is
+  // tested rather than just the marker, so a row is treated as role-aware if it
+  // says anything at all about roles.
+  const hasReportedRoles =
+    fields['wru'] !== undefined ||
+    fields['wrum'] !== undefined ||
+    fields['wrd'] !== undefined ||
+    fields['wrdm'] !== undefined ||
+    fields['wrm'] !== undefined ||
+    fields['wrmm'] !== undefined;
   return {
     kind: 'row',
     row: {
@@ -454,8 +514,16 @@ export function parseHistoryRow(line: string): HistoryRowParseResult {
       pongTimeoutsDelta: readNumber(fields, 'pt', 0),
       rejectsByReasonDelta: readRejects(fields),
       activeConnections: readSeries(fields, 'ac', 'acm'),
-      waitingSlots: readSeries(fields, 'ws', 'wsm'),
+      waitingSlots,
       pairedSlots: readSeries(fields, 'ps', 'psm'),
+      waitingDesktop: hasReportedRoles ? readSeries(fields, 'wrd', 'wrdm') : { maximum: 0, mean: null },
+      waitingMobile: hasReportedRoles ? readSeries(fields, 'wrm', 'wrmm') : { maximum: 0, mean: null },
+      // A distinct object rather than the waitingSlots one, even though they
+      // carry the same numbers here: two row fields aliasing a single object is
+      // a trap waiting for the first person to mutate one of them.
+      waitingUnknown: hasReportedRoles
+        ? readSeries(fields, 'wru', 'wrum')
+        : { maximum: waitingSlots.maximum, mean: waitingSlots.mean },
       cpuPercent:
         fields['cp'] === undefined && fields['cpm'] === undefined ? null : readSeries(fields, 'cp', 'cpm'),
       eventLoopLagP99Ms: readNullableNumber(fields, 'el'),

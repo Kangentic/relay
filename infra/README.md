@@ -427,8 +427,13 @@ The dashboard is built around five questions. Roughly in the order worth checkin
    loop is the opposite: the relay is fine and a consumer's downlink is not.
 3. **Is anyone backing up before it becomes a teardown?** "Outbound queue depth" is the warning
    that "Abnormal teardowns / backpressure" is the postmortem of.
-4. **Are clients failing to pair?** "Pairing success" below 100% means connections are arriving and
-   not finding a partner, which a raw connection count hides entirely.
+4. **Are clients failing to pair, and which side?** Read "Waiting peers by reported role" first.
+   A desktop parked alone is the normal resting state of every online desktop, so a steady non-zero
+   desktop count is healthy idle; *phones* waiting, or desktops in numbers beyond the desktops you
+   know are online, is the signal worth chasing. "Sockets that paired" is the same question as a
+   rate, and it sits near zero on an idle relay for exactly that reason, so read it against the
+   connection rate rather than against 100%. Roles are self-declared by the client and never
+   verified, and a client that sends none is counted as unknown.
 5. **What changed?** Restart markers are dashed vertical rules. "Average frame size" separates a
    change in traffic shape from a change in traffic volume.
 

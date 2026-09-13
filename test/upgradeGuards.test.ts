@@ -135,6 +135,42 @@ describe('pre-upgrade guard ladder', () => {
     }
   });
 
+  it('never rejects on the role parameter, whatever the client claims to be', async () => {
+    // role is a hint, not a guard. A client sending garbage, nothing, or a
+    // value this relay has never heard of still connects exactly as before,
+    // because every client deployed today omits it and because a rejection
+    // here would be an oracle telling a prober which check they tripped.
+    const relay = await startTestRelay();
+    try {
+      for (const query of [
+        `/?slot=${SLOT_A}&role=desktop`,
+        `/?slot=${SLOT_B}&role=`,
+        `/?slot=${SLOT_C}&role=${'x'.repeat(500)}`,
+        `/?slot=${SLOT_D}&role=%00%01nonsense`,
+      ]) {
+        expect(await attemptUpgrade(relay.url, query)).toEqual({ opened: true });
+      }
+      expect(relay.metrics.snapshot().rejectsByReason).toEqual({});
+    } finally {
+      await relay.close();
+    }
+  });
+
+  it('does not spend rate-limit budget on an unrecognised role', async () => {
+    // The role parse sits after the slot guard and cannot fail, so it must not
+    // consume the single token a legitimate connect still needs.
+    const relay = await startTestRelay({ rateLimitIpPerMinute: 1, rateLimitIpBurst: 1 });
+    try {
+      expect(await attemptUpgrade(relay.url, `/?slot=${SLOT_A}&role=bogus`)).toEqual({ opened: true });
+      expect(await attemptUpgrade(relay.url, `/?slot=${SLOT_B}&role=desktop`)).toEqual({
+        opened: false,
+        status: 429,
+      });
+    } finally {
+      await relay.close();
+    }
+  });
+
   it('rejects with 429 once the per-IP rate limit is exhausted', async () => {
     const relay = await startTestRelay({ rateLimitIpPerMinute: 1, rateLimitIpBurst: 1 });
     try {

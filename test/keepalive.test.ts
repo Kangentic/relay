@@ -17,6 +17,7 @@ function fakeConn(readyState = 1): { conn: Conn; socket: FakeSocket } {
     socket: socket as unknown as Conn['socket'],
     slot: 'slot-1',
     ip: '127.0.0.1',
+    role: 'unknown',
     connectedAt: 0,
     state: 'waiting',
     partner: null,

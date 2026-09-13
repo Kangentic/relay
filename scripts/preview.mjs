@@ -93,6 +93,15 @@ function buildRow(timestampMs, resolutionSeconds, index, restartCount) {
 
   const series = (peak, mean) => ({ maximum: peak, mean: aggregated ? mean : null });
 
+  // A real partition of waitingPeak, not three independent numbers, so the
+  // preview shows the shape the relay actually produces on a raw row. Mostly
+  // parked desktops with the occasional phone mid-pairing, which is what
+  // production looks like; a flat split would prove nothing about whether the
+  // chart distinguishes the two.
+  const waitingMobilePeak = pseudoRandom(index * 5.3) > 0.8 ? Math.min(waitingPeak, 1) : 0;
+  const waitingUnknownPeak = pseudoRandom(index * 7.7) > 0.93 ? Math.min(waitingPeak - waitingMobilePeak, 1) : 0;
+  const waitingDesktopPeak = Math.max(0, waitingPeak - waitingMobilePeak - waitingUnknownPeak);
+
   return {
     schemaVersion: 1,
     timestampMs,
@@ -112,6 +121,9 @@ function buildRow(timestampMs, resolutionSeconds, index, restartCount) {
     activeConnections: series(activePeak, Math.round(pairedMean * 2)),
     waitingSlots: series(waitingPeak, Math.max(0, Math.round(waitingPeak * 0.6))),
     pairedSlots: series(pairedPeak, pairedMean),
+    waitingDesktop: series(waitingDesktopPeak, Math.round(waitingDesktopPeak * 0.6)),
+    waitingMobile: series(waitingMobilePeak, Math.round(waitingMobilePeak * 0.6)),
+    waitingUnknown: series(waitingUnknownPeak, Math.round(waitingUnknownPeak * 0.6)),
     cpuPercent: series(
       Math.round(load * 26 * jitter * burst * 10) / 10,
       Math.round(load * 15 * jitter * 10) / 10,
@@ -168,8 +180,10 @@ function startTraffic(relayUrl, pairCount) {
   const sockets = [];
   for (let pair = 0; pair < pairCount; pair += 1) {
     const slot = `${pair}`.padStart(2, '0').repeat(32).slice(0, 64);
-    const peerA = new WebSocket(`${relayUrl}?slot=${slot}`);
-    const peerB = new WebSocket(`${relayUrl}?slot=${slot}`);
+    // Each half reports its role, so the live tile shows a real split rather
+    // than every peer landing in 'unknown'.
+    const peerA = new WebSocket(`${relayUrl}?slot=${slot}&role=desktop`);
+    const peerB = new WebSocket(`${relayUrl}?slot=${slot}&role=mobile`);
     sockets.push(peerA, peerB);
     peerA.on('error', () => undefined);
     peerB.on('error', () => undefined);
