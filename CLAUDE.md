@@ -80,7 +80,7 @@ scripts/
 
 ### The wire contract (fixed, defined by the desktop client, not this repo)
 
-A client dials `${relayUrl}?slot=<64-char-hex>` with no subprotocol, no headers, no hello
+A client dials `${relayUrl}?slot=<32-or-64-char-hex>` with no subprotocol, no headers, no hello
 frame. The relay pairs exactly two connections presenting the same slot and forwards binary
 messages between them byte-for-byte. See `README.md`'s "The blind-relay guarantee" section.
 

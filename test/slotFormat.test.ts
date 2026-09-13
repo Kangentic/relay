@@ -3,36 +3,40 @@ import { isValidSlotId } from '../src/guards/slotFormat.js';
 import { loadConfig } from '../src/config.js';
 
 // The shipped default, not a hand-copied regex: these tests lock the real
-// out-of-the-box behavior, including the 32-hex ongoing-session slot that
-// @kangentic/protocol's deriveSessionSlotId produces.
+// out-of-the-box behavior at both accepted lengths. Current clients derive
+// both the pairing slot and the ongoing-session slot as 16 bytes, so both
+// arrive as 32 hex. The default also accepts 64 hex, the shape a
+// pre-protocol-v0.12.0 client dialed when the slot id was the pairing token
+// hex-encoded; no current client produces it and the pattern has simply never
+// been narrowed.
 const DEFAULT_PATTERN = loadConfig({}).slotIdPattern;
-const VALID_PAIRING_SLOT = 'a'.repeat(64);
-const VALID_SESSION_SLOT = 'b'.repeat(32);
+const VALID_LEGACY_SLOT = 'a'.repeat(64);
+const VALID_DERIVED_SLOT = 'b'.repeat(32);
 
 describe('isValidSlotId', () => {
-  it('accepts a 64-char lowercase hex pairing slot', () => {
-    expect(isValidSlotId(VALID_PAIRING_SLOT, DEFAULT_PATTERN)).toBe(true);
+  it('accepts the legacy 64-char lowercase hex slot', () => {
+    expect(isValidSlotId(VALID_LEGACY_SLOT, DEFAULT_PATTERN)).toBe(true);
   });
 
-  it('accepts a 32-char lowercase hex session slot', () => {
-    expect(isValidSlotId(VALID_SESSION_SLOT, DEFAULT_PATTERN)).toBe(true);
+  it('accepts the 32-char lowercase hex slot current clients derive', () => {
+    expect(isValidSlotId(VALID_DERIVED_SLOT, DEFAULT_PATTERN)).toBe(true);
   });
 
   it('rejects the empty string', () => {
     expect(isValidSlotId('', DEFAULT_PATTERN)).toBe(false);
   });
 
-  it('rejects a slot shorter than the session length', () => {
+  it('rejects a slot shorter than the derived length', () => {
     expect(isValidSlotId('a'.repeat(31), DEFAULT_PATTERN)).toBe(false);
   });
 
-  it('rejects lengths between the session and pairing slot sizes', () => {
+  it('rejects lengths between the two accepted sizes', () => {
     expect(isValidSlotId('a'.repeat(33), DEFAULT_PATTERN)).toBe(false);
     expect(isValidSlotId('a'.repeat(48), DEFAULT_PATTERN)).toBe(false);
     expect(isValidSlotId('a'.repeat(63), DEFAULT_PATTERN)).toBe(false);
   });
 
-  it('rejects a slot longer than the pairing length', () => {
+  it('rejects a slot longer than the legacy length', () => {
     expect(isValidSlotId('a'.repeat(65), DEFAULT_PATTERN)).toBe(false);
   });
 

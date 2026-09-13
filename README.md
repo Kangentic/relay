@@ -38,11 +38,14 @@ Kangentic's own hosted one, can still observe:
 Two further disclosures, because "blind to content" is easy to over-read:
 
 - **The slot id travels in the request URL**, and on Kangentic's hosted instance TLS is terminated
-  at Cloudflare, so Cloudflare sees it. For a first-time pairing the slot id doubles as the
-  handshake's pre-shared key, which makes that key material passing through a third party. It does
-  *not* let them impersonate a peer - that needs the desktop's static public key, which never
-  crosses the relay - but the pre-shared key contributes nothing against an observer at that layer.
-  Self-hosting without Cloudflare removes that party.
+  at Cloudflare, so Cloudflare sees it. The slot id is a routing label, not key material: the
+  clients derive it, and the pairing token that serves as the handshake's pre-shared key never
+  leaves the QR code. Seeing the slot does *not* let them read a session or impersonate a peer
+  (that needs the desktop's static public key, which never crosses the relay), and because the
+  token stays off the wire the `psk0` contribution does still hold against an observer at that
+  layer. What it does give them is the pairing graph one layer earlier, plus a bearer credential
+  for that rendezvous: whoever reads a slot id can race for it and deny that pairing. Self-hosting
+  without Cloudflare removes that party.
 - **The reconnect slot id is stable for the life of a pairing**, so an operator can correlate one
   device's reconnects over time.
 
@@ -126,7 +129,7 @@ All configuration is environment variables, documented fully in `.env.example`. 
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `8080` | Port for both the HTTP health/metrics routes and the WebSocket upgrade. |
-| `SLOT_ID_PATTERN` | `^([0-9a-f]{32}\|[0-9a-f]{64})$` | Format the relay requires of a slot id before it will even try to rendezvous it. Accepts the 64-hex pairing slot and the 32-hex ongoing-session slot. **Security-relevant default:** the slot id is the only pairing credential, and its entropy (not the rate limits below) is what makes it unguessable. Narrowing this to a short or low-entropy shape makes slots enumerable regardless of every other setting. |
+| `SLOT_ID_PATTERN` | `^([0-9a-f]{32}\|[0-9a-f]{64})$` | Format the relay requires of a slot id before it will even try to rendezvous it. Current clients derive both the pairing slot and the ongoing-session slot as 16 bytes, so both arrive as 32 hex. The default also accepts 64 hex, the shape a pre-`protocol-v0.12.0` client dialed when the slot id was the pairing token hex-encoded; no current client produces it and the pattern has simply never been narrowed. **Security-relevant default:** the slot id is the only pairing credential, and its entropy (not the rate limits below) is what makes it unguessable. Narrowing this to a short or low-entropy shape makes slots enumerable regardless of every other setting. |
 | `MAX_CONNECTIONS` / `MAX_CONNECTIONS_PER_IP` / `MAX_CONNECTIONS_PER_SLOT` | `10000` / `20` / `2` | Connection caps: global, per resolved IP, and per slot. |
 | `MAX_UNPAIRED_CONNECTIONS` | half of `MAX_CONNECTIONS` | Ceiling on connections that have not yet found a partner, so a flood of parked sockets cannot consume the global cap and starve pairings that would otherwise succeed. A connection releases its place here the moment it pairs. Must be at least 2. |
 | `RATE_LIMIT_IP_PER_MIN` / `RATE_LIMIT_IP_BURST` | `120` / `40` | New-connection rate limit per resolved IP, as a token bucket refilling per minute with a burst allowance. A cost and abuse control, not an anti-enumeration one: a previously unseen key starts with a full burst. |
