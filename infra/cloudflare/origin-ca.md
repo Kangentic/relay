@@ -29,10 +29,12 @@ the steps only.
 
 The cert and key are never committed. They are stored as the GitHub
 `production` environment secrets `CF_ORIGIN_CERT_PEM` and
-`CF_ORIGIN_KEY_PEM`, and `scripts/deploy/deploy.sh` writes them to
+`CF_ORIGIN_KEY_PEM`, and `deploy.yml`'s `write-secret` verb writes them to
 `/opt/relay/secrets/origin.crt` (mode 644) and
-`/opt/relay/secrets/origin.key` (mode 600) on every deploy, then reloads
-Caddy if they changed.
+`/opt/relay/secrets/origin.key` (mode 600) on every deploy. `deploy.sh`
+then reloads Caddy on its success path so the new cert takes effect -
+but only on a deploy that does not exit at the skip gate. See Rotation
+below.
 
 ## Rotation
 
@@ -55,6 +57,25 @@ ssh deploy@relay-ashburn-us-east.kangentic.com \
 To rotate: repeat the minting steps above for a new certificate, update
 the two GitHub environment secrets, then trigger a manual deploy
 (`workflow_dispatch` on `deploy.yml`) to push the new cert to the box.
+
+**Then reload Caddy explicitly.** The cert and key go to
+`/opt/relay/secrets`, never to `/opt/relay/.env`, so they do not move the
+environment fingerprint `deploy.sh` uses to decide whether anything
+changed. If nothing else has changed since the last deploy, that
+`workflow_dispatch` exits at the skip gate and never reaches the
+`caddy reload` on the success path: the new cert lands on disk, the run
+reports green, and the running Caddy keeps serving the old certificate.
+This was masked until 2026-09-13 by a stale skip-check baseline that made
+every same-ref redeploy recreate the container.
+
+```
+ssh deploy@relay-ashburn-us-east.kangentic.com \
+  "docker compose --env-file /opt/relay/.env -f /opt/relay/src/infra/compose/docker-compose.prod.yml exec -T caddy caddy reload --config /etc/caddy/Caddyfile"
+```
+
+Confirm with the `openssl x509 ... -enddate` check above, which reads the
+file on disk, and note that it passing does **not** prove the running
+Caddy picked the cert up.
 
 ## What is deliberately not used
 

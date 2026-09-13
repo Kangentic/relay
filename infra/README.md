@@ -167,9 +167,23 @@ readable from inside the box, so user-data is treated as public. Secrets arrive 
 through a second forced-command verb on the ci-deploy key:
 `write-secret <env|origin-cert|origin-key>`, which reads stdin and writes it atomically to a fixed,
 allowlisted path. `deploy.yml` composes the `.env` file from the `production` environment's secrets
-and vars and pushes it, along with the Origin CA cert and key, before every deploy - so rotating any
-of them (a new `METRICS_TOKEN`, a renewed Origin CA cert) is just: update the GitHub secret, then
-trigger a deploy (`workflow_dispatch` works if there is no code change to publish).
+and vars and pushes it, along with the Origin CA cert and key, before every deploy.
+
+Rotating a value that lives in `.env` (a new `METRICS_TOKEN`) is just: update the GitHub secret,
+then trigger a deploy (`workflow_dispatch` works if there is no code change to publish). The new
+value changes the environment fingerprint, so that deploy recreates the relay rather than skipping.
+
+**Rotating the Origin CA cert needs one extra step, and did not before.** The cert and key are
+written to `/opt/relay/secrets`, never to `/opt/relay/.env`, so they do not move the environment
+fingerprint. Since the skip-when-unchanged baseline was corrected, a `workflow_dispatch` with
+nothing else changed since the last deploy exits at the skip gate and so never reaches the
+`caddy reload` on `deploy.sh`'s success path - the new cert lands on disk, the run reports green,
+and the running Caddy keeps serving the old one. Reload it explicitly after the rotation deploy:
+
+```
+ssh deploy@relay-ashburn-us-east.kangentic.com \
+  "docker compose --env-file /opt/relay/.env -f /opt/relay/src/infra/compose/docker-compose.prod.yml exec -T caddy caddy reload --config /etc/caddy/Caddyfile"
+```
 
 ## Deploy and rollback
 
@@ -186,16 +200,34 @@ or the rollback drill - run `deploy.yml` directly via `workflow_dispatch` with a
 
 **Rollback target is a registry digest, never a tag.** Tags are mutable; a re-pushed tag would roll
 back to the wrong bits. The digest is read from the currently running container
-(`docker inspect --format '{{index .RepoDigests 0}}'`) before anything changes, and the git ref to
-roll back to comes from git's own reflog (`HEAD@{1}`, "HEAD before the checkout the wrapper just
-did") - both are reality, not a hand-maintained file that could drift. `state/last_good` is written
-only after a successful deploy, as an audit trail and a cold-start fallback.
+(`docker inspect --format '{{index .RepoDigests 0}}'`) before anything changes - that is reality,
+not a hand-maintained file that could drift.
+
+**The git ref to roll back to comes from `state/last_good`'s second line**, written after the last
+successful deploy and therefore, by definition, the tree the running container was built from. A
+container records no such thing, so there is no reality to read it off. `HEAD@{1}` ("HEAD before the
+checkout the wrapper just did") is a fallback only, for a cold start with no `last_good` yet.
+
+> `HEAD@{1}` used to be the primary source, and it is wrong whenever the wrapper's checkout is a
+> no-op: **git writes no reflog entry when HEAD already points at the requested ref**, so redeploying
+> the ref already on the box leaves `HEAD@{1}` pointing one deploy further back. The 2026-09-13
+> rollback drill restored the 0.3.2 *image* onto the 0.3.1 *tree* for exactly this reason, and the
+> same stale baseline made the skip check below always recreate on a same-ref redeploy instead of
+> skipping. Both are fixed; `last_good` is no longer only an audit trail.
 
 **The health gate is a conjunction of three conditions**, evaluated on the box over loopback: the
 serving container id changed, its image digest matches what was just pulled, and both the Docker
 healthcheck and a direct host probe on `127.0.0.1:8080` report healthy. The first condition alone
 would pass against the old container still answering 200, which is why `/healthz` cannot be trusted
 in isolation.
+
+**A deploy that does change something recreates the relay container exactly once.** Caddy declares
+`depends_on: [relay]`, so the `docker compose up -d caddy` that guarantees Caddy exists on a cold
+start must pass `--no-deps`. Without it, that `up` pulls relay in as a dependency and recreates it
+because `RELAY_IMAGE_REF` has just changed, and then the explicit `--force-recreate relay` recreates
+it a second time - dropping every live session twice per deploy, silently. The 2026-09-13 rollback
+drill made this visible: four relay containers, three recreates, one of which lived 70 ms. Do not
+drop the `--no-deps`.
 
 **A deploy that changes nothing skips the restart**, so a docs-only release does not drop every
 live session for no reason. "Changes nothing" is a conjunction of three inputs, and the distinction
