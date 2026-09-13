@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-13
+
 ### Added
 
 - **The `/admin` dashboard can finally say *which* side is failing to pair.** `waitingSlots` was one
