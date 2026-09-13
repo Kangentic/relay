@@ -8,9 +8,12 @@
 # Usage: deploy.sh <image-tag> [drill-mode]
 #   image-tag   a tag published by release.yml, e.g. sha-<full sha> or
 #               vX.Y.Z. Never `latest` - deploys are always by an
-#               immutable tag so a re-deploy of the same code is
-#               guaranteed to recreate the container, which the health
-#               gate's "container identity changed" check depends on.
+#               immutable tag, so once the skip gate below has decided
+#               something actually changed, the recreate is guaranteed to
+#               produce a new container, which the health gate's
+#               "container identity changed" check depends on. A redeploy
+#               that changes nothing exits at the skip gate instead and
+#               never reaches the health gate at all.
 #   drill-mode  none (default) | healthcheck | port - see
 #               infra/compose/docker-compose.drill-*.yml and
 #               infra/README.md.
@@ -63,17 +66,38 @@ container_digest() {
 
 install -d -m 0755 "$state_dir"
 
-# Reality is the source of truth for rollback, not a hand-maintained file:
-# the previous image digest comes from the currently running container,
-# and the previous git ref comes from git's own reflog (HEAD@{1} is
-# exactly "HEAD before the checkout the wrapper just did"). last_good is
-# written only as a cold-start fallback and audit trail below.
+# The previous image digest comes from reality - the container actually
+# running right now - and not from a file that could drift.
 prev_container_id="$(compose ps -q relay || true)"
 prev_digest=""
 if [ -n "$prev_container_id" ]; then
   prev_digest="$(container_digest "$prev_container_id")"
 fi
-prev_git_ref="$(git -C "$repo_root" rev-parse "HEAD@{1}" 2>/dev/null || echo "")"
+
+# The previous git ref has no equivalent in reality: a container does not
+# record the tree it was deployed from. So it comes from state/last_good's
+# second line, written only after a SUCCESSFUL deploy and therefore by
+# definition the ref the running container was built from.
+#
+# HEAD@{1} ("HEAD before the checkout the wrapper just did") is the fallback
+# only, because it is WRONG whenever that checkout was a no-op: git writes no
+# reflog entry when HEAD already points at the requested ref, so redeploying
+# the ref already on the box leaves HEAD@{1} pointing one deploy further back.
+# The 2026-09-13 rollback drill hit exactly this and restored the 0.3.2 image
+# onto the 0.3.1 tree. It also made the skip-when-unchanged check below
+# compare against the wrong baseline, so a redeploy of unchanged code always
+# recreated instead of skipping.
+prev_git_ref=""
+if [ -r "$last_good_file" ]; then
+  recorded_git_ref="$(sed -n '2p' "$last_good_file" 2>/dev/null || echo "")"
+  if [ -n "$recorded_git_ref" ] \
+    && git -C "$repo_root" rev-parse --verify --quiet "${recorded_git_ref}^{commit}" >/dev/null; then
+    prev_git_ref="$recorded_git_ref"
+  fi
+fi
+if [ -z "$prev_git_ref" ]; then
+  prev_git_ref="$(git -C "$repo_root" rev-parse "HEAD@{1}" 2>/dev/null || echo "")"
+fi
 
 echo "deploying image_tag=$image_tag drill=$drill (previous digest: ${prev_digest:-none})"
 
@@ -168,7 +192,17 @@ wait_for_gate() {
 # Ensures Caddy exists on a cold-start deploy without ever bouncing it on
 # a routine deploy: `up -d` only creates or starts a service, it does not
 # recreate one that is already running unchanged.
-compose up -d caddy
+#
+# --no-deps is load-bearing, and its absence was a live bug. Caddy declares
+# `depends_on: [relay]`, so a bare `up -d caddy` pulls relay into the same
+# `up` and recreates it whenever its desired config differs from what is
+# running - which is EVERY deploy, because RELAY_IMAGE_REF has just changed.
+# Every live session was therefore dropped twice per deploy: once here, and
+# again on the explicit --force-recreate below. Measured on the 2026-09-13
+# rollback drill, which produced three recreates where the drill path intends
+# two (one forward deploy, one rollback). One of the extra containers lived
+# 70 ms.
+compose up -d --no-deps caddy
 
 # The relay recreate is scoped to `relay` only (via --force-recreate on
 # just this service), so an already-running Caddy is never dropped or

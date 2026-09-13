@@ -21,6 +21,40 @@ All notable changes to this project are documented in this file. The format is b
   accepts 64 hex, the shape a pre-`protocol-v0.12.0` client dialed when the slot id was the pairing
   token hex-encoded; no current client produces it and the pattern has simply never been narrowed.
   The pattern itself is unchanged.
+- **Every deploy that restarted the relay dropped all live sessions twice instead of once**
+  (a deploy that exits at the skip gate never reaches this code). `infra/compose/docker-compose.prod.yml`
+  gives Caddy `depends_on: [relay]`, so the `docker compose up -d caddy` that exists only to
+  guarantee Caddy is present on a cold start pulled the relay into the same `up`. Because
+  `RELAY_IMAGE_REF` has just changed by that point, compose saw the running relay as out of sync
+  and recreated it, and then the explicit `--force-recreate relay` on the next line recreated it
+  again. `deploy.sh` now passes `--no-deps` on that call. The comment it replaces reasoned
+  correctly about never bouncing Caddy and simply did not account for the dependency edge pointing
+  the other way. Found by the 2026-09-13 rollback drill, which produced three recreates where the
+  script intends two (one deploy, one rollback), leaving four relay containers; one of them lived
+  70 ms.
+
+- **A rollback could restore the right image onto the wrong source tree.** The git ref to roll back
+  to was read from `HEAD@{1}`, on the reasoning that it is "HEAD before the checkout the wrapper
+  just did". That holds only when the checkout actually moves HEAD. Git writes no reflog entry when
+  HEAD already points at the requested ref, so redeploying the ref already on the box left
+  `HEAD@{1}` pointing one deploy further back. The 2026-09-13 drill restored the 0.3.2 image onto
+  the 0.3.1 tree, and `rollback()` recreates the container from that tree's compose file, which is
+  the file declaring the `relay_history` volume. No history was lost, because the volume
+  declaration predates both refs, but the exposure was real. The ref now comes from
+  `state/last_good`'s second line, written after the last successful deploy and therefore by
+  definition the tree the running container was built from; `HEAD@{1}` remains the cold-start
+  fallback.
+
+- **A redeploy of unchanged code always recreated the container instead of skipping.** Same root
+  cause: the stale `HEAD@{1}` was also the baseline for the skip-when-unchanged `git diff`, so a
+  same-ref redeploy diffed against one deploy too far back, found changes, and dropped every live
+  session. With the baseline corrected this now skips as designed.
+
+  **Operator-visible consequence.** Re-dispatching `deploy.yml` with the currently deployed
+  `image_tag` and no other change is now a genuine no-op that reports success, where it previously
+  recreated the container as an accident of the stale baseline. If you were using a redeploy to
+  force a relay restart, that no longer works. Changing anything in `/opt/relay/.env` still forces
+  a recreate via the environment fingerprint, and `drill=healthcheck` still always recreates.
 
 ## [0.3.2] - 2026-08-08
 

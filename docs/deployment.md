@@ -75,7 +75,9 @@ deploy.yml (runner)
        -> exec scripts/deploy/deploy.sh <image-tag> <drill-mode>
             -> skip check (git diff against the previous deploy's ref)
             -> compose pull
-            -> compose up -d caddy          (idempotent: only starts if missing)
+            -> compose up -d --no-deps caddy  (idempotent; without --no-deps,
+                                              relay is pulled in as a
+                                              dependency and recreated too)
             -> compose up -d --force-recreate relay   (scoped to relay only)
             -> health gate (up to 60s)
             -> on failure: rollback to the previous digest
@@ -109,22 +111,35 @@ alone. The digest check remains the actual gate.
 The rollback target is a **registry digest, never a tag** — tags are mutable, so a rollback keyed
 on a tag could restore the wrong bits if that tag was ever re-pushed. The previous digest is read
 from the container that's *actually running* right before the new deploy touches anything
-(`container_digest()` again), and the previous git ref comes from git's own reflog
-(`HEAD@{1}` — "HEAD before the checkout the wrapper just did"). Both are reality, not a
-hand-maintained file that could drift out of sync.
+(`container_digest()` again). That one is reality, not a hand-maintained file that could drift
+out of sync.
 
-`state/last_good` is written only *after* a gate passes, as an audit trail and a cold-start
-fallback — never the primary source for an active rollback decision.
+The previous **git ref** has no equivalent in reality, because a container does not record the
+tree it was built from. It comes from `state/last_good`'s second line, written only after a gate
+passes and therefore, by definition, the ref the running container was deployed from.
+
+`HEAD@{1}` ("HEAD before the checkout the wrapper just did") is now only the cold-start fallback.
+It was the primary source until 2026-09-13, and it is wrong whenever the wrapper's checkout is a
+no-op: git writes no reflog entry when HEAD already points at the requested ref, so redeploying
+the ref already on the box leaves `HEAD@{1}` one deploy stale. The rollback drill restored the
+0.3.2 image onto the 0.3.1 tree because of it.
 
 ### Skip when unchanged
 
 Before pulling anything, `deploy.sh` runs `git diff --quiet` between the previously deployed git
-ref and the current `HEAD`, scoped to the exact paths the Dockerfile reads (`Dockerfile`,
+ref (see Rollback above for where that ref comes from, and why it is no longer `HEAD@{1}`) and the
+current `HEAD`, scoped to the exact paths the Dockerfile reads (`Dockerfile`,
 `.dockerignore`, `package.json`, `package-lock.json`, `tsconfig*.json`, `src`). If none of them
 changed and this isn't a drill, it exits immediately without pulling or touching the container. A
 docs-only merge (markdown, `infra/`, `scripts/deploy/deploy.sh` itself, workflow YAML - none of
 which affect the built image) then correctly skips, so a documentation change doesn't drop every
 live session for no reason.
+
+Because the baseline ref was stale until 2026-09-13, a redeploy of the ref already on the box used
+to diff against one deploy too far back and recreate the container every time. It now skips, which
+means **re-dispatching the currently deployed `image_tag` with nothing else changed is a genuine
+no-op**. It is no longer a way to force a relay restart. Changing `/opt/relay/.env` still forces a
+recreate through the environment fingerprint, and a drill always recreates.
 
 This is **not** decided by comparing image digests, and that distinction matters: the original
 design did exactly that, and it does not work. `docker/metadata-action`'s default labels include
