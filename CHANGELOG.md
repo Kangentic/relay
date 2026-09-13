@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Fixed
+
+- **The docs overstated this relay's own risk.** `README.md` and `docs/security-model.md` claimed
+  that for a first-time pairing the slot id doubles as the handshake's pre-shared key, and that key
+  material therefore passes through whatever terminates TLS. That stopped being true when the
+  clients began deriving the slot: `@kangentic/protocol`'s `derivePairingSlotId` is a labeled hash
+  of the pairing token, so the token, which is the actual Noise PSK, never leaves the QR code. The
+  slot id is a routing label and a bearer credential for that rendezvous, not key material, and the
+  `psk0` contribution does hold against an observer who reads the request URL. What such an observer
+  gets is the pairing graph one layer earlier and the ability to deny a pairing, both of which were
+  already disclosed. No code, config default, or wire behaviour changed.
+- The `SLOT_ID_PATTERN` docs had the two slot lengths backwards. Current clients derive both the
+  pairing slot and the ongoing-session slot as 16 bytes, so both arrive as 32 hex. The default also
+  accepts 64 hex, the shape a pre-`protocol-v0.12.0` client dialed when the slot id was the pairing
+  token hex-encoded; no current client produces it and the pattern has simply never been narrowed.
+  The pattern itself is unchanged.
+
 ## [0.3.2] - 2026-08-08
 
 ### Fixed

@@ -39,6 +39,10 @@ import {
 import { startTestRelay, type RelayHarness } from './helpers/relayHarness.js';
 import { connectTestClient, type TestClient } from './helpers/wsClient.js';
 
+// 64 hex, the legacy shape. Current clients derive a 32-hex session slot, but
+// holding this length here is what keeps end-to-end coverage of the other
+// branch the default SLOT_ID_PATTERN accepts. The relay is blind to what a
+// slot means, so only its length is ever in play.
 function randomSlot(): string {
   return nodeRandomBytes(32).toString('hex');
 }
@@ -145,11 +149,13 @@ describe('real @kangentic/protocol handshake through the relay', () => {
   it('completes a Noise IKpsk0 first pairing across the pre-pair buffer, blind to the relay', async () => {
     relay = await startTestRelay();
 
-    // For a first-time pairing the slot id doubles as the handshake's
-    // pre-shared key (README, "Honest metadata disclosure"), so mint one
-    // 32-byte secret and use it as both, exactly as the QR payload does.
+    // The slot id is a routing label, never the PSK: the desktop derives it
+    // from the pairing token (@kangentic/protocol's derivePairingSlotId) so
+    // the token itself never leaves the QR code. The published devDependency
+    // predates that helper, so substitute an independent value of the same
+    // 16-byte shape. Being unrelated to the token is the whole point.
     const pairingToken = nodeRandomBytes(32);
-    const slot = pairingToken.toString('hex');
+    const slot = nodeRandomBytes(16).toString('hex');
 
     const phoneStatic = generateX25519KeyPair();
     const desktopStatic = generateX25519KeyPair();
