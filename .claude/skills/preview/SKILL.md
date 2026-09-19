@@ -22,10 +22,11 @@ seeds a realistic file first.
 
 `scripts/preview.mjs`:
 
-1. Seeds `.kangentic/preview-history.ndjson` (gitignored) with roughly 11k rows spanning 40
+1. Seeds `.kangentic/preview-history.ndjson` (gitignored) with roughly 17k rows spanning 40
    days, **already tiered** the way a long-running relay's file actually looks: hourly rows
-   beyond 30 days, 5-minute rows from 30 days to 48 hours, 1-minute rows for the last 48 hours.
-   So the `1h` through `1y` range buttons all have real data behind them.
+   beyond 30 days, 5-minute rows from 30 days to 7 days, 1-minute rows for the last 7 days. The
+   tier edges are imported from `src/history/rows.ts`, so a retention change moves the seed with
+   it. So the `1h` through `1y` range buttons all have real data behind them.
 2. Includes day/night load cycles, occasional bursts, restart markers, and a sprinkle of
    rejects and teardowns, so every chart and the restart rules have something to draw.
 3. Starts a real relay in-process with `ADMIN_ENABLED=true` pointed at that file, sampling
@@ -67,10 +68,13 @@ than drifting into a comfortable lie.
      with no build step, so a runtime error there is invisible everywhere else
    If no pane is open, `kangentic_browser_list_panes` returns an empty list; ask the user to
    open one rather than guessing at the result.
-5. Walk the range buttons (`1h`, `6h`, `48h`, `30d`, `1y`) and the **Table view** toggle. The
-   range buttons exercise different retention tiers and different code paths: `1h` and `6h` are
-   fine-tier rows, `30d` crosses into aggregated rows where `mean` becomes non-null, and `1y`
-   pulls all three tiers at once.
+5. Walk the range buttons (`1h`, `6h`, `24h`, `7d`, `30d`, `1y`) and the **Table view** toggle.
+   The range buttons exercise different retention tiers and different code paths: `1h` through
+   `7d` are fine-tier rows, `30d` crosses the fine/mid edge into aggregated rows where `mean`
+   becomes non-null (hover the older three quarters of a chart for `peak (avg N)` and the
+   newest week for the bare peak), and `1y` pulls all three tiers at once. The table view
+   shows only the 500 newest rows, so its `Res` column reads `1m` on every range at steady
+   state.
 6. Stop the background process when done.
 
 ## What to actually check

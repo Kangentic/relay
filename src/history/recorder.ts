@@ -29,11 +29,11 @@ const APPEND_FAILURE_LOG_SUPPRESSION_MS = 60 * 60 * 1000;
 const DEFAULT_RING_CAPACITY = 120;
 /**
  * Matched to MAX_HISTORY_ROW_COUNT, because a widest-range read spans all three
- * tiers at once, not just the hourly one: roughly 2880 fine plus 8000 mid plus
- * 8000 coarse. A smaller cap here would silently drop the oldest half of a
- * "1 year" request after about a month of uptime, which is ordinary rather than
- * pathological. A range read is a rare operator action, not a poll, so the
- * larger bounded payload is the right trade.
+ * tiers at once, not just the hourly one: roughly 10,000 fine plus 6,600 mid
+ * plus 8,000 coarse. A smaller cap here would silently drop the oldest part of
+ * a "1 year" request after about a month of uptime, which is ordinary rather
+ * than pathological. A range read is a rare operator action, not a poll, so
+ * the larger bounded payload is the right trade.
  */
 const MAX_RESPONSE_ROW_COUNT = MAX_HISTORY_ROW_COUNT;
 /** Consecutive failed compactions before the log moves from warn to error. */

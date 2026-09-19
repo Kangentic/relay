@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Changed
+
+- **The `/admin` dashboard keeps 1-minute history for 7 days instead of 48 hours.** The
+  2026-09-18 router-restart incident (Kangentic/kangentic#690) was readable only because the
+  dashboard was opened within two days: the diagnosis needed one-minute edges (the reap minute, the
+  return minute, four short pairings in a five-minute span) that the 5-minute tier which follows
+  cannot show, and resolution only ever increases, so a row folded early has lost them for good. The
+  5-minute and hourly tiers are unchanged. The history file settles at roughly 25k rows rather than
+  20k, still a few MB, and the `7d` range now returns a uniform week of raw rows. The row ceiling
+  that backstops a forward clock step rises from 20k to 28k with it: it is enforced by dropping the
+  oldest rows, so left at 20k it would have quietly trimmed the hourly tier back to about four and a
+  half months, and a test now pins the ceiling above the tier arithmetic.
+
+### Operator notes
+
+- **The extra detail arrives over the week after the deploy, not at once.** Rows already folded
+  into the 5-minute tier between two and seven days old stay that way, since aggregation is
+  one-way. From the deploy on, new rows keep full detail for seven days, so the `7d` range is
+  fully 1-minute after seven days of uptime. Nothing to do.
+
 ## [0.3.3] - 2026-09-13
 
 ### Added

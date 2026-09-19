@@ -6,11 +6,13 @@ import {
   bucketStartMs,
   buildHistoryRow,
   COARSE_RESOLUTION_SECONDS,
+  COARSE_RETENTION_MS,
   deriveClosedByCause,
   effectiveResolutionSeconds,
   FINE_RETENTION_MS,
   FINE_RESOLUTION_SECONDS,
   HISTORY_SCHEMA_VERSION,
+  MAX_HISTORY_ROW_COUNT,
   MID_RESOLUTION_SECONDS,
   MID_RETENTION_MS,
   parseHistoryRow,
@@ -226,6 +228,17 @@ describe('tiering', () => {
     expect(targetResolutionSecondsForAge(MID_RETENTION_MS + 1)).toBe(COARSE_RESOLUTION_SECONDS);
   });
 
+  it('keeps a week-old incident at one-minute detail, and nothing older', () => {
+    // The fine window is a documented promise (README, CHANGELOG, .env.example
+    // all say "7 days"), not an implementation detail. Every other assertion
+    // in this file derives its expectation from FINE_RETENTION_MS, so a revert
+    // to 48 hours or a silent widening would move the expectation with it and
+    // nothing would go red. This one pins the promise in days.
+    const dayMs = 24 * 60 * 60 * 1000;
+    expect(targetResolutionSecondsForAge(7 * dayMs)).toBe(FINE_RESOLUTION_SECONDS);
+    expect(targetResolutionSecondsForAge(8 * dayMs)).toBe(MID_RESOLUTION_SECONDS);
+  });
+
   it('never lowers the resolution of a row, whatever the clock says', () => {
     // Re-bucketing an hourly row into 5-minute buckets would fabricate detail
     // that was already discarded.
@@ -238,6 +251,23 @@ describe('tiering', () => {
     // Epoch alignment is what makes compaction idempotent.
     expect(bucketStartMs(1_700_000_123_456, MID_RESOLUTION_SECONDS)).toBe(1_700_000_100_000);
     expect(bucketStartMs(1_700_000_100_000, MID_RESOLUTION_SECONDS)).toBe(1_700_000_100_000);
+  });
+
+  it('keeps the steady-state row count under the ceiling, so the backstop never trims the hourly tier', () => {
+    // MAX_HISTORY_ROW_COUNT is enforced inside compaction by dropping the
+    // OLDEST rows. If the three tiers add up to more than it, every hourly
+    // compaction silently shortens "1 year" instead of catching clock steps.
+    // Widening any tier must widen the ceiling with it.
+    const fineRowCount = FINE_RETENTION_MS / (FINE_RESOLUTION_SECONDS * 1000);
+    const midRowCount = (MID_RETENTION_MS - FINE_RETENTION_MS) / (MID_RESOLUTION_SECONDS * 1000);
+    const coarseRowCount = (COARSE_RETENTION_MS - MID_RETENTION_MS) / (COARSE_RESOLUTION_SECONDS * 1000);
+    const steadyStateRowCount = fineRowCount + midRowCount + coarseRowCount;
+
+    expect(steadyStateRowCount).toBeLessThan(MAX_HISTORY_ROW_COUNT);
+    // Some headroom is the whole point of a backstop: a forward clock step
+    // writes future-dated rows that never age out, and they need room to land
+    // before the ceiling starts eating real history. A day's worth is the floor.
+    expect(MAX_HISTORY_ROW_COUNT - steadyStateRowCount).toBeGreaterThanOrEqual(24 * 60);
   });
 });
 

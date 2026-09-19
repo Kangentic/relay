@@ -26,7 +26,14 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { loadConfig } from '../src/config.js';
 import { createRelay } from '../src/server.js';
-import { serializeHistoryRow } from '../src/history/rows.js';
+import {
+  COARSE_RESOLUTION_SECONDS,
+  FINE_RESOLUTION_SECONDS,
+  FINE_RETENTION_MS,
+  MID_RESOLUTION_SECONDS,
+  MID_RETENTION_MS,
+  serializeHistoryRow,
+} from '../src/history/rows.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -144,7 +151,9 @@ function buildRow(timestampMs, resolutionSeconds, index, restartCount) {
 
 /**
  * Writes the file a long-running relay would actually hold: already compacted
- * into the three retention tiers, not raw 1-minute rows all the way back.
+ * into the three retention tiers, not raw 1-minute rows all the way back. The
+ * tier edges come from the relay's own constants, so a retention change moves
+ * the seed with it rather than leaving the preview checking a stale layout.
  */
 async function seedHistory(historyPath, days) {
   const now = Date.now();
@@ -152,9 +161,9 @@ async function seedHistory(historyPath, days) {
   let index = 0;
 
   const tiers = [
-    { resolutionSeconds: 3600, fromMs: days * 86_400_000, toMs: 30 * 86_400_000 },
-    { resolutionSeconds: 300, fromMs: 30 * 86_400_000, toMs: 48 * 3_600_000 },
-    { resolutionSeconds: 60, fromMs: 48 * 3_600_000, toMs: 0 },
+    { resolutionSeconds: COARSE_RESOLUTION_SECONDS, fromMs: days * 86_400_000, toMs: MID_RETENTION_MS },
+    { resolutionSeconds: MID_RESOLUTION_SECONDS, fromMs: MID_RETENTION_MS, toMs: FINE_RETENTION_MS },
+    { resolutionSeconds: FINE_RESOLUTION_SECONDS, fromMs: FINE_RETENTION_MS, toMs: 0 },
   ];
 
   for (const tier of tiers) {

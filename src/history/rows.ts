@@ -17,16 +17,32 @@ export const FINE_RESOLUTION_SECONDS: HistoryResolutionSeconds = 60;
 export const MID_RESOLUTION_SECONDS: HistoryResolutionSeconds = 300;
 export const COARSE_RESOLUTION_SECONDS: HistoryResolutionSeconds = 3600;
 
-/** 1-minute rows for 48h, 5-minute for 30d, hourly for 1 year. ~20k rows. */
-export const FINE_RETENTION_MS = 48 * 60 * 60 * 1000;
+/**
+ * 1-minute rows for 7 days, 5-minute for 30d, hourly for 1 year. Roughly 25k
+ * rows at steady state; see MAX_HISTORY_ROW_COUNT for the arithmetic.
+ *
+ * A week of fine rows, not two days, because an incident is read at the
+ * one-minute edges (the reap minute, the return minute, a run of short
+ * pairings) and the 5-minute tier cannot show them. Resolution only ever
+ * increases, so once a row is folded the detail is gone; the fine window is
+ * how long there is to notice.
+ */
+export const FINE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const MID_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const COARSE_RETENTION_MS = 365 * 24 * 60 * 60 * 1000;
 
 /**
  * Backstop for the case tiering cannot handle: a forward clock step writes
  * rows dated in the future, which then stay "young" and never age out.
+ *
+ * It is enforced, not advisory: compaction drops the OLDEST rows past it. So
+ * it must sit above the steady-state sum of the three tiers, or it trims the
+ * hourly tier every hour instead of catching clock steps. That sum is
+ * 7d x 1440 fine + 23d x 288 mid + 335d x 24 coarse = 10,080 + 6,624 + 8,040
+ * = 24,744, leaving about 3,250 rows (2.3 days) of future-dated headroom.
+ * test/history.rows.test.ts asserts the relationship.
  */
-export const MAX_HISTORY_ROW_COUNT = 20_000;
+export const MAX_HISTORY_ROW_COUNT = 28_000;
 
 /**
  * A sampled series. On a raw row `mean` is null, because a point sample is its

@@ -170,7 +170,7 @@ describe('/admin when enabled', () => {
 
     // METRICS_HISTORY_INTERVAL_MS is configurable, and rows already on disk
     // were written under whatever it used to be. Judging them by the CURRENT
-    // interval would blank two days of charts the moment it is raised.
+    // interval would blank a week of charts the moment it is raised.
     expect(trustworthyAtInterval(300_000)(raw(60_000))).toBe(true);
     expect(trustworthyAtInterval(300_000)(raw(200))).toBe(false);
     expect(trustworthyAtInterval(15_000)(raw(60_000))).toBe(true);
