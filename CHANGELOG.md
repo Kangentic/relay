@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-09-19
+
 ### Added
 
 - **The `/admin` Table view now carries the columns an incident read actually needs.** Reading the
