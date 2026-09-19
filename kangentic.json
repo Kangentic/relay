@@ -35,11 +35,20 @@
       "color": "#f59e0b",
       "autoSpawn": true,
       "permissionMode": "auto",
-      "autoCommand": "/code-review {{baseBranch}}",
       "modelOverride": "claude-opus-5",
       "effortOverride": "high",
       "sessionTarget": "isolated",
-      "sessionSpawnStrategy": "always_spawn_new"
+      "sessionSpawnStrategy": "always_spawn_new",
+      "automations": {
+        "onEnter": [
+          {
+            "name": "Message",
+            "type": "send_message",
+            "message": "/code-review {{baseBranch}}",
+            "mode": "immediate"
+          }
+        ]
+      }
     },
     {
       "id": "1af21c24-d084-488b-a5af-6fb3be2c8d66",
@@ -48,9 +57,18 @@
       "color": "#06b6d4",
       "autoSpawn": true,
       "permissionMode": "auto",
-      "autoCommand": "/pull-request",
       "modelOverride": "claude-sonnet-5",
-      "effortOverride": "high"
+      "effortOverride": "high",
+      "automations": {
+        "onEnter": [
+          {
+            "name": "Message",
+            "type": "send_message",
+            "message": "/pull-request",
+            "mode": "immediate"
+          }
+        ]
+      }
     },
     {
       "id": "89d4eb55-77e9-4cc6-9c45-a8bdad88579a",
@@ -59,9 +77,18 @@
       "color": "#f97316",
       "autoSpawn": true,
       "permissionMode": "auto",
-      "autoCommand": "/merge-pull-request",
       "modelOverride": "claude-sonnet-5",
-      "effortOverride": "high"
+      "effortOverride": "high",
+      "automations": {
+        "onEnter": [
+          {
+            "name": "Message",
+            "type": "send_message",
+            "message": "/merge-pull-request",
+            "mode": "immediate"
+          }
+        ]
+      }
     },
     {
       "id": "1174f0a9-67f8-4ba7-84d2-8e0f5b74be03",
@@ -70,9 +97,18 @@
       "icon": "rocket",
       "color": "#ff002b",
       "autoSpawn": true,
-      "autoCommand": "/release",
       "modelOverride": "claude-sonnet-5",
-      "effortOverride": "high"
+      "effortOverride": "high",
+      "automations": {
+        "onEnter": [
+          {
+            "name": "Message",
+            "type": "send_message",
+            "message": "/release",
+            "mode": "immediate"
+          }
+        ]
+      }
     },
     {
       "id": "c9949f18-97f4-41aa-94a6-eeb30c0fe58a",
@@ -80,40 +116,6 @@
       "role": "done",
       "icon": "circle-check-big",
       "color": "#10b981"
-    }
-  ],
-  "actions": [
-    {
-      "id": "1e97db4a-744d-45da-b07f-aea4564054bb",
-      "name": "Kill Session",
-      "type": "kill_session",
-      "config": {}
-    },
-    {
-      "id": "bd1e179d-0526-48c0-80cd-01634f792928",
-      "name": "Start Planning Agent",
-      "type": "spawn_agent",
-      "config": {
-        "agent": "claude",
-        "promptTemplate": "{{task_xml}}{{attachments}}"
-      }
-    }
-  ],
-  "transitions": [
-    {
-      "from": "*",
-      "to": "Done",
-      "actions": [
-        "Kill Session"
-      ]
-    },
-    {
-      "from": "*",
-      "to": "Planning",
-      "actions": [
-        "Kill Session",
-        "Start Planning Agent"
-      ]
     }
   ],
   "_modifiedBy": "7ef4fd0cb484"
