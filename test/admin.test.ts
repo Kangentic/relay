@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startTestRelay, type RelayHarness } from './helpers/relayHarness.js';
 import { connectTestClient } from './helpers/wsClient.js';
+import type { RejectReason } from '../src/closeCodes.js';
 import { PEER_ROLES } from '../src/guards/peerRole.js';
 import { ADMIN_PAGE_HTML } from '../src/http/adminPage.js';
 import type { Logger } from '../src/logging.js';
@@ -56,6 +57,42 @@ function pageFunction(names: readonly string[], returned: string): (intervalMs: 
     'intervalMs',
     `var state = { meta: { intervalMs: intervalMs } };\n${bodies.join('\n')}\nreturn ${returned};`,
   ) as (intervalMs: number) => unknown;
+}
+
+/**
+ * Runs the page's own renderTable over the given rows and returns the markup
+ * it wrote. "The script parses" proves nothing about whether a column renders;
+ * this is the closest thing to a browser the unit tier has, and it needs only
+ * the one DOM call renderTable makes.
+ */
+function renderTableOver(rows: readonly Record<string, unknown>[], rangeMs: number, timeZone: string | null): string {
+  const bodies = [
+    'LIVE_RANGE',
+    'DAY_MS',
+    'NAMED_REJECTS',
+    'fmtCount',
+    'fmtBytes',
+    'fmtTime',
+    'zoneLabel',
+    'esc',
+    'sumValues',
+    'rejectBreakdown',
+    'perSecond',
+    'plotRows',
+    'renderTable',
+  ].map(pageDeclaration);
+  const run = new Function(
+    'rows',
+    'rangeMs',
+    'timeZone',
+    `var host = { hidden: false, innerHTML: "" };
+var document = { getElementById: function () { return host; } };
+var state = { meta: { intervalMs: 60000 }, table: true, rows: rows, liveRows: [], rangeMs: rangeMs, timeZone: timeZone };
+${bodies.join('\n')}
+renderTable();
+return host.innerHTML;`,
+  ) as (rows: readonly Record<string, unknown>[], rangeMs: number, timeZone: string | null) => string;
+  return run(rows, rangeMs, timeZone);
 }
 
 function httpBase(harness: RelayHarness): string {
@@ -208,6 +245,111 @@ describe('/admin when enabled', () => {
     // A payload from a relay that predates the split still reads correctly
     // rather than throwing or printing "undefined".
     expect(waitingNote({ waitingSlots: 2 })).toBe('2 waiting to pair');
+  });
+
+  it('formats times in the zone it is given, so the UTC toggle actually moves the clock', () => {
+    // fmtTime takes the zone as a parameter precisely so this can run it. The
+    // epoch sits half an hour past midnight UTC: in UTC that is the 18th, five
+    // hours west it is still the 17th, and the day number is the one part of
+    // a localized date that reads the same in every locale a CI runner might
+    // have. Nothing here compares the local branch against UTC, because on a
+    // runner whose zone is UTC they are legitimately identical.
+    type FormatTime = (ms: number, rangeMs: number, timeZone: string | null) => string;
+    const fmtTime = pageFunction(['LIVE_RANGE', 'DAY_MS', 'fmtTime'], 'fmtTime')(60_000) as FormatTime;
+    const justPastMidnightUtc = Date.UTC(2026, 8, 18, 0, 30);
+    const thirtyDays = 30 * 86_400_000;
+
+    expect(fmtTime(justPastMidnightUtc, thirtyDays, 'UTC')).toContain('18');
+    expect(fmtTime(justPastMidnightUtc, thirtyDays, 'Etc/GMT+5')).toContain('17');
+    // The multi-day branch (48h) prints month, day and hour, and the day is
+    // again what a five-hour shift carries across midnight.
+    const twoDays = 2 * 86_400_000;
+    expect(fmtTime(justPastMidnightUtc, twoDays, 'UTC')).toContain('18');
+    expect(fmtTime(justPastMidnightUtc, twoDays, 'Etc/GMT+5')).toContain('17');
+    // The live and sub-day branches take the zone too; the hour is what moves,
+    // so the same instant must print differently five hours apart. Minutes
+    // alone would not prove it: a whole-hour offset never changes them, so a
+    // branch that dropped the zone would still pass on a runner in any
+    // whole-hour zone, which is nearly all of them.
+    expect(fmtTime(justPastMidnightUtc, 0, 'UTC')).toContain('30:00');
+    expect(fmtTime(justPastMidnightUtc, 0, 'UTC')).not.toBe(fmtTime(justPastMidnightUtc, 0, 'Etc/GMT+5'));
+    expect(fmtTime(justPastMidnightUtc, 3_600_000, 'UTC')).toContain('30');
+    expect(fmtTime(justPastMidnightUtc, 3_600_000, 'UTC')).not.toBe(fmtTime(justPastMidnightUtc, 3_600_000, 'Etc/GMT+5'));
+    // Null means the browser's own zone and must not throw.
+    expect(typeof fmtTime(justPastMidnightUtc, thirtyDays, null)).toBe('string');
+
+    // The header label: the toggled zone verbatim, otherwise whatever short
+    // name Intl gives the runner's own zone. Which one is not asserted, since
+    // CI and a developer machine legitimately differ; that it is a non-empty
+    // string and never "undefined" is.
+    const zoneLabel = pageFunction(['zoneLabel'], 'zoneLabel')(60_000) as (timeZone: string | null) => string;
+    expect(zoneLabel('UTC')).toBe('UTC');
+    expect(zoneLabel(null)).toMatch(/^.+$/);
+    expect(zoneLabel(null)).not.toBe('undefined');
+  });
+
+  it('folds every reject reason it does not name into other, including ones it has never seen', () => {
+    // The history file accepts any key it finds on disk, so a reason added to
+    // the relay after this page was written must still be counted somewhere
+    // visible rather than silently dropped from the row.
+    type Breakdown = (rejects: Record<string, number> | undefined) => {
+      named: number[];
+      other: number;
+      otherParts: string[];
+    };
+    const rejectBreakdown = pageFunction(['NAMED_REJECTS', 'rejectBreakdown'], 'rejectBreakdown')(60_000) as Breakdown;
+
+    const split = rejectBreakdown({
+      park_timeout: 4,
+      probe_evicted: 1,
+      // Deliberately out of order: the tooltip sorts, and a fixture that
+      // arrived already sorted would not notice if it stopped.
+      some_future_reason: 2,
+      rate_limit_ip: 3,
+      admission: 0,
+    });
+    // Named columns land in NAMED_REJECTS order; an absent key reads zero.
+    expect(split.named).toEqual([4, 0, 1]);
+    expect(split.other).toBe(5);
+    // Sorted, humanized, and without the zero-valued key: that is what the
+    // tooltip shows, and a "0" entry would only pad it.
+    expect(split.otherParts).toEqual(['rate limit ip 3', 'some future reason 2']);
+
+    expect(rejectBreakdown({})).toEqual({ named: [0, 0, 0], other: 0, otherParts: [] });
+    expect(rejectBreakdown(undefined)).toEqual({ named: [0, 0, 0], other: 0, otherParts: [] });
+
+    // NAMED_REJECTS is a hand-typed copy inside the page script, where a typo
+    // would crash nothing: the column would read zero forever while the real
+    // count folded into Other. Typing the expected list as RejectReason makes
+    // tsc catch the typo, and the equality catches the two lists drifting.
+    const namedRejects: readonly RejectReason[] = ['park_timeout', 'slot_busy', 'probe_evicted'];
+    expect(pageFunction(['NAMED_REJECTS'], 'NAMED_REJECTS')(60_000)).toEqual(namedRejects);
+  });
+
+  it('gives the table the columns an incident read needs and names the zone in its header', async () => {
+    // Reading the 2026-09-18 incident took a fetch of /admin/data and a
+    // script, because the fields that carried the story were JSON-only.
+    relay = await startTestRelay({ adminEnabled: true });
+    const html = await (await fetch(`${httpBase(relay)}/admin`)).text();
+
+    for (const header of ['Peer closed', 'Pong timeouts', 'Park timeout', 'Slot busy', 'Probe evicted', '>Other<']) {
+      expect(html).toContain(header);
+    }
+    // The Time header carries the zone, and the toggle is the one control that
+    // changes it. Default is the browser's own zone: not pressed.
+    expect(html).toContain('zoneLabel(state.timeZone)');
+    expect(html).toContain('id="zoneToggle" aria-pressed="false"');
+    // The charts follow the same toggle: axis labels and the hover caption go
+    // through the same zone-aware call as the table cells. Nothing in this
+    // tier can draw a chart, so the call sites are pinned by text.
+    expect(html).toContain('fmtTime(pts[at].t, state.rangeMs, state.timeZone)');
+    expect(html).toContain('fmtTime(pts[idx].t, state.rangeMs, state.timeZone)');
+    // The hint states what the layout cannot: the two teardown columns are
+    // inside Teardowns, a probe eviction is counted in both namespaces, and
+    // the reject-derived teardown causes make Teardowns and Rejects overlap.
+    expect(html).toContain('two of the causes inside Teardowns');
+    expect(html).toContain('counted as both a pong timeout and a probe_evicted reject');
+    expect(html).toContain('Teardowns and Rejects overlap on those as well');
   });
 
   it('lists the same roles the relay reports, so a fourth cannot vanish from the tile', async () => {
@@ -497,6 +639,10 @@ describe('/admin when enabled', () => {
       'bytesForwardedDelta',
       'connectionsDelta',
       'sessionsDelta',
+      // The table's Peer closed and Pong timeouts columns read these directly,
+      // not through closedByCause.
+      'peerClosedDelta',
+      'pongTimeoutsDelta',
       'rejectsByReasonDelta',
       'closedByCause',
       'maxOutboundBufferBytes',
@@ -517,6 +663,75 @@ describe('/admin when enabled', () => {
     expect(payload.live).toHaveProperty('waitingSlotsByRole.desktop');
     expect(payload.live).toHaveProperty('waitingSlotsByRole.mobile');
     expect(payload.live).toHaveProperty('waitingSlotsByRole.unknown');
+  });
+
+  it('renders the table over rows the relay actually served, with the new columns filled in', async () => {
+    // The field-parity test above proves the names exist on the wire; this
+    // proves the page turns them into cells. The row is one the endpoint
+    // really produced, with only the counters under test overridden, so the
+    // shape cannot drift from what the browser will be handed.
+    directory = await mkdtemp(join(tmpdir(), 'relay-admin-'));
+    relay = await startTestRelay({
+      adminEnabled: true,
+      metricsHistoryPath: join(directory, 'history.ndjson'),
+      metricsHistoryIntervalMs: 1_000,
+    });
+    const base = httpBase(relay);
+
+    let payload = { rows: [] as Record<string, unknown>[] };
+    const deadline = Date.now() + 6_000;
+    while (payload.rows.length === 0 && Date.now() < deadline) {
+      payload = (await (await fetch(`${base}/admin/data?range=3600000`)).json()) as typeof payload;
+    }
+    const served = payload.rows[0];
+    if (served === undefined) throw new Error('expected a row');
+
+    const row = {
+      ...served,
+      peerClosedDelta: 3,
+      pongTimeoutsDelta: 2,
+      rejectsByReasonDelta: { park_timeout: 4, probe_evicted: 1, rate_limit_ip: 5, some_future_reason: 1 },
+      closedByCause: { ...(served['closedByCause'] as Record<string, number>), peerClosed: 3, heartbeat: 2, parkTimeout: 4 },
+    };
+
+    const html = renderTableOver([row], 3_600_000, 'UTC');
+    const headers = [...html.matchAll(/<th[^>]*>([^<]*)<\/th>/g)].map((match) => match[1]);
+    expect(headers).toEqual([
+      'Time (UTC)', 'Res', 'Active peak', 'Active avg', 'Paired peak', 'Waiting', 'Frames/s', 'Bytes/s', 'Conns', 'Sessions',
+      'Teardowns', 'Peer closed', 'Pong timeouts', 'Rejects', 'Park timeout', 'Slot busy', 'Probe evicted', 'Other',
+      'CPU %', 'Loop p99', 'RSS %',
+    ]);
+
+    const cells = [...html.matchAll(/<td([^>]*)>([^<]*)<\/td>/g)].map((match) => ({ attributes: match[1] ?? '', text: match[2] ?? '' }));
+    expect(cells).toHaveLength(headers.length);
+    const byHeader = (name: string) => cells[headers.indexOf(name)];
+    expect(byHeader('Teardowns')?.text).toBe('9');
+    expect(byHeader('Peer closed')?.text).toBe('3');
+    expect(byHeader('Pong timeouts')?.text).toBe('2');
+    expect(byHeader('Rejects')?.text).toBe('11');
+    expect(byHeader('Park timeout')?.text).toBe('4');
+    // Absent on the row, so it renders as a muted zero rather than "n/a".
+    expect(byHeader('Slot busy')?.text).toBe('0');
+    expect(byHeader('Slot busy')?.attributes).toContain('class="zero"');
+    expect(byHeader('Probe evicted')?.text).toBe('1');
+    // The fold, with its split in the tooltip and the unknown reason kept.
+    expect(byHeader('Other')?.text).toBe('6');
+    expect(byHeader('Other')?.attributes).toContain('title="rate limit ip 5, some future reason 1"');
+
+    // With nothing to fold, Other is a muted zero with no tooltip at all; an
+    // empty title would show as a blank hover box.
+    const namedOnlyHtml = renderTableOver([{ ...row, rejectsByReasonDelta: { park_timeout: 4 } }], 3_600_000, 'UTC');
+    const namedOnlyCells = [...namedOnlyHtml.matchAll(/<td([^>]*)>([^<]*)<\/td>/g)].map((match) => ({ attributes: match[1] ?? '', text: match[2] ?? '' }));
+    const namedOnlyOther = namedOnlyCells[headers.indexOf('Other')];
+    expect(namedOnlyOther?.text).toBe('0');
+    expect(namedOnlyOther?.attributes).toBe(' class="zero"');
+
+    // The zone reaches the cell, not just the header: five hours apart, the
+    // same instant prints a different hour.
+    const westernHtml = renderTableOver([row], 3_600_000, 'Etc/GMT+5');
+    const timeCell = (markup: string) => markup.match(/<td>([^<]*)<\/td>/)?.[1];
+    expect(timeCell(westernHtml)).not.toBe(timeCell(html));
+    expect(westernHtml).toContain('<th>Time (Etc/GMT+5)</th>');
   });
 
   it('samples live connection queue depth into the recorded rows', async () => {

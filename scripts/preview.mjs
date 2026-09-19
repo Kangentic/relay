@@ -97,6 +97,16 @@ function buildRow(timestampMs, resolutionSeconds, index, restartCount) {
   if (pseudoRandom(index * 3.3) > 0.94) rejects.park_timeout = Math.ceil(load * 3);
   if (pseudoRandom(index * 5.1) > 0.985) rejects.rate_limit_ip = 1;
   if (pseudoRandom(index * 9.4) > 0.995) rejects.backpressure = 1;
+  // The two contention reasons the table names, so its columns are not all
+  // zero in the only visual review path, plus one key the page has never
+  // heard of so the "other" fold and its tooltip are exercised too.
+  if (pseudoRandom(index * 6.8) > 0.99) rejects.slot_busy = 1;
+  if (pseudoRandom(index * 8.2) > 0.993) rejects.probe_evicted = 1;
+  if (pseudoRandom(index * 11.7) > 0.997) rejects.some_future_reason = 1;
+  // A probe eviction is a failed ping first, so the relay counts it as a pong
+  // timeout as well; the seeded rows keep that invariant or the table's own
+  // hint would be contradicted by the preview.
+  const pongTimeouts = (pseudoRandom(index * 2.2) > 0.97 ? 1 : 0) + (rejects.probe_evicted ?? 0);
 
   const series = (peak, mean) => ({ maximum: peak, mean: aggregated ? mean : null });
 
@@ -123,7 +133,7 @@ function buildRow(timestampMs, resolutionSeconds, index, restartCount) {
     framesForwardedDelta: Math.round(framesPerMinute * minutes),
     bytesForwardedDelta: Math.round(framesPerMinute * minutes * 640),
     peerClosedDelta: Math.round(load * 3 * minutes * jitter),
-    pongTimeoutsDelta: pseudoRandom(index * 2.2) > 0.97 ? 1 : 0,
+    pongTimeoutsDelta: pongTimeouts,
     rejectsByReasonDelta: rejects,
     activeConnections: series(activePeak, Math.round(pairedMean * 2)),
     waitingSlots: series(waitingPeak, Math.max(0, Math.round(waitingPeak * 0.6))),

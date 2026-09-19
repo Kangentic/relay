@@ -68,13 +68,14 @@ than drifting into a comfortable lie.
      with no build step, so a runtime error there is invisible everywhere else
    If no pane is open, `kangentic_browser_list_panes` returns an empty list; ask the user to
    open one rather than guessing at the result.
-5. Walk the range buttons (`1h`, `6h`, `24h`, `7d`, `30d`, `1y`) and the **Table view** toggle.
-   The range buttons exercise different retention tiers and different code paths: `1h` through
-   `7d` are fine-tier rows, `30d` crosses the fine/mid edge into aggregated rows where `mean`
-   becomes non-null (hover the older three quarters of a chart for `peak (avg N)` and the
-   newest week for the bare peak), and `1y` pulls all three tiers at once. The table view
-   shows only the 500 newest rows, so its `Res` column reads `1m` on every range at steady
-   state.
+5. Walk the range buttons (`1h`, `6h`, `24h`, `7d`, `30d`, `1y`), the **Table view** toggle and
+   the **UTC** toggle. The range buttons exercise different retention tiers and different code
+   paths: `1h` through `7d` are fine-tier rows, `30d` crosses the fine/mid edge into aggregated
+   rows where `mean` becomes non-null (hover the older three quarters of a chart for
+   `peak (avg N)` and the newest week for the bare peak), and `1y` pulls all three tiers at once.
+   The table view shows only the 500 newest rows, so its `Res` column reads `1m` on every range
+   at steady state. The UTC toggle rebuilds the charts and the table, so check it on a chart
+   range as well as with the table open.
 6. Stop the background process when done.
 
 ## What to actually check
@@ -89,7 +90,15 @@ than drifting into a comfortable lie.
 - Dark mode. The palette has separate light and dark steps, and three light-mode series sit
   below 3:1 contrast, which is why the legend and table view exist. Toggle your OS theme and
   re-screenshot; do not assume the dark values were validated just because the light ones were.
-- `Table view` renders and its numbers agree with the charts.
+- `Table view` renders and its numbers agree with the charts. Its Time header names the zone
+  (`Time (CDT)` or similar) and flips to `Time (UTC)` with the toggle; the chart axis labels and
+  hover tooltip shift by the same offset. On a raw tier (`1h` through `7d`), where counts are
+  small enough to add by eye, `Peer closed + Pong timeouts` never exceeds `Teardowns`,
+  `Park timeout` never exceeds `Teardowns` either (it is a reject that is also counted as a
+  teardown cause, so the two totals are not disjoint), and the four reject columns sum to
+  `Rejects`; on `1y` the aggregated counts abbreviate (`1.2k`), so check containment there only
+  loosely. Hovering a non-zero `Other` cell lists the split (the seeder plants `slot_busy`,
+  `probe_evicted` and one unknown reason so none of those columns are all-zero).
 
 ## Scope and limits
 

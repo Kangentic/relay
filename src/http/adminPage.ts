@@ -349,6 +349,7 @@ td.zero { color: var(--text-muted); }
       </span>
     </button>
     <button id="tableToggle" aria-pressed="false">Table view</button>
+    <button id="zoneToggle" aria-pressed="false" title="Show every time on this page in UTC instead of this browser's zone">UTC</button>
   </div>
 
   <div class="tiles" id="tiles"></div>
@@ -385,7 +386,11 @@ td.zero { color: var(--text-muted); }
   // Live by default: the first question on opening an operations page is
   // almost always "what is it doing right now", and the seed below means that
   // view is a full fifteen minutes on first paint rather than a blank chart.
-  var state = { rangeMs: LIVE_RANGE, cursorMs: 0, rows: [], live: null, meta: null, table: false, timer: null, failures: 0, instanceId: null, lastUpdateMs: 0, statusText: "connecting", statusClass: "",
+  // timeZone is null for the browser's own zone and "UTC" once the toggle is
+  // pressed. Not persisted, like the range and the table view: an incident
+  // read is a one-off, and the next visit should open the way a colleague's
+  // screenshot would.
+  var state = { rangeMs: LIVE_RANGE, cursorMs: 0, rows: [], live: null, meta: null, table: false, timeZone: null, timer: null, failures: 0, instanceId: null, lastUpdateMs: 0, statusText: "connecting", statusClass: "",
     liveRows: [], previousLive: null, previousLiveAtMs: 0 };
   // Loopback only. Under tsx watch the relay restarts on every source edit, and
   // a new instance id is the signal that the page being displayed is stale.
@@ -430,20 +435,69 @@ td.zero { color: var(--text-muted); }
     if (h > 0) return h + "h " + m + "m";
     return m + "m";
   }
-  function fmtTime(ms) {
+  // rangeMs and timeZone are parameters rather than reads of state so the
+  // function can be lifted out of the page and run by the unit tests, which
+  // stub state with nothing but meta. timeZone is null for the browser's own
+  // zone; Intl treats an undefined option as absent.
+  function fmtTime(ms, rangeMs, timeZone) {
     var d = new Date(ms);
+    var zone = timeZone || undefined;
     // Seconds only matter on the live view; anywhere else they are noise.
-    if (state.rangeMs === LIVE_RANGE) {
-      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    if (rangeMs === LIVE_RANGE) {
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: zone });
     }
-    if (state.rangeMs > 7 * DAY_MS) return d.toLocaleDateString([], { month: "short", day: "numeric" });
-    if (state.rangeMs > DAY_MS) return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit" });
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (rangeMs > 7 * DAY_MS) return d.toLocaleDateString([], { month: "short", day: "numeric", timeZone: zone });
+    if (rangeMs > DAY_MS) return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", timeZone: zone });
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: zone });
+  }
+  // The name the Time header shows. A screenshot pasted into an issue has to
+  // carry its zone, and "local" is exactly the word that does not say which.
+  function zoneLabel(timeZone) {
+    if (timeZone) return timeZone;
+    try {
+      var parts = new Intl.DateTimeFormat([], { timeZoneName: "short" }).formatToParts(new Date());
+      for (var partIndex = 0; partIndex < parts.length; partIndex++) {
+        if (parts[partIndex].type === "timeZoneName" && parts[partIndex].value) return parts[partIndex].value;
+      }
+    } catch (error) { /* fall through to the generic word */ }
+    return "local";
   }
   function esc(s) {
     return String(s).replace(/[&<>"]/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
     });
+  }
+  function sumValues(record) {
+    var total = 0;
+    for (var key in record) total += record[key];
+    return total;
+  }
+
+  /**
+   * The reject reasons the table gives their own column. Everything else folds
+   * into one "other" cell whose tooltip lists the split, so the row stays
+   * readable while no reason is ever hidden. Computed from the keys actually
+   * on the row rather than from a copy of the RejectReason union: the history
+   * file accepts any key it finds on disk, and a reason this page has never
+   * heard of must land in "other" rather than vanish.
+   */
+  var NAMED_REJECTS = ["park_timeout", "slot_busy", "probe_evicted"];
+  function rejectBreakdown(rejects) {
+    rejects = rejects || {};
+    var named = [];
+    for (var nameIndex = 0; nameIndex < NAMED_REJECTS.length; nameIndex++) {
+      named.push(rejects[NAMED_REJECTS[nameIndex]] || 0);
+    }
+    var otherParts = [];
+    var other = 0;
+    var keys = Object.keys(rejects).sort();
+    for (var keyIndex = 0; keyIndex < keys.length; keyIndex++) {
+      var key = keys[keyIndex];
+      if (NAMED_REJECTS.indexOf(key) !== -1 || !rejects[key]) continue;
+      other += rejects[key];
+      otherParts.push(key.replace(/_/g, " ") + " " + rejects[key]);
+    }
+    return { named: named, other: other, otherParts: otherParts };
   }
 
   function perSecond(row, key) {
@@ -769,7 +823,7 @@ td.zero { color: var(--text-muted); }
       var at = labelCount === 1 ? 0 : Math.round((tick / (labelCount - 1)) * (pts.length - 1));
       var anchor = tick === 0 ? "start" : tick === labelCount - 1 ? "end" : "middle";
       svg += '<text x="' + xAt(at).toFixed(1) + '" y="' + (H - 8) + '" text-anchor="' + anchor +
-        '" font-size="13" fill="' + css("--text-muted") + '">' + esc(fmtTime(pts[at].t)) + '</text>';
+        '" font-size="13" fill="' + css("--text-muted") + '">' + esc(fmtTime(pts[at].t, state.rangeMs, state.timeZone)) + '</text>';
     }
     // A class, not an id: several charts share this document, and duplicate
     // ids would be invalid markup even though the subtree query still works.
@@ -799,7 +853,7 @@ td.zero { color: var(--text-muted); }
       // matter how short the window was, and captioning an exact number with a
       // data-quality warning is the opposite of what this caption is for.
       var shortWindow = pts[idx].partial && pts[idx].gap;
-      var html = '<div class="when">' + esc(fmtTime(pts[idx].t)) + (pts[idx].restart ? " &middot; restart" : "") +
+      var html = '<div class="when">' + esc(fmtTime(pts[idx].t, state.rangeMs, state.timeZone)) + (pts[idx].restart ? " &middot; restart" : "") +
         (shortWindow ? " &middot; partial window" : "") + "</div>";
       for (var k = 0; k < spec.series.length; k++) {
         var value = pts[idx].values[k], meanValue = pts[idx].means[k];
@@ -1215,29 +1269,48 @@ td.zero { color: var(--text-muted); }
     var rows = plotRows().slice(-500).reverse();
     // Peak and average are separate columns rather than one cell, because the
     // gap between them is the whole point on an aggregated row.
+    // The teardown and reject sub-columns sit directly after the total they
+    // belong to, so containment reads off the layout: Peer closed and Pong
+    // timeouts are two of the causes inside Teardowns, and the four reject
+    // columns sum to Rejects exactly. The hint states what the layout cannot:
+    // the units differ, a probe eviction is counted twice, and the teardown
+    // causes buildClosedByCause derives from reject reasons (park timeout,
+    // backpressure, parked overflow, the session caps) appear under Rejects
+    // as well, so the two totals are not disjoint.
     var html = '<div class="card"><h2>Table view</h2><p class="hint">Most recent ' + rows.length +
       ' sampled intervals, newest first. Rates are derived from each row\\u2019s own window, so a short or aggregated row is still correct. ' +
-      'Peak and avg differ only on aggregated rows (30d and 1y); shorter ranges are raw point samples.</p>' +
+      'Peak and avg differ only on aggregated rows (30d and 1y); shorter ranges are raw point samples. ' +
+      'Peer closed and pong timeouts are two of the causes inside Teardowns rather than additions to it, ' +
+      'and their units differ: peer closed counts pairs, pong timeouts counts sockets. ' +
+      'A probe eviction is counted as both a pong timeout and a probe_evicted reject, so those two columns overlap. ' +
+      'Teardowns also includes the rejects that end a connection after it was admitted: park timeout in its own column, ' +
+      'plus backpressure, parked overflow and the session caps inside Other, so Teardowns and Rejects overlap on those as well.</p>' +
       '<div class="tablewrap"><table><thead><tr>' +
-      "<th>Time</th><th>Res</th><th>Active peak</th><th>Active avg</th><th>Paired peak</th><th>Waiting</th>" +
-      "<th>Frames/s</th><th>Bytes/s</th><th>Conns</th><th>Sessions</th><th>Teardowns</th><th>Rejects</th>" +
+      "<th>Time (" + esc(zoneLabel(state.timeZone)) + ")</th><th>Res</th><th>Active peak</th><th>Active avg</th><th>Paired peak</th><th>Waiting</th>" +
+      "<th>Frames/s</th><th>Bytes/s</th><th>Conns</th><th>Sessions</th><th>Teardowns</th>" +
+      '<th title="Counted once per pair. One of the causes inside Teardowns.">Peer closed</th>' +
+      '<th title="Counted once per socket. One of the causes inside Teardowns; a probe eviction counts here and under Probe evicted.">Pong timeouts</th>' +
+      "<th>Rejects</th>" +
+      '<th title="A parked socket whose peer never arrived within the park timeout. Also counted inside Teardowns.">Park timeout</th>' +
+      "<th>Slot busy</th>" +
+      '<th title="A paired incumbent that failed the liveness probe when a newcomer contended the slot. Also counted as a pong timeout.">Probe evicted</th>' +
+      '<th title="Every reject reason other than the three named. Hover a cell for the split.">Other</th>' +
       "<th>CPU %</th><th>Loop p99</th><th>RSS %</th></tr></thead><tbody>";
 
-    function cell(value, formatted) {
-      return '<td' + (value ? '' : ' class="zero"') + ">" + formatted + "</td>";
-    }
-    function sumValues(record) {
-      var total = 0;
-      for (var key in record) total += record[key];
-      return total;
+    // attributes is already-escaped markup for the opening tag, or nothing.
+    function cell(value, formatted, attributes) {
+      return '<td' + (value ? '' : ' class="zero"') + (attributes || "") + ">" + formatted + "</td>";
     }
 
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
       var teardowns = sumValues(r.closedByCause);
       var rejects = sumValues(r.rejectsByReasonDelta);
+      var breakdown = rejectBreakdown(r.rejectsByReasonDelta);
+      // Attribute context: esc escapes the double quote too, see renderTiles.
+      var otherTitle = breakdown.otherParts.length ? ' title="' + esc(breakdown.otherParts.join(", ")) + '"' : "";
       var resolution = r.resolutionSeconds >= 3600 ? r.resolutionSeconds / 3600 + "h" : r.resolutionSeconds / 60 + "m";
-      html += '<tr' + (r.restartCount > 0 ? ' class="restart"' : "") + '><td>' + esc(fmtTime(r.timestampMs)) +
+      html += '<tr' + (r.restartCount > 0 ? ' class="restart"' : "") + '><td>' + esc(fmtTime(r.timestampMs, state.rangeMs, state.timeZone)) +
         (r.restartCount > 0 ? " &middot; restart" : "") + "</td><td>" + resolution + "</td>" +
         cell(r.activeConnections.maximum, fmtCount(r.activeConnections.maximum)) +
         cell(r.activeConnections.mean, r.activeConnections.mean === null ? "n/a" : fmtCount(r.activeConnections.mean)) +
@@ -1248,7 +1321,13 @@ td.zero { color: var(--text-muted); }
         cell(r.connectionsDelta, fmtCount(r.connectionsDelta)) +
         cell(r.sessionsDelta, fmtCount(r.sessionsDelta)) +
         cell(teardowns, fmtCount(teardowns)) +
+        cell(r.peerClosedDelta, fmtCount(r.peerClosedDelta)) +
+        cell(r.pongTimeoutsDelta, fmtCount(r.pongTimeoutsDelta)) +
         cell(rejects, fmtCount(rejects)) +
+        cell(breakdown.named[0], fmtCount(breakdown.named[0])) +
+        cell(breakdown.named[1], fmtCount(breakdown.named[1])) +
+        cell(breakdown.named[2], fmtCount(breakdown.named[2])) +
+        cell(breakdown.other, fmtCount(breakdown.other), otherTitle) +
         cell(r.cpuPercent, r.cpuPercent ? fmtCount(r.cpuPercent.maximum) : "n/a") +
         cell(r.eventLoopLagP99Ms, r.eventLoopLagP99Ms === null ? "n/a" : fmtCount(r.eventLoopLagP99Ms)) +
         cell(r.rssPercent, r.rssPercent === null ? "n/a" : fmtCount(r.rssPercent)) +
@@ -1521,6 +1600,17 @@ td.zero { color: var(--text-muted); }
   document.getElementById("tableToggle").addEventListener("click", function (event) {
     state.table = !state.table;
     event.target.setAttribute("aria-pressed", state.table ? "true" : "false");
+    render();
+  });
+
+  // Page-wide, not table-only: the desktop logs and NIC events an incident is
+  // cross-referenced against are UTC, and a chart hover reading local while
+  // the table under it reads UTC would defeat exactly that read. A rebuild is
+  // required for the same reason the theme switch rebuilds: axis labels are
+  // baked into the SVG string when the chart is drawn.
+  document.getElementById("zoneToggle").addEventListener("click", function (event) {
+    state.timeZone = state.timeZone ? null : "UTC";
+    event.target.setAttribute("aria-pressed", state.timeZone ? "true" : "false");
     render();
   });
 
