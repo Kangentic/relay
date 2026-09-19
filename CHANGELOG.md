@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- **The `/admin` Table view now carries the columns an incident read actually needs.** Reading the
+  2026-09-18 pairing incident from the dashboard took a fetch of `/admin/data` and a script, because
+  the table showed only aggregate `Teardowns` and `Rejects` while the fields that told the story
+  were JSON-only. `Teardowns` is now followed by `Peer closed` and `Pong timeouts`, and `Rejects` by
+  `Park timeout`, `Slot busy`, `Probe evicted` and `Other`, where `Other` folds every remaining
+  reason (including any the page has never heard of) and lists the split in its tooltip. The table
+  states what the layout cannot: the two teardown columns are causes *inside* `Teardowns` with
+  different units (peer closed counts pairs, pong timeouts counts sockets); a probe eviction is
+  counted as both a pong timeout and a `probe_evicted` reject, so those columns overlap; and the
+  rejects that end an admitted connection (park timeout, backpressure, parked overflow, the session
+  caps) are counted inside `Teardowns` as well, so the two totals are not disjoint. No new counters
+  and no change to the JSON shape; every row already carried these fields.
+- **A UTC toggle, and the Time header names its zone.** Times rendered in the browser's own zone
+  with no marker, while every desktop log line and NIC event an incident is cross-referenced against
+  is UTC. A `UTC` button in the controls bar switches the table, the chart axes and the chart hover
+  tooltip together, and the table's Time header reads the active zone (`Time (CDT)`, `Time (UTC)`) so
+  a pasted screenshot carries it. Local remains the default and the choice is not persisted, like the
+  range and the Table view toggle.
+
 ### Changed
 
 - **The `/admin` dashboard keeps 1-minute history for 7 days instead of 48 hours.** The

@@ -192,6 +192,14 @@ Design points worth knowing before changing it:
   740 gzipped bytes and well under a millisecond of round trip on loopback.
 - **Aggregates only.** No slot ids, no IPs, no traffic content, so there is deliberately no session
   list. The dashboard inherits that from `MetricsSnapshot` rather than choosing it.
+- **The Table view is the incident surface, and it says which zone it is in.** It keeps raw counts
+  next to a resolution column, and breaks teardowns and rejects down by cause (peer closed, pong
+  timeouts, park timeout, slot busy, probe evicted, other) so an incident can be read without
+  fetching `/admin/data`. The two totals overlap, since the rejects that end an admitted
+  connection (park timeout, backpressure, parked overflow, the session caps) are teardown causes
+  too, and the table's own hint says so. Times render in the browser's zone by default with the
+  zone named in the Time header; a `UTC` toggle switches the table and the charts together, since
+  the logs an incident is cross-referenced against are UTC.
 - **One HTML response, no build step, no dependency.** Markup, styles, charts and script are a
   single inlined document with zero external requests, so `ws` stays the only production
   dependency. Light and dark are both authored, with a sun/moon switch that follows the system
