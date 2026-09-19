@@ -176,9 +176,10 @@ Design points worth knowing before changing it:
 
 - **Counters are stored as per-interval deltas, never raw totals.** A deploy therefore renders as a
   restart marker rather than a giant negative spike.
-- **Retention is tiered automatically**: 1-minute rows for 48 hours, 5-minute for 30 days, hourly
-  for a year. That settles at roughly 20k rows and a few MB, compacted at most once an hour and
-  never anywhere near a forwarded frame.
+- **Retention is tiered automatically**: 1-minute rows for 7 days, 5-minute for 30 days, hourly
+  for a year. That settles at roughly 25k rows and a few MB, compacted at most once an hour and
+  never anywhere near a forwarded frame. A week of full detail rather than two days, because an
+  incident is read at its one-minute edges and the 5-minute tier cannot show them.
 - **Counts are plotted as rates, never as raw per-interval counts.** Rows do not all cover the same
   span, so a raw count steps at every tier boundary purely because the bucket got wider.
 - **The `Live` range is not a short history query.** Sampling is once a minute, so 15 minutes of

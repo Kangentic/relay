@@ -396,8 +396,8 @@ docker compose -f infra/compose/docker-compose.prod.yml exec relay ls -la /var/l
 The second command must show the file owned by `node`. Root ownership means the chown step is
 missing from the running image, and the relay is recording nothing.
 
-Retention is tiered automatically (1-minute rows for 48h, 5-minute for 30 days, hourly for a year),
-which settles at roughly 20k rows and a few MB. Compaction runs at most hourly and rewrites through
+Retention is tiered automatically (1-minute rows for 7 days, 5-minute for 30 days, hourly for a year),
+which settles at roughly 25k rows and a few MB. Compaction runs at most hourly and rewrites through
 a temp file, so a crash cannot destroy the original. It shares one serialized queue with the sample
 appends, which means a slow compaction can delay the next sample write by tens of milliseconds; it
 never touches a forwarded frame. If the file cannot be written at all the relay keeps running and

@@ -466,7 +466,7 @@ td.zero { color: var(--text-muted); }
     // the recorder is running NOW and the row may have been written under a
     // different one. Raising METRICS_HISTORY_INTERVAL_MS from 60s to 300s would
     // otherwise make every existing 60-second row look like a fifth of an
-    // interval and blank two days of rate charts at a stroke. Raw rows are
+    // interval and blank a week of rate charts at a stroke. Raw rows are
     // always tagged at the fine resolution, so the clamp pins them at 60s
     // whatever the interval becomes.
     //

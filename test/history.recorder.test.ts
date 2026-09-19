@@ -7,7 +7,16 @@ import { createMetrics } from '../src/http/metrics.js';
 import { createLogger, type Logger } from '../src/logging.js';
 import { createHistoryRecorder, type HistoryRecorder } from '../src/history/recorder.js';
 import type { ProcessSample, ProcessSampler } from '../src/history/processSampler.js';
-import { parseHistoryRow, serializeHistoryRow, type HistoryRow } from '../src/history/rows.js';
+import {
+  COARSE_RESOLUTION_SECONDS,
+  FINE_RESOLUTION_SECONDS,
+  FINE_RETENTION_MS,
+  MID_RESOLUTION_SECONDS,
+  MID_RETENTION_MS,
+  parseHistoryRow,
+  serializeHistoryRow,
+  type HistoryRow,
+} from '../src/history/rows.js';
 
 const INTERVAL_MS = 60_000;
 const START_MS = 1_700_000_000_000;
@@ -177,10 +186,13 @@ describe('history recorder', () => {
   });
 
   it('keeps the newest rows fine-grained and folds older ones into coarser buckets', async () => {
-    // Rows spaced a minute apart across 40 days, so all three tiers are exercised.
+    // Rows spaced four hours apart across about 66 days, so all three tiers
+    // are exercised and both tier edges fall inside the seeded span.
     const seeded: string[] = [];
+    const seededTimestamps: number[] = [];
     for (let index = 0; index < 400; index += 1) {
       const ageMs = index * 4 * 60 * 60 * 1000;
+      seededTimestamps.push(START_MS - ageMs);
       seeded.push(
         serializeHistoryRow({
           schemaVersion: 1,
@@ -226,6 +238,29 @@ describe('history recorder', () => {
     // Total frames must be conserved: aggregation sums, it does not sample.
     const totalFrames = rows.reduce((sum, row) => sum + row.framesForwardedDelta, 0);
     expect(totalFrames).toBe(400 * 10);
+
+    // The fine window is the whole reason the tiers exist: an incident is read
+    // at one-minute edges, and a row folded early has lost them for good. Every
+    // row still inside the window must be untouched, and nothing may stay fine
+    // past it. Compaction snaps a timestamp down to its bucket start, so a row
+    // measured young here was young when it was tiered, and a fine row may sit
+    // at most one fine bucket beyond the edge.
+    const compactionNowMs = currentTimeMs;
+    const fineBucketMs = FINE_RESOLUTION_SECONDS * 1000;
+    const midBucketMs = MID_RESOLUTION_SECONDS * 1000;
+    for (const row of rows) {
+      const ageMs = compactionNowMs - row.timestampMs;
+      if (ageMs <= FINE_RETENTION_MS) expect(row.resolutionSeconds).toBe(FINE_RESOLUTION_SECONDS);
+      if (row.resolutionSeconds === FINE_RESOLUTION_SECONDS) expect(ageMs).toBeLessThanOrEqual(FINE_RETENTION_MS + fineBucketMs);
+      if (ageMs > MID_RETENTION_MS + midBucketMs) expect(row.resolutionSeconds).toBe(COARSE_RESOLUTION_SECONDS);
+    }
+    // Every seed inside the window survives as its own fine row (four hours
+    // apart, so no two share a minute bucket), plus the recorder's own first
+    // tick. A count pins it: the loop above cannot notice a fine row that
+    // simply went missing.
+    const seedsInsideWindow = seededTimestamps.filter((timestampMs) => compactionNowMs - timestampMs <= FINE_RETENTION_MS);
+    const fineRowCount = rows.filter((row) => row.resolutionSeconds === FINE_RESOLUTION_SECONDS).length;
+    expect(fineRowCount).toBe(seedsInsideWindow.length + 1);
   });
 
   it('is idempotent: compacting again leaves already-aggregated rows unchanged', async () => {
