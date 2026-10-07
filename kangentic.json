@@ -15,7 +15,7 @@
       "color": "#8b5cf6",
       "autoSpawn": true,
       "permissionMode": "plan",
-      "modelOverride": "claude-opus-5",
+      "modelOverride": "opus",
       "effortOverride": "xhigh",
       "planExitTarget": "Executing"
     },
@@ -25,7 +25,7 @@
       "icon": "square-terminal",
       "autoSpawn": true,
       "permissionMode": "auto",
-      "modelOverride": "claude-opus-5",
+      "modelOverride": "opus",
       "effortOverride": "xhigh"
     },
     {
@@ -35,8 +35,8 @@
       "color": "#f59e0b",
       "autoSpawn": true,
       "permissionMode": "auto",
-      "modelOverride": "claude-opus-5",
-      "effortOverride": "high",
+      "modelOverride": "opus",
+      "effortOverride": "xhigh",
       "sessionTarget": "isolated",
       "sessionSpawnStrategy": "always_spawn_new",
       "automations": {
@@ -57,7 +57,7 @@
       "color": "#06b6d4",
       "autoSpawn": true,
       "permissionMode": "auto",
-      "modelOverride": "claude-sonnet-5",
+      "modelOverride": "sonnet",
       "effortOverride": "high",
       "automations": {
         "onEnter": [
@@ -77,7 +77,7 @@
       "color": "#f97316",
       "autoSpawn": true,
       "permissionMode": "auto",
-      "modelOverride": "claude-sonnet-5",
+      "modelOverride": "sonnet",
       "effortOverride": "high",
       "automations": {
         "onEnter": [
@@ -97,7 +97,7 @@
       "icon": "rocket",
       "color": "#ff002b",
       "autoSpawn": true,
-      "modelOverride": "claude-sonnet-5",
+      "modelOverride": "sonnet",
       "effortOverride": "high",
       "automations": {
         "onEnter": [
