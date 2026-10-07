@@ -28,7 +28,7 @@ Preferred: use GitHub's private vulnerability reporting for this repository (the
 vulnerability" button under the Security tab), which opens a private advisory thread with
 maintainers.
 
-Alternative: email **hello@kangentic.com** with "SECURITY" in the subject line.
+Alternative: email **security@kangentic.com**.
 
 Please include:
 - A description of the vulnerability and its potential impact.
