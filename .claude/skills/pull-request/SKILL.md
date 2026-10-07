@@ -45,6 +45,18 @@ directory.
 
 Report the mode, branch name, source branch, and working tree status before proceeding.
 
+**Expect a `*(review)` commit, and leave it alone.** `/code-review` commits its own pass under
+the `review` scope (`fix(review):`, `refactor(review):`, `test(review):`, or an empty
+`chore(review):` that carries only the ledger). Its body holds the `Refuted:` and `Decisions:`
+lines a later review pass reads back with `git log --grep="(review)"`, so do not squash, reword,
+or drop it: that would delete the record and let the next pass re-raise everything the last one
+settled. Git keeps a commit that started empty through a rebase.
+
+**A dirty tree here has two readings, not one.** Either a review pass is still in flight, or it
+finished and deliberately left paths it could not separate: a `/code-review` fix that landed on a
+path the task agent had already left dirty stays uncommitted by design, and that pass's report
+lists those paths by name. Check its report before assuming the tree is unfinished work.
+
 **Main repo mode:** If detected, fall back to `/merge-back` behavior (Steps 0-4 of
 merge-back.md) and stop. The PR workflow below applies to worktree mode only.
 

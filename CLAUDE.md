@@ -58,6 +58,8 @@ scripts/
   loadTest.mjs        # load-test harness: N slot pairs x M frames x S bytes against a dedicated instance
   flakeHunt.mjs       # runs the unit suite N times; reports the worker-crash rate and the file that crashed
   roamRepro.mjs       # A/B measurement of re-pair time after a roam, contention probe off vs on
+  review-verdict.mjs  # /code-review's Ready-or-Blocked verdict + commit ledger, computed from findings.json
+  lib/is-entrypoint.mjs  # realpath-based "was this module the entry script", so a test can import one
 ```
 
 ## Commands
@@ -182,7 +184,9 @@ or `--no-file-parallelism`.
 - `docs-stay-in-sync.md` - env vars / close codes / admission shape stay reflected in
   `.env.example` and README (`src/config.ts`, `src/closeCodes.ts`, `src/admission.ts`).
 - `skill-authoring.md` - when to fork a skill (currently: never - every skill here is either a
-  gated mutating workflow or a main-loop driver) (`.claude/skills/**`).
+  gated mutating workflow or a main-loop driver), and why a fan-out gets a dedicated read-only
+  agent with its model and effort pinned rather than `general-purpose`
+  (`.claude/skills/**`, `.claude/agents/**`).
 
 ### Workflow
 
@@ -202,7 +206,16 @@ or `--no-file-parallelism`.
   only, no push, no rebase. A bare "commit" / "commit changes" means `/commit`.
 - `/commit`, `/pull-request`, `/merge-pull-request`, `/merge-back`, and `/release` all write
   conventional-commit messages.
-- `/code-review` reviews the current diff and auto-fixes safe findings by default.
+- **`/code-review` converges in one pass and commits that pass.** It fixes every finding it
+  verifies (Lows included), applies its recommended option on a decision and records the
+  alternative, and ends with the **Ready** or **Blocked** verdict `scripts/review-verdict.mjs`
+  computes from its `findings.json`. There is no "skipped" status: only work this session
+  genuinely cannot do is `blocked`, and only Blocked sends a card back to Executing. It commits
+  its own pass locally under the `review` scope, never pushes, and never `git add -A` (it
+  commits only what became dirty during the pass, so the task agent's unfinished work in the
+  same worktree is left alone). Each review commit body carries a `Refuted:`/`Decisions:`
+  ledger that the next pass reads back, so two passes cannot flip the same call without new
+  evidence.
 - `/test` runs the local gate; `/sync-docs` keeps the README/`.env.example`/CONTRIBUTING in
   sync with source.
 - **No branch protection is configured on `main` yet** (unlike the sibling `kangentic` repo).
@@ -215,3 +228,13 @@ marketing-captures, and their corresponding rules) has no equivalent here - this
 renderer, no IPC layer, no database, and no PTY sessions. If this project ever grows a surface
 that needs analogous tooling, author it fresh for what this repo actually is, rather than
 reimporting the desktop app's version wholesale.
+
+That applies to `/code-review` too. Its convergence behavior, ledger, set-math commit, and
+verdict script are ported; its **review-pack machinery is deliberately not**. The desktop repo
+builds a sharded pack with `scripts/build-review-pack.mjs` because its diffs are large enough
+that each finder re-reading them dominated the cost. Here the driver writes the diff straight to
+`.kangentic/REVIEW_DIFF_*.tmp` with `git diff --output=` and the finders read that, which buys
+the same gather-once property in a few lines. Also skipped, for want of the surface they audit:
+the pack shards and since-review pack, the `test-builder` agent and the E2E tier, the
+domain auditors, `scripts/review-eval/`, and the commitlint footer-cap fix (this repo runs no
+commitlint). Reach for the pack script only if a relay diff ever gets big enough to need it.
