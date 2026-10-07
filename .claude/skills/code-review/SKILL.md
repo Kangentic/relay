@@ -91,6 +91,12 @@ worktree has none and `git diff --output=` will not.
    - **Committed-vs-base:** `git diff <base>...HEAD --output=.kangentic/REVIEW_DIFF_COMMITTED.tmp`
      (three-dot: changes since the branch diverged from base). Skip when base is empty. Then
      `git diff <base>...HEAD --stat` for the human-readable summary.
+
+     **When you skip it, the file an earlier pass left behind is still sitting there.**
+     `.kangentic/` is not cleaned between passes, so a stale `REVIEW_DIFF_COMMITTED.tmp` would be
+     handed to the finders as though it were this pass's diff. Track which diff files **this
+     pass actually wrote** and name only those in Step 5; never infer the set from which files
+     exist on disk.
    - **Uncommitted (staged + unstaged):** `git diff HEAD
      --output=.kangentic/REVIEW_DIFF_WORKING.tmp`, then `git diff HEAD --stat`.
    - **Untracked new files:** the `git ls-files --others --exclude-standard` list from above. No
@@ -116,7 +122,8 @@ worktree has none and `git diff --output=` will not.
 5. **Fan out reviewer subagents (the `Agent` tool, ALL in ONE message).** Every finder is a
    **read-only** `review-finder` subagent in its own fresh context; only the driver mutates the
    working tree, in the Apply Phase. Give each finder its dimension's criteria, the
-   `changedFiles` list, the absolute paths of the two diff files (naming which exist), the
+   `changedFiles` list, the absolute paths of the diff files **this pass wrote** (never a stale
+   one left in `.kangentic/` by an earlier pass), the
    untracked-file paths, and a 3 to 6 line **neutral** summary of what the change does (mechanism
    only, phrased as context rather than a licence to assume the author was right). See
    "## Finders" for the set, the gates, and the required return shape.
