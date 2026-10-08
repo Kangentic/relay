@@ -151,6 +151,54 @@ The two agree, and in both the surviving peer is closed with `4000` and reconnec
 cheap harness above can be trusted for day-to-day work, and the docker setup is only worth
 rebuilding if the transport layer itself changes.
 
+## Measuring the keepalive with a slow consumer: `scripts/slowConsumerRepro.mjs`
+
+```
+npm run build
+docker run --rm -v "$PWD:/app" -w /app node:22 node scripts/slowConsumerRepro.mjs
+```
+
+Does the keepalive reap a peer that is alive but reading slowly behind a deep backlog? A reader
+takes a fixed byte budget off its socket every 100 ms (`pause()` and `resume()`), so TCP flow
+control pushes the backlog back into the relay's queue the way a slow radio would, while the sender
+pushes 24 MiB. `--relay-entry` runs an older build for an A/B, and `--diagnose` turns on the relay's
+own history recorder at 1 s and prints the queue depth the drain check reads, each second.
+
+**Run it on Linux.** Windows auto-tunes loopback socket buffers to tens of MiB, so the backlog leaves
+the relay's queue for the kernel almost at once and the result says nothing about production. And
+keep `--ping-interval` at 3 s or more: Linux frees send buffer space in bursts about a second
+apart, so a 1 s interval can fall between two bursts and see no progress at all.
+
+Measured on Node 22.23.3 in a `node:22` container, 24 MiB at 1 MiB/s, `PING_INTERVAL_MS=3000`,
+five runs per arm:
+
+| Build | Reader | Delivered | `pongOverdueDraining` |
+|---|---|---|---|
+| Before (c699189) | killed with 1006 in 5 of 5, 11.2 to 13.4 s in | 14.1 to 16.8 of 24 MiB | n/a |
+| After | completed in 5 of 5, 19.2 to 19.3 s | 24 of 24 MiB | 3 to 5 per run |
+
+Two things worth knowing before trusting either number. A first fix that read `bufferedAmount`
+alone spared nothing at all (0 in 5 of 5): `--diagnose` showed the queue reading a flat 21.4 MiB
+while the reader drained, because Node hands a backlog to libuv as one batched write and
+`bufferedAmount` only falls when all of it completes. And 4 of the 5 "after" runs still log one reap
+after the last byte arrived: by then the relay's own queue is empty and the tail sits in kernel
+buffers, where nothing in Node can see it drain. That is the documented blind spot of the check.
+
+## Leg and burst probes: `scripts/legProbe.sh`, `scripts/burstProbe.mjs`
+
+Both measure the deployed path rather than the code, and both are described with their results in
+[latency.md](latency.md).
+
+- `legProbe.sh client <host> [seconds]` times, at 1 Hz, the Cloudflare edge alone
+  (`/cdn-cgi/trace`) against the full path (`/healthz`), each over one reused connection.
+  `legProbe.sh box <host> [seconds]`, run on the relay host, times Caddy-plus-relay and the relay
+  alone, and every 10 s prints the TCP retransmit and timeout deltas from Caddy's network
+  namespace. Run both over the same minutes and line them up by timestamp.
+- `burstProbe.mjs --url <ws url>` pairs two clients on this machine and times a 512 KiB burst after
+  10 s idle, against a 16-byte frame after the same idle. It is the before/after for
+  `tcp_slow_start_after_idle=0` on the Caddy service. Against the hosted relay it is one short
+  pairing on a random slot, the same footprint as the monitor's synthetic pair.
+
 ## Known test hygiene issues
 
 Found during the crash investigation and **not** its cause. Worth fixing on their own merits:

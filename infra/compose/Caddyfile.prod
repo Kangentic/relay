@@ -1,10 +1,106 @@
 {
 	servers {
 		# GENERATED list (infra/scripts/render-cloudflare-config.sh), so the
-		# weekly Cloudflare-range refresh has one place to land.
-		import /etc/caddy/trusted-proxies.caddy
+		# weekly Cloudflare-range refresh has one place to land. Read from the
+		# mounted infra/cloudflare DIRECTORY, not a single-file mount: a
+		# single-file bind mount pins the inode it was created with, and git
+		# replaces a file it updates with a new inode, so the container kept
+		# reading a stale copy through every reload after a checkout.
+		import /etc/caddy/cloudflare/trusted-proxies.caddy
 		client_ip_headers CF-Connecting-IP X-Forwarded-For
+
+		timeouts {
+			# Above Cloudflare's 900 s "Proxy Idle Timeout", which is how long
+			# Cloudflare keeps an idle origin connection for reuse
+			# (https://developers.cloudflare.com/fundamentals/reference/connection-limits/).
+			# Caddy's default is 5m, so Caddy closed connections Cloudflare
+			# still meant to reuse; a request sent on one as it closes fails
+			# with a 520, and every reconnect costs a fresh TCP and TLS
+			# handshake to the origin. With idle above 900 s, Cloudflare
+			# always closes first.
+			idle 16m
+		}
 	}
+
+	# Caddy's error log carries the request, URI included, and so recorded
+	# every relay slot id on every 502 (the slot is in the query string).
+	# Routed through the same filter as the access log below, and kept off
+	# the default logger so it is written exactly once.
+	log default {
+		exclude http.log.error
+	}
+	log errors {
+		include http.log.error
+		format filter {
+			request>uri query {
+				delete slot
+			}
+			request>headers delete
+			request>client_ip delete
+		}
+	}
+}
+
+# Access log, for localizing a slow dial to a leg of the path
+# (https://caddyserver.com/docs/caddyfile/directives/log). On the
+# caddy_data volume, so a deploy keeps it, and rolled so roughly two weeks
+# fit: longer than the relay's 7 days of one-minute history it is read
+# against. The argument is the file name.
+#
+# Filtered to an allowlist. Every request header is dropped (they carry
+# CF-Connecting-IP, X-Forwarded-For, and on /admin the Access JWT and the
+# viewer's email), as are the resolved client IP and the slot query
+# parameter. What remains is method, host, path, the role hint, status,
+# size, timing, and the Cloudflare edge address the request came from.
+#
+# CF-Ray matches a line to the relay's own connection trace and to a
+# client's timings for the same dial. upstream_latency_ms is how long the
+# relay took to answer: the 101, for a WebSocket. A WebSocket's line is
+# written when it closes, so its start is ts minus duration.
+(relay_access_log) {
+	log {
+		output file /data/logs/{args[0]} {
+			roll_size 25MiB
+			roll_keep 10
+			roll_keep_for 336h
+		}
+		format filter {
+			request>uri query {
+				delete slot
+			}
+			request>headers delete
+			request>client_ip delete
+		}
+	}
+	log_append cf_ray {http.request.header.Cf-Ray}
+	log_append upstream_latency_ms {rp.upstream.latency_ms}
+}
+
+# How Caddy talks to the relay, shared by every site that proxies to it.
+(relay_upstream) {
+	transport http {
+		# Below Node's 5 s keepAliveTimeout (the relay's HTTP server
+		# default). Caddy's own default is 2m, and its docs warn that a
+		# keepalive longer than the upstream's timeout gets "connection
+		# reset by peer" and "will respond with status code 502 in other
+		# cases" (https://caddyserver.com/docs/caddyfile/directives/reverse_proxy).
+		# Go retries an idempotent GET on such a connection, which is why
+		# production logged none, but anything else would have failed.
+		keepalive 4s
+	}
+
+	# Holds a dial for up to 5 s while the relay container is being
+	# recreated, instead of answering 502 at once. Every 502 Caddy logged
+	# from 2026-07-21 to 2026-10-07 (23 of them) was a deploy-window
+	# "connection refused" or Docker DNS miss that a short retry absorbs.
+	lb_try_duration 5s
+	lb_try_interval 250ms
+
+	# A config reload otherwise force-closes every proxied WebSocket at once.
+	# deploy.sh reloads only when the cert or this file actually changed, so
+	# this matters rarely, but when it does, connections that end on their
+	# own in the next five minutes are never cut.
+	stream_close_delay 5m
 }
 
 # Two site addresses, not one: RELAY_HOSTNAME is this box's own
@@ -27,6 +123,7 @@
 # zone at this IP, does not get routed to the relay.
 {$RELAY_HOSTNAME} {$RELAY_HOSTNAME_ALIAS} {
 	tls /etc/caddy/origin/origin.crt /etc/caddy/origin/origin.key
+	import relay_access_log access.log
 
 	reverse_proxy relay:8080 {
 		# header_up with no +/- prefix REPLACES the header outright. Both
@@ -42,5 +139,32 @@
 		header_up X-Forwarded-For {client_ip}
 		header_up -X-Real-IP
 		header_up -Forwarded
+		import relay_upstream
+	}
+}
+
+# Cloudflare Tunnel A/B entry point, used only while the opt-in `tunnel-ab`
+# compose profile runs cloudflared (infra/README.md, "Cloudflare Tunnel
+# A/B"). Plain HTTP on the internal edge network, never published to the
+# host, so only containers on that network can reach it. It exists so the
+# A/B hostname crosses the same Caddy and relay as the main one and the
+# only difference measured is the Cloudflare-to-origin leg.
+http://:8081 {
+	import relay_access_log tunnel-ab-access.log
+
+	# /admin is gated by Cloudflare Access on the two main hostnames only.
+	# The A/B hostname has no Access application, so the dashboard must not
+	# be reachable through it at all.
+	respond /admin* 404
+
+	reverse_proxy relay:8080 {
+		# CF-Connecting-IP passes through untouched here: cloudflared
+		# forwards the value Cloudflare's edge set (the edge refuses a
+		# client-supplied one), and Caddy's own {client_ip} on this listener
+		# would be cloudflared's container address, which would put every A/B
+		# client into one per-IP bucket.
+		header_up -X-Real-IP
+		header_up -Forwarded
+		import relay_upstream
 	}
 }

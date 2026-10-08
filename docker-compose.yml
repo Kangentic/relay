@@ -33,6 +33,12 @@ services:
   # automatic certificates for the hostname in Caddyfile.example, and see
   # that file for the TRUST_PROXY / TRUSTED_PROXY_CIDRS values it expects.
   #
+  # This mounts a single file, which pins the inode it started with. An
+  # editor or a `git pull` that replaces the file rather than rewriting it in
+  # place leaves Caddy reading the old copy, and `caddy reload` re-reads that
+  # old copy too. After editing it, recreate the container
+  # (`docker compose up -d --force-recreate caddy`) rather than reloading.
+  #
   # caddy:
   #   image: caddy:2
   #   restart: unless-stopped

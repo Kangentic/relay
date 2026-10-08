@@ -572,6 +572,12 @@ td.zero { color: var(--text-muted); }
   }
   function deltaPerMinute(row, key) { return perMinute(row, row[key]); }
 
+  /** Steal as a percent of all host CPU ticks in the row, or null when unmeasured. */
+  function stealPercentOf(row) {
+    if (!row.hostCpuTotalTicksDelta || row.hostCpuStealTicksDelta === null || row.hostCpuStealTicksDelta === undefined) return null;
+    return (row.hostCpuStealTicksDelta / row.hostCpuTotalTicksDelta) * 100;
+  }
+
   function readMean(meanFn, row) {
     if (!meanFn) return null;
     var mean = meanFn(row);
@@ -1066,9 +1072,45 @@ td.zero { color: var(--text-muted); }
         value: function (r) { return r.cpuPercent ? r.cpuPercent.maximum : null; },
         mean: function (r) { return r.cpuPercent ? r.cpuPercent.mean : null; } }
     ] });
-    list.push({ title: "Event loop delay p99", hint: "Worst tail per interval. Aggregated buckets keep the maximum.", format: fmtMs, series: [
-      { label: "p99", color: seriesColor(2), value: function (r) { return r.eventLoopLagP99Ms; } }
+    // p99 alone hid every multi-second stall: one freeze is a single sample out
+    // of ~3000 a minute, so it never reaches the 99th percentile. Max is the
+    // stall a client feels; GC beside it says whether the runtime caused it.
+    list.push({ title: "Event loop delay and GC pauses",
+      hint: "Per interval. p99 is the everyday tail; max is the single worst stall, the one a client feels as a freeze. Longest GC says whether garbage collection caused it. Aggregated buckets keep the maximum.",
+      format: fmtMs, series: [
+      { label: "max", color: seriesColor(4), value: function (r) { return r.eventLoopLagMaxMs === undefined ? null : r.eventLoopLagMaxMs; } },
+      { label: "p99", color: seriesColor(2), value: function (r) { return r.eventLoopLagP99Ms; } },
+      { label: "longest GC", color: seriesColor(6), value: function (r) { return r.gcPauseMaxMs === undefined ? null : r.gcPauseMaxMs; } }
     ] });
+
+    // Only where the host exposes them: procfs exists on Linux alone, so a
+    // relay on Windows or macOS would otherwise draw two empty cards.
+    var stallRows = plotRows();
+    var hasPressure = false, hasSteal = false;
+    for (var stallIndex = 0; stallIndex < stallRows.length; stallIndex++) {
+      var stallRow = stallRows[stallIndex];
+      if (stallRow.pressureCpuSomeMs !== null && stallRow.pressureCpuSomeMs !== undefined) hasPressure = true;
+      if (stallRow.hostCpuTotalTicksDelta) hasSteal = true;
+    }
+    if (hasPressure) {
+      list.push({ title: "Host stall time",
+        hint: "Milliseconds per minute in which at least some tasks on the host were waiting on CPU, memory, or IO (Linux PSI, host-wide). A client stall with a flat line here, low CPU and a high loop max points below the OS, at the hypervisor.",
+        format: fmtMs, series: [
+        { label: "cpu", color: seriesColor(1), reduce: "max", value: function (r) {
+          return r.pressureCpuSomeMs === null || r.pressureCpuSomeMs === undefined ? null : perMinute(r, r.pressureCpuSomeMs); } },
+        { label: "memory", color: seriesColor(3), reduce: "max", value: function (r) {
+          return r.pressureMemorySomeMs === null || r.pressureMemorySomeMs === undefined ? null : perMinute(r, r.pressureMemorySomeMs); } },
+        { label: "io", color: seriesColor(5), reduce: "max", value: function (r) {
+          return r.pressureIoSomeMs === null || r.pressureIoSomeMs === undefined ? null : perMinute(r, r.pressureIoSomeMs); } }
+      ] });
+    }
+    if (hasSteal) {
+      list.push({ title: "Host CPU steal",
+        hint: "Share of host CPU time the hypervisor gave to other tenants. Some hypervisors never report steal at all, so a line that is always exactly zero proves nothing on its own.",
+        format: fmtPercent, series: [
+        { label: "steal", color: seriesColor(4), reduce: "max", value: stealPercentOf }
+      ] });
+    }
     list.push({ title: "Resident memory", hint: "Against the container limit, when one is discoverable.", format: fmtPercent, series: [
       { label: "rss", color: seriesColor(3), value: function (r) { return r.rssPercent; } }
     ] });
@@ -1125,6 +1167,7 @@ td.zero { color: var(--text-muted); }
       bytesForwardedDelta: delta("bytesForwardedTotal"),
       peerClosedDelta: closedByCause.peerClosed || 0,
       pongTimeoutsDelta: closedByCause.heartbeat || 0,
+      pongOverdueDrainingDelta: Math.max(0, (current.pongOverdueDrainingTotal || 0) - (previous.pongOverdueDrainingTotal || 0)),
       rejectsByReasonDelta: subtractMaps(current.rejectsByReason, previous.rejectsByReason),
       closedByCause: closedByCause,
       activeConnections: level(current.activeConnections),
@@ -1135,6 +1178,15 @@ td.zero { color: var(--text-muted); }
       waitingUnknown: level(byRole.unknown || 0),
       cpuPercent: current.cpuPercent === null ? null : level(current.cpuPercent),
       eventLoopLagP99Ms: current.eventLoopLagP99Ms,
+      eventLoopLagMaxMs: current.eventLoopLagMaxMs === undefined ? null : current.eventLoopLagMaxMs,
+      gcPauseMaxMs: current.gcPauseMaxMs === undefined ? null : current.gcPauseMaxMs,
+      // Deltas over the recorder's window, not this poll gap, so the live
+      // series has no honest value for them. Null draws a gap.
+      hostCpuStealTicksDelta: null,
+      hostCpuTotalTicksDelta: null,
+      pressureCpuSomeMs: null,
+      pressureMemorySomeMs: null,
+      pressureIoSomeMs: null,
       rssBytes: current.rssBytes,
       rssPercent: current.rssPercent,
       // Queue depth is only sampled on the recorder tick, so the live series
@@ -1220,8 +1272,12 @@ td.zero { color: var(--text-muted); }
         fraction: memoryFraction },
       { label: "CPU", value: fmtPercent(live.cpuPercent), note: "of one core",
         fraction: live.cpuPercent === null ? null : live.cpuPercent / 100 },
+      // The value stays the p99 the badge has always graded, and the note adds
+      // the window's single worst stall, which p99 cannot see.
       { label: "Event loop p99", value: fmtMs(live.eventLoopLagP99Ms),
-        note: "above ~50 ms delays every forward",
+        note: live.eventLoopLagMaxMs === null || live.eventLoopLagMaxMs === undefined
+          ? "above ~50 ms delays every forward"
+          : "worst " + fmtMs(live.eventLoopLagMaxMs) + "; above ~50 ms p99 delays every forward",
         fraction: live.eventLoopLagP99Ms === null ? null : live.eventLoopLagP99Ms / 200 },
       { label: "Uptime", value: fmtDuration(live.uptimeSeconds), note: "since last restart" },
       { label: "Bytes forwarded", value: fmtBytes(live.bytesForwardedTotal), note: "egress, since restart" }
@@ -1295,11 +1351,31 @@ td.zero { color: var(--text-muted); }
       "<th>Slot busy</th>" +
       '<th title="A paired incumbent that failed the liveness probe when a newcomer contended the slot. Also counted as a pong timeout.">Probe evicted</th>' +
       '<th title="Every reject reason other than the three named. Hover a cell for the split.">Other</th>' +
-      "<th>CPU %</th><th>Loop p99</th><th>RSS %</th></tr></thead><tbody>";
+      '<th title="Missed liveness checks on a socket whose outbound queue was still draining, so it was spared rather than reaped.">Spared slow</th>' +
+      "<th>CPU %</th><th>Loop p99</th>" +
+      '<th title="The single worst event loop delay in the interval: the stall p99 cannot see.">Loop max</th>' +
+      '<th title="The longest garbage collection pause in the interval.">GC max</th>' +
+      '<th title="Host CPU time the hypervisor gave to other tenants. Some hypervisors never report it, so a steady zero proves nothing.">Steal %</th>' +
+      '<th title="Milliseconds in the interval that some host tasks spent stalled on CPU / memory / IO (Linux PSI).">PSI cpu/mem/io ms</th>' +
+      "<th>RSS %</th></tr></thead><tbody>";
 
     // attributes is already-escaped markup for the opening tag, or nothing.
     function cell(value, formatted, attributes) {
       return '<td' + (value ? '' : ' class="zero"') + (attributes || "") + ">" + formatted + "</td>";
+    }
+    // Rows that predate a field carry no key at all, and an unmeasured one
+    // carries null; both read "n/a" rather than a reassuring zero.
+    function nullableCount(value) {
+      return value === null || value === undefined ? "n/a" : fmtCount(value);
+    }
+    function pressureTotal(row) {
+      if (row.pressureCpuSomeMs === null || row.pressureCpuSomeMs === undefined) return null;
+      return (row.pressureCpuSomeMs || 0) + (row.pressureMemorySomeMs || 0) + (row.pressureIoSomeMs || 0);
+    }
+    function pressureCell(row) {
+      if (pressureTotal(row) === null) return "n/a";
+      return nullableCount(row.pressureCpuSomeMs) + " / " + nullableCount(row.pressureMemorySomeMs) + " / " +
+        nullableCount(row.pressureIoSomeMs);
     }
 
     for (var i = 0; i < rows.length; i++) {
@@ -1328,8 +1404,13 @@ td.zero { color: var(--text-muted); }
         cell(breakdown.named[1], fmtCount(breakdown.named[1])) +
         cell(breakdown.named[2], fmtCount(breakdown.named[2])) +
         cell(breakdown.other, fmtCount(breakdown.other), otherTitle) +
+        cell(r.pongOverdueDrainingDelta, fmtCount(r.pongOverdueDrainingDelta || 0)) +
         cell(r.cpuPercent, r.cpuPercent ? fmtCount(r.cpuPercent.maximum) : "n/a") +
         cell(r.eventLoopLagP99Ms, r.eventLoopLagP99Ms === null ? "n/a" : fmtCount(r.eventLoopLagP99Ms)) +
+        cell(r.eventLoopLagMaxMs, nullableCount(r.eventLoopLagMaxMs)) +
+        cell(r.gcPauseMaxMs, nullableCount(r.gcPauseMaxMs)) +
+        cell(stealPercentOf(r), nullableCount(stealPercentOf(r))) +
+        cell(pressureTotal(r), pressureCell(r)) +
         cell(r.rssPercent, r.rssPercent === null ? "n/a" : fmtCount(r.rssPercent)) +
         "</tr>";
     }

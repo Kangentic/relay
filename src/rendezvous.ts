@@ -6,6 +6,8 @@ import type { PeerRole } from './guards/peerRole.js';
 import type { Metrics } from './http/metrics.js';
 import type { Logger } from './logging.js';
 import type { SlotConnectionCaps, UnpairedConnectionCap } from './guards/caps.js';
+import { markTracePaired } from './connectionTrace.js';
+import { isDraining, readOutboundQueue } from './keepalive.js';
 import { byteLengthOfRawData, BINARY_SEND_OPTIONS, TEXT_SEND_OPTIONS } from './wireData.js';
 
 export interface RendezvousDeps {
@@ -210,9 +212,14 @@ export class SlotTable {
    * That is a liveness check, not a proof of death, and the window is short.
    * A ping is written behind whatever is already queued to the socket, so an
    * incumbent with a large outbound backlog (maxBufferedBytes allows 16 MiB)
-   * can miss a 2s window while perfectly alive. Contention is therefore a
-   * lever a slot-id holder can pull against a backlogged peer, which the
-   * keepalive loop's 30s cadence effectively did not offer.
+   * can miss a 2s window while perfectly alive. So the probe applies the
+   * keepalive loop's drain test: an incumbent whose outbound queue fell since
+   * the probe armed is acknowledging data and is spared, which keeps
+   * contention from being a lever a slot-id holder can pull against a
+   * backlogged peer. A half-open socket acknowledges nothing, never drains,
+   * and is still reaped. What remains is the blind spot the drain test shares
+   * with the keepalive loop: a ping already handed to the kernel behind a
+   * queue that reads 0.
    *
    * The newcomer is still rejected either way. Letting it take the slot in
    * place would swap the survivor's peer out from under an open socket, which
@@ -230,6 +237,7 @@ export class SlotTable {
 
     for (const half of probed) {
       half.probePending = true;
+      half.outboundQueueAtProbe = readOutboundQueue(half.socket);
       try {
         half.socket.ping();
       } catch {
@@ -246,6 +254,12 @@ export class SlotTable {
       for (const half of probed) {
         if (!half.probePending) continue;
         half.probePending = false;
+        if (isDraining(readOutboundQueue(half.socket), half.outboundQueueAtProbe)) {
+          // Alive and draining toward its ping. Counted in the same namespace
+          // as the keepalive loop's grace, since it is the same judgement.
+          this.deps.metrics.onPongOverdueDraining();
+          continue;
+        }
         // Counted in two namespaces on purpose. onPongTimeout keeps the
         // `heartbeat` teardown cause honest: this is a genuinely failed ping,
         // and one the keepalive loop would have counted there anyway a cycle
@@ -302,6 +316,10 @@ export class SlotTable {
 
   private pair(waiting: Conn, incoming: Conn): void {
     clearTimer(waiting, 'parkTimer');
+    // Once per pairing, before the flush below, so a parked connection's
+    // buffered frames are dated by the moment they were actually forwarded.
+    markTracePaired(waiting);
+    markTracePaired(incoming);
 
     // Both halves stop being unpaired here, not when they eventually close.
     // Releasing only on close would let the unpaired count track total live

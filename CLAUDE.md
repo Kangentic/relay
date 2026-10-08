@@ -39,7 +39,8 @@ src/
   server.ts           # createRelay(): http.Server + WebSocketServer(noServer); upgrade+connection wiring
   rendezvous.ts       # SlotTable: park/pair/reject/teardown - the core routing logic
   connection.ts       # Conn factory, per-message forwarding hot path
-  keepalive.ts        # WS ping/pong liveness + reaping
+  connectionTrace.ts  # opt-in CONNECTION_TRACE: per-connection dial + first-frame timings, keyed by CF-Ray
+  keepalive.ts        # WS ping/pong liveness + reaping; spares a socket still draining (readOutboundQueue)
   admission.ts        # AdmissionPolicy interface, allowAllPolicy, webhook policy
   guards/             # slot-id format, rate limiting, connection caps
   net/clientIp.ts     # real client IP behind a trusted proxy, IPv6 bucketing
@@ -58,6 +59,9 @@ scripts/
   loadTest.mjs        # load-test harness: N slot pairs x M frames x S bytes against a dedicated instance
   flakeHunt.mjs       # runs the unit suite N times; reports the worker-crash rate and the file that crashed
   roamRepro.mjs       # A/B measurement of re-pair time after a roam, contention probe off vs on
+  slowConsumerRepro.mjs  # A/B: does the keepalive reap a live reader draining a deep backlog (run on Linux)
+  legProbe.sh         # 1 Hz per-leg latency probe (client: edge vs origin; box: Caddy, relay, TCP counters)
+  burstProbe.mjs      # time a burst after an idle period through a relay URL (slow-start before/after)
   review-verdict.mjs  # /code-review's Ready-or-Blocked verdict + commit ledger, computed from findings.json
   lib/is-entrypoint.mjs  # realpath-based "was this module the entry script", so a test can import one
 ```
@@ -135,6 +139,28 @@ no route, and no event-loop-delay monitor exist. Four invariants are load-bearin
 definition rather than an auth mechanism: `buildClosedByCause` in `src/http/metrics.ts` is the
 single place the teardown-cause grouping is defined, fed lifetime totals by `/metricz` and
 per-interval deltas by the history rows.
+
+New history row keys are **additive under the same schema version**, never a bump: a bump turns
+every older row into an unknown version that is kept but never served, hiding the very baseline the
+new fields are compared to. A nullable field that is measured is written even at zero, since
+absence is how a reader tells "not measured" from "measured nothing" (see `cp` and the stall keys in
+`rows.ts`).
+
+### Connection trace and keepalive liveness
+
+`CONNECTION_TRACE` (`src/connectionTrace.ts`) is the one opt-in exception to "nothing runs per
+frame", and it is bounded on both sides: off is structural (no accept listener, no trace object, the
+plain `message` listener), and on, a separate listener records only the first `TRACE_FRAME_LIMIT`
+frames and then swaps itself for the plain one. Keep it that way; a trace that grows a branch in
+`onMessage` or records every frame is a redesign. Its log line is built from an allowlist and never
+carries a slot id or an IP.
+
+The keepalive spares a missed pong when the socket made delivery progress
+(`isDraining(readOutboundQueue(...))`). `readOutboundQueue` reads libuv's `writeQueueSize` off the
+socket's internal handle, which is not public API; `test/keepalive.test.ts` reads it off a real
+socket so a Node or ws upgrade that moves it fails the build. Do not drop that test or "simplify"
+the check to `bufferedAmount` alone: measured on Linux, `bufferedAmount` stays flat under Node's
+batched `writev` and the check then spares nothing (`docs/latency.md`).
 
 ### Open-core admission seam
 

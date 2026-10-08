@@ -78,6 +78,7 @@ function renderTableOver(rows: readonly Record<string, unknown>[], rangeMs: numb
     'sumValues',
     'rejectBreakdown',
     'perSecond',
+    'stealPercentOf',
     'plotRows',
     'renderTable',
   ].map(pageDeclaration);
@@ -605,6 +606,9 @@ describe('/admin when enabled', () => {
       'uptimeSeconds',
       'cpuPercent',
       'eventLoopLagP99Ms',
+      'eventLoopLagMaxMs',
+      'gcPauseMaxMs',
+      'pongOverdueDrainingTotal',
       'rssPercent',
       'rssBytes',
     ]) {
@@ -643,11 +647,21 @@ describe('/admin when enabled', () => {
       // not through closedByCause.
       'peerClosedDelta',
       'pongTimeoutsDelta',
+      'pongOverdueDrainingDelta',
       'rejectsByReasonDelta',
       'closedByCause',
       'maxOutboundBufferBytes',
       'backloggedConnections',
       'maxParkedBufferBytes',
+      // The stall-attribution group the event loop, host stall and steal cards
+      // and the table read. Null on a host without procfs, but always present.
+      'eventLoopLagMaxMs',
+      'gcPauseMaxMs',
+      'hostCpuStealTicksDelta',
+      'hostCpuTotalTicksDelta',
+      'pressureCpuSomeMs',
+      'pressureMemorySomeMs',
+      'pressureIoSomeMs',
     ]) {
       expect(row).toHaveProperty(key);
     }
@@ -692,6 +706,14 @@ describe('/admin when enabled', () => {
       pongTimeoutsDelta: 2,
       rejectsByReasonDelta: { park_timeout: 4, probe_evicted: 1, rate_limit_ip: 5, some_future_reason: 1 },
       closedByCause: { ...(served['closedByCause'] as Record<string, number>), peerClosed: 3, heartbeat: 2, parkTimeout: 4 },
+      pongOverdueDrainingDelta: 2,
+      eventLoopLagMaxMs: 3_150,
+      gcPauseMaxMs: 4.5,
+      hostCpuStealTicksDelta: 30,
+      hostCpuTotalTicksDelta: 12_000,
+      pressureCpuSomeMs: 2_900,
+      pressureMemorySomeMs: 0,
+      pressureIoSomeMs: 0.5,
     };
 
     const html = renderTableOver([row], 3_600_000, 'UTC');
@@ -699,7 +721,7 @@ describe('/admin when enabled', () => {
     expect(headers).toEqual([
       'Time (UTC)', 'Res', 'Active peak', 'Active avg', 'Paired peak', 'Waiting', 'Frames/s', 'Bytes/s', 'Conns', 'Sessions',
       'Teardowns', 'Peer closed', 'Pong timeouts', 'Rejects', 'Park timeout', 'Slot busy', 'Probe evicted', 'Other',
-      'CPU %', 'Loop p99', 'RSS %',
+      'Spared slow', 'CPU %', 'Loop p99', 'Loop max', 'GC max', 'Steal %', 'PSI cpu/mem/io ms', 'RSS %',
     ]);
 
     const cells = [...html.matchAll(/<td([^>]*)>([^<]*)<\/td>/g)].map((match) => ({ attributes: match[1] ?? '', text: match[2] ?? '' }));
@@ -717,6 +739,25 @@ describe('/admin when enabled', () => {
     // The fold, with its split in the tooltip and the unknown reason kept.
     expect(byHeader('Other')?.text).toBe('6');
     expect(byHeader('Other')?.attributes).toContain('title="rate limit ip 5, some future reason 1"');
+
+    // The stall columns: the worst loop delay p99 cannot see, the GC beside
+    // it, steal as a share of the ticks, and the three PSI stall totals.
+    expect(byHeader('Spared slow')?.text).toBe('2');
+    expect(byHeader('Loop max')?.text).toBe('3.1k');
+    expect(byHeader('GC max')?.text).toBe('4.5');
+    expect(byHeader('Steal %')?.text).toBe('0.25');
+    expect(byHeader('PSI cpu/mem/io ms')?.text).toBe('2.9k / 0 / 0.5');
+
+    // Unmeasured reads "n/a", never a reassuring zero.
+    const unmeasuredHtml = renderTableOver(
+      [{ ...row, eventLoopLagMaxMs: null, hostCpuTotalTicksDelta: null, pressureCpuSomeMs: null }],
+      3_600_000,
+      'UTC',
+    );
+    const unmeasuredCells = [...unmeasuredHtml.matchAll(/<td([^>]*)>([^<]*)<\/td>/g)].map((match) => match[2] ?? '');
+    expect(unmeasuredCells[headers.indexOf('Loop max')]).toBe('n/a');
+    expect(unmeasuredCells[headers.indexOf('Steal %')]).toBe('n/a');
+    expect(unmeasuredCells[headers.indexOf('PSI cpu/mem/io ms')]).toBe('n/a');
 
     // With nothing to fold, Other is a muted zero with no tooltip at all; an
     // empty title would show as a blank hover box.

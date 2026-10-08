@@ -141,6 +141,14 @@ describe('createMetrics', () => {
     metrics.onPongTimeout();
     expect(metrics.render()).toContain('relay_pong_timeouts_total 1');
 
+    // A spared slow consumer is its own counter, not a teardown cause.
+    expect(metrics.render()).toContain('relay_pong_overdue_draining_total 0');
+    metrics.onPongOverdueDraining();
+    metrics.onPongOverdueDraining();
+    expect(metrics.render()).toContain('relay_pong_overdue_draining_total 2');
+    expect(metrics.snapshot().pongOverdueDrainingTotal).toBe(2);
+    expect(metrics.snapshot().pongTimeoutsTotal).toBe(1);
+
     metrics.onUnpair();
     metrics.onConnectionClosed();
     expect(metrics.render()).toContain('relay_paired_slots 0');
@@ -362,7 +370,10 @@ describe('GET /metricz over the live server', () => {
     // The event loop delay monitor installs a recurring libuv timer, so it is
     // only built when the recorder is, keeping "off" genuinely free.
     expect(body['eventLoopLagP99Ms']).toBeNull();
+    expect(body['eventLoopLagMaxMs']).toBeNull();
+    expect(body['gcPauseMaxMs']).toBeNull();
     expect(body['rssPercent']).toBeNull();
+    expect(body['pongOverdueDrainingTotal']).toBe(0);
   });
 
   it('reports sampled process health once a recorder is running', async () => {

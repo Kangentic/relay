@@ -1,6 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { RawData, WebSocket } from 'ws';
 import { CLOSE_CODE } from './closeCodes.js';
+import {
+  describeConnectionTrace,
+  millisecondsSinceUpgrade,
+  TRACE_FRAME_LIMIT,
+  type ConnectionTrace,
+} from './connectionTrace.js';
+import { EMPTY_OUTBOUND_QUEUE } from './keepalive.js';
 import type { Conn, Config } from './types.js';
 import type { PeerRole } from './guards/peerRole.js';
 import type { SlotTable } from './rendezvous.js';
@@ -17,7 +24,13 @@ export interface ConnectionDeps {
   readonly onClosed: () => void;
 }
 
-export function createConn(socket: WebSocket, slot: string, ip: string, role: PeerRole): Conn {
+export function createConn(
+  socket: WebSocket,
+  slot: string,
+  ip: string,
+  role: PeerRole,
+  trace: ConnectionTrace | null = null,
+): Conn {
   return {
     id: randomUUID(),
     socket,
@@ -32,7 +45,9 @@ export function createConn(socket: WebSocket, slot: string, ip: string, role: Pe
     state: 'waiting',
     partner: null,
     isAlive: true,
+    outboundQueueAtLastCheck: EMPTY_OUTBOUND_QUEUE,
     probePending: false,
+    outboundQueueAtProbe: EMPTY_OUTBOUND_QUEUE,
     pending: [],
     pendingBytes: 0,
     parkTimer: null,
@@ -41,6 +56,7 @@ export function createConn(socket: WebSocket, slot: string, ip: string, role: Pe
     slotReserved: false,
     unpairedReserved: false,
     pairState: null,
+    trace,
   };
 }
 
@@ -53,9 +69,32 @@ export function createConn(socket: WebSocket, slot: string, ip: string, role: Pe
 export function attachConnectionHandlers(conn: Conn, deps: ConnectionDeps): void {
   deps.metrics.onConnectionOpened();
 
-  conn.socket.on('message', (data: RawData, isBinary: boolean) => {
+  const plainMessageListener = (data: RawData, isBinary: boolean): void => {
     onMessage(conn, data, isBinary, deps);
-  });
+  };
+  const trace = conn.trace;
+  if (trace === null) {
+    conn.socket.on('message', plainMessageListener);
+  } else {
+    // A separate listener rather than a branch inside onMessage, so a relay
+    // with tracing off runs exactly the listener it always ran. After the
+    // first TRACE_FRAME_LIMIT frames this one swaps itself for the plain one,
+    // so a traced connection's long tail runs it too. Swapping inside an emit
+    // is safe: EventEmitter iterates a copy of the listener array.
+    const tracedMessageListener = (data: RawData, isBinary: boolean): void => {
+      const receivedAfterMs = millisecondsSinceUpgrade(trace);
+      const partner = conn.state === 'paired' ? conn.partner : null;
+      const queuedAheadBytes =
+        partner !== null && partner.socket.readyState === partner.socket.OPEN ? partner.socket.bufferedAmount : null;
+      onMessage(conn, data, isBinary, deps);
+      trace.frames.push({ receivedAfterMs, bytes: byteLengthOfRawData(data), queuedAheadBytes });
+      if (trace.frames.length >= TRACE_FRAME_LIMIT) {
+        conn.socket.off('message', tracedMessageListener);
+        conn.socket.on('message', plainMessageListener);
+      }
+    };
+    conn.socket.on('message', tracedMessageListener);
+  }
 
   conn.socket.on('pong', () => {
     conn.isAlive = true;
@@ -67,10 +106,11 @@ export function attachConnectionHandlers(conn: Conn, deps: ConnectionDeps): void
     conn.probePending = false;
   });
 
-  conn.socket.on('close', () => {
+  conn.socket.on('close', (closeCode: number) => {
     deps.metrics.onConnectionClosed();
     deps.onClosed();
     deps.slotTable.handleClose(conn);
+    if (trace !== null) deps.logger.info('connection trace', describeConnectionTrace(conn, trace, closeCode));
   });
 
   conn.socket.on('error', (error: Error) => {

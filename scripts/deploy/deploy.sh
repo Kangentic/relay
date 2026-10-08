@@ -25,9 +25,12 @@ drill="${2:-none}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 compose_file="$repo_root/infra/compose/docker-compose.prod.yml"
 env_file="/opt/relay/.env"
+secrets_dir="/opt/relay/secrets"
 state_dir="/opt/relay/state"
 last_good_file="$state_dir/last_good"
 last_env_file="$state_dir/last_env_sha256"
+last_caddy_file="$state_dir/last_caddy_sha256"
+caddy_config_path="/etc/caddy/compose/Caddyfile.prod"
 
 drill_args=()
 case "$drill" in
@@ -65,6 +68,61 @@ container_digest() {
 }
 
 install -d -m 0755 "$state_dir"
+
+# Everything the running Caddy has loaded that can change without Caddy
+# being recreated: its config, the Cloudflare ranges it imports, and the
+# Origin CA cert and key (write-secret replaces those independently of any
+# image deploy). Fingerprinted like the env file, because a reload is only
+# worth its cost when one of these actually changed.
+caddy_inputs_sha256() {
+  cat "$repo_root/infra/compose/Caddyfile.prod" "$repo_root/infra/cloudflare/trusted-proxies.caddy" \
+    "$secrets_dir/origin.crt" "$secrets_dir/origin.key" | sha256sum | cut -d ' ' -f 1
+}
+
+record_caddy_fingerprint() {
+  printf '%s\n' "$1" > "$last_caddy_file.tmp"
+  chmod 0644 "$last_caddy_file.tmp"
+  mv "$last_caddy_file.tmp" "$last_caddy_file"
+}
+
+# Reloads Caddy when, and only when, its inputs changed since it last loaded
+# them. Two things make both halves of that necessary:
+#
+#  - --force. Caddy compares the new config to the running one and skips a
+#    reload whose config is identical, and a rotated cert changes no config:
+#    the tls directive names the same two file paths. Without --force a
+#    rotation reported green and Caddy kept serving the old cert. Caddy's own
+#    docs name this case: "--force will cause a reload to happen even if the
+#    specified config is the same", "for example: reloading manually-loaded
+#    TLS certificates" (https://caddyserver.com/docs/command-line).
+#
+#  - only on change. A reload closes every proxied WebSocket (softened by
+#    stream_close_delay, not avoided), and this runs moments after the relay
+#    recreate has already dropped every session once and clients have just
+#    reconnected. Forcing a reload on every deploy would drop them all a
+#    second time - the double drop the --no-deps note below exists to stop.
+#
+# Fails loudly rather than reporting green over a Caddy still serving old
+# inputs, and records the fingerprint only once a reload succeeded.
+reload_caddy_if_inputs_changed() {
+  local current recorded
+  current="$(caddy_inputs_sha256)"
+  recorded="$(cat "$last_caddy_file" 2>/dev/null || echo "")"
+  if [ "$current" = "$recorded" ]; then
+    echo "caddy inputs unchanged since the last load, no reload"
+    return 0
+  fi
+  if [ -z "$(compose ps -q caddy || true)" ]; then
+    echo "caddy inputs changed but caddy is not running - nothing loaded them" >&2
+    return 1
+  fi
+  echo "caddy inputs changed (config, Cloudflare ranges, or Origin CA cert/key), forcing a reload"
+  if ! compose exec -T caddy caddy reload --config "$caddy_config_path" --adapter caddyfile --force; then
+    echo "caddy reload FAILED - the running Caddy keeps its previous config and certificate" >&2
+    return 1
+  fi
+  record_caddy_fingerprint "$current"
+}
 
 # The previous image digest comes from reality - the container actually
 # running right now - and not from a file that could drift.
@@ -133,6 +191,11 @@ if [ "$drill" = "none" ] && [ -n "$prev_container_id" ] && [ -n "$prev_git_ref" 
     infra/compose
   then
     echo "no build-relevant, compose or env changes since $prev_git_ref, skipping restart"
+    # The relay is untouched, but the deploy that only delivers a rotated
+    # Origin CA cert, or a refreshed Cloudflare range list, lands right
+    # here. Before this check a rotation exited at the skip gate and the
+    # running Caddy kept the old cert until someone reloaded it by hand.
+    reload_caddy_if_inputs_changed
     exit 0
   fi
 fi
@@ -202,7 +265,14 @@ wait_for_gate() {
 # rollback drill, which produced three recreates where the drill path intends
 # two (one forward deploy, one rollback). One of the extra containers lived
 # 70 ms.
+#
+# `up -d` DOES recreate Caddy when its own service definition changed (an
+# image, mount, command or sysctl edit in docker-compose.prod.yml). A fresh
+# container loads every input as it starts, so that case needs no reload
+# afterwards, only its fingerprint recorded.
+caddy_container_before="$(compose ps -q caddy || true)"
 compose up -d --no-deps caddy
+caddy_container_after="$(compose ps -q caddy || true)"
 
 # The relay recreate is scoped to `relay` only (via --force-recreate on
 # just this service), so an already-running Caddy is never dropped or
@@ -212,10 +282,6 @@ compose up -d --force-recreate --remove-orphans relay
 if ! wait_for_gate "$prev_container_id" "$new_digest"; then
   rollback
 fi
-
-# Success. Reload Caddy in case the Origin CA cert changed since the last
-# deploy (write-secret pushes it independently of image deploys).
-compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true
 
 {
   echo "$new_digest"
@@ -235,5 +301,16 @@ mv "$last_env_file.tmp" "$last_env_file"
 # Prune only after success, and only images older than a week - never
 # prune the digest we might need to roll back to next time.
 docker image prune -af --filter until=168h >/dev/null 2>&1 || true
+
+# Caddy last, once the relay is healthy and its state recorded, so a Caddy
+# problem can fail this run without mis-recording the relay's. A Caddy
+# recreated above already loaded everything as it started; otherwise reload
+# it only if its inputs changed since it last loaded them.
+if [ -n "$caddy_container_after" ] && [ "$caddy_container_after" != "$caddy_container_before" ]; then
+  record_caddy_fingerprint "$(caddy_inputs_sha256)"
+  echo "caddy was (re)created this deploy and loaded current inputs"
+else
+  reload_caddy_if_inputs_changed
+fi
 
 echo "deployed $new_digest"

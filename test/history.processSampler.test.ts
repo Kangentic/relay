@@ -3,8 +3,47 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createProcessSampler,
   isBelievableMemoryLimit,
+  parseHostCpuTicks,
+  parsePressureSomeTotalMicroseconds,
   type ProcessSampler,
 } from '../src/history/processSampler.js';
+
+/** Blocks the event loop for roughly the given time, the way a frozen process would. */
+function blockEventLoop(milliseconds: number): void {
+  const until = performance.now() + milliseconds;
+  while (performance.now() < until) {
+    // spin
+  }
+}
+
+function yieldToTimers(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+/** A fake procfs whose counters can be advanced between samples. */
+function fakeProcfs(): {
+  files: Map<string, string>;
+  setStat(steal: number, otherTicks: number): void;
+  setPressure(resource: 'cpu' | 'memory' | 'io', someTotalMicroseconds: number): void;
+  read(path: string): string | null;
+} {
+  const files = new Map<string, string>();
+  return {
+    files,
+    setStat: (steal, otherTicks) => {
+      // user nice system idle iowait irq softirq steal guest guest_nice
+      files.set('/proc/stat', `cpu  ${otherTicks} 0 0 0 0 0 0 ${steal} 5 5\ncpu0 1 2 3 4 5 6 7 8 9 10\n`);
+    },
+    setPressure: (resource, someTotalMicroseconds) => {
+      files.set(
+        `/proc/pressure/${resource}`,
+        `some avg10=0.00 avg60=0.00 avg300=0.00 total=${someTotalMicroseconds}\n` +
+          'full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n',
+      );
+    },
+    read: (path) => files.get(path) ?? null,
+  };
+}
 
 const CONTAINER_LIMIT_BYTES = 1_258_291_200; // 1200m, the production mem_limit
 
@@ -118,5 +157,132 @@ describe('process sampler', () => {
     // Null when the histogram recorded nothing in the window; never a bogus
     // zero-or-negative reading from an empty histogram.
     if (eventLoopLagP99Ms !== null) expect(eventLoopLagP99Ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it('sees a single long stall in the max that the p99 cannot see', async () => {
+    // The bug this field exists for: a freeze delays exactly one of the
+    // monitor's timer samples, so in a window of thousands it never reaches
+    // the p99. Production read p99 21.3 ms for a week straight while clients
+    // saw multi-second stalls.
+    sampler = createProcessSampler({ containerMemoryLimitBytes: null, readProcFile: () => null });
+    // At the 20 ms resolution this is ~125 ordinary samples, enough that one
+    // stalled sample sits above the 99th percentile, as it does in a real
+    // 60 s window of ~3000.
+    await yieldToTimers(2_500);
+    blockEventLoop(250);
+    await yieldToTimers(60); // the delayed timer fires and records the stall
+
+    const sample = sampler.sample(Date.now());
+
+    expect(sample.eventLoopLagMaxMs).not.toBeNull();
+    expect(sample.eventLoopLagMaxMs).toBeGreaterThanOrEqual(150);
+    expect(sample.eventLoopLagP99Ms).not.toBeNull();
+    expect(sample.eventLoopLagP99Ms).toBeLessThan(100);
+  }, 10_000);
+
+  it('resets the max with the window, so one stall is reported once', async () => {
+    sampler = createProcessSampler({ containerMemoryLimitBytes: null, readProcFile: () => null });
+    await yieldToTimers(50);
+    blockEventLoop(200);
+    await yieldToTimers(60);
+    const stalled = sampler.sample(Date.now());
+    await yieldToTimers(120);
+    const after = sampler.sample(Date.now());
+
+    expect(stalled.eventLoopLagMaxMs ?? 0).toBeGreaterThanOrEqual(150);
+    expect(after.eventLoopLagMaxMs ?? 0).toBeLessThan(150);
+  });
+
+  it('reports the longest GC pause as a non-negative number while observing', () => {
+    sampler = createProcessSampler({ containerMemoryLimitBytes: null, readProcFile: () => null });
+    // Churn enough short-lived garbage that a scavenge is all but certain.
+    for (let round = 0; round < 50; round += 1) {
+      const garbage: number[][] = [];
+      for (let index = 0; index < 2_000; index += 1) garbage.push(new Array<number>(64).fill(index));
+    }
+    const sample = sampler.sample(Date.now());
+    expect(sample.gcPauseMaxMs).not.toBeNull();
+    expect(sample.gcPauseMaxMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('reads every procfs-derived field as null where procfs does not exist', () => {
+    // win32 and macOS have no /proc. Null says "not measured here", which a
+    // chart draws as a gap, where 0 would claim a healthy host.
+    sampler = createProcessSampler({ containerMemoryLimitBytes: null, readProcFile: () => null });
+    const sample = sampler.sample(Date.now());
+    expect(sample.hostCpuStealTicksDelta).toBeNull();
+    expect(sample.hostCpuTotalTicksDelta).toBeNull();
+    expect(sample.pressureCpuSomeMs).toBeNull();
+    expect(sample.pressureMemorySomeMs).toBeNull();
+    expect(sample.pressureIoSomeMs).toBeNull();
+  });
+
+  it('reports steal ticks and PSI stall time as deltas over the window, baselined at construction', () => {
+    const procfs = fakeProcfs();
+    procfs.setStat(100, 50_000);
+    procfs.setPressure('cpu', 1_000_000);
+    procfs.setPressure('memory', 0);
+    procfs.setPressure('io', 250_000);
+    sampler = createProcessSampler({ containerMemoryLimitBytes: null, readProcFile: procfs.read });
+
+    // One window: 30 ticks stolen out of 12,030, a 2.9 s CPU stall, and an IO
+    // stall of 0.5 ms.
+    procfs.setStat(130, 62_000);
+    procfs.setPressure('cpu', 3_900_000);
+    procfs.setPressure('io', 250_500);
+    const first = sampler.sample(Date.now());
+
+    expect(first.hostCpuStealTicksDelta).toBe(30);
+    expect(first.hostCpuTotalTicksDelta).toBe(12_030);
+    expect(first.pressureCpuSomeMs).toBe(2_900);
+    expect(first.pressureMemorySomeMs).toBe(0);
+    expect(first.pressureIoSomeMs).toBe(0.5);
+
+    // The next window starts from the previous reading, not from boot.
+    const second = sampler.sample(Date.now());
+    expect(second.hostCpuStealTicksDelta).toBe(0);
+    expect(second.pressureCpuSomeMs).toBe(0);
+  });
+
+  it('treats a source that disappears as unmeasured rather than as a huge or negative delta', () => {
+    const procfs = fakeProcfs();
+    procfs.setPressure('memory', 5_000);
+    sampler = createProcessSampler({ containerMemoryLimitBytes: null, readProcFile: procfs.read });
+
+    procfs.files.delete('/proc/pressure/memory');
+    expect(sampler.sample(Date.now()).pressureMemorySomeMs).toBeNull();
+
+    // Back again: one window with no baseline, then deltas resume.
+    procfs.setPressure('memory', 9_000);
+    expect(sampler.sample(Date.now()).pressureMemorySomeMs).toBeNull();
+    procfs.setPressure('memory', 11_000);
+    expect(sampler.sample(Date.now()).pressureMemorySomeMs).toBe(2);
+  });
+});
+
+describe('procfs parsers', () => {
+  it('reads steal and total from the aggregate cpu line, excluding the guest columns', () => {
+    // Captured shape from a production host (values changed): steal is the
+    // eighth column, and guest/guest_nice are already inside user/nice.
+    const ticks = parseHostCpuTicks('cpu  4400251 35677 2253230 1352603536 63955 0 263099 7 11 13\ncpu0 1 2 3\n');
+    expect(ticks).toEqual({ steal: 7, total: 4400251 + 35677 + 2253230 + 1352603536 + 63955 + 0 + 263099 + 7 });
+  });
+
+  it('rejects a /proc/stat that does not start with the aggregate cpu line', () => {
+    expect(parseHostCpuTicks('cpu0 1 2 3 4 5 6 7 8\n')).toBeNull();
+    expect(parseHostCpuTicks('cpu  1 2 3\n')).toBeNull();
+    expect(parseHostCpuTicks('')).toBeNull();
+    expect(parseHostCpuTicks('cpu  1 2 x 4 5 6 7 8\n')).toBeNull();
+  });
+
+  it('reads the some-line total from a PSI file and ignores the full line', () => {
+    const pressureFile =
+      'some avg10=0.31 avg60=0.27 avg300=0.09 total=12038296265\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n';
+    expect(parsePressureSomeTotalMicroseconds(pressureFile)).toBe(12_038_296_265);
+  });
+
+  it('returns null for a PSI file without a some line', () => {
+    expect(parsePressureSomeTotalMicroseconds('full avg10=0.00 avg60=0.00 avg300=0.00 total=5\n')).toBeNull();
+    expect(parsePressureSomeTotalMicroseconds('')).toBeNull();
   });
 });

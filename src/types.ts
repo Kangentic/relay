@@ -1,6 +1,8 @@
 import type { RawData, WebSocket } from 'ws';
 import type { RejectReason } from './closeCodes.js';
+import type { ConnectionTrace } from './connectionTrace.js';
 import type { PeerRole } from './guards/peerRole.js';
+import type { OutboundQueueReading } from './keepalive.js';
 
 export interface Config {
   readonly port: number;
@@ -47,6 +49,12 @@ export interface Config {
    */
   readonly metricsHistoryPath: string | null;
   readonly metricsHistoryIntervalMs: number;
+  /**
+   * Logs one timing line per connection at close: upgrade, admission, 101,
+   * pairing, and the first few frames, keyed by CF-Ray. No slot id, no IP, no
+   * content. Off by default, and off installs nothing.
+   */
+  readonly connectionTrace: boolean;
   readonly logLevel: LogLevel;
   readonly logSlotHashing: boolean;
   readonly slotLogSalt: string;
@@ -83,12 +91,21 @@ export interface Conn {
   partner: Conn | null;
   isAlive: boolean;
   /**
+   * The socket's outbound queue when the keepalive loop last pinged or last
+   * spared it. A ping is written behind everything already queued, so a slow
+   * consumer can answer late while perfectly alive; a queue that fell since
+   * this reading proves its TCP peer is still acknowledging data.
+   */
+  outboundQueueAtLastCheck: OutboundQueueReading;
+  /**
    * Whether a contention probe is currently awaiting this connection's pong.
    * Deliberately separate from `isAlive`, which the keepalive loop owns on its
    * own interval: a probe that wrote `isAlive` would race the reaper in both
    * directions, either rescuing a dead socket or condemning a live one.
    */
   probePending: boolean;
+  /** The outbound queue when the contention probe armed, for the same drain test. */
+  outboundQueueAtProbe: OutboundQueueReading;
   pending: PendingFrame[];
   pendingBytes: number;
   parkTimer: ReturnType<typeof setTimeout> | null;
@@ -112,6 +129,8 @@ export interface Conn {
    * the per-frame forwarding hot path never does a slot-table lookup.
    */
   pairState: PairedSlotState | null;
+  /** Per-connection timing, present only when CONNECTION_TRACE is on. */
+  readonly trace: ConnectionTrace | null;
 }
 
 export interface WaitingSlotState {

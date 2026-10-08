@@ -33,6 +33,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     bytesForwardedTotal: 0,
     peerClosedTotal: 0,
     pongTimeoutsTotal: 0,
+    pongOverdueDrainingTotal: 0,
     rejectsByReason: {},
     ...overrides,
   };
@@ -41,6 +42,13 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
 const processSample: ProcessSample = {
   cpuPercent: 1.5,
   eventLoopLagP99Ms: 4.2,
+  eventLoopLagMaxMs: 12.5,
+  gcPauseMaxMs: 2.1,
+  hostCpuStealTicksDelta: 3,
+  hostCpuTotalTicksDelta: 12_000,
+  pressureCpuSomeMs: 4.4,
+  pressureMemorySomeMs: 0,
+  pressureIoSomeMs: 1.1,
   rssBytes: 48_000_000,
   rssPercent: 3.8,
   windowMs: 60_000,
@@ -168,7 +176,9 @@ describe('serialization', () => {
     expect(line).not.toContain('"b"');
     expect(line).not.toContain('"rj"');
     // A quiet row is the common case, so its size is what the file size is.
-    expect(line.length).toBeLessThan(160);
+    // About 70 of these bytes are the stall-attribution group, written even at
+    // zero on purpose (see the test below); 25k rows of it is under 2 MB.
+    expect(line.length).toBeLessThan(240);
   });
 
   it('keeps a zero CPU sample distinguishable from no CPU sample at all', () => {
@@ -397,6 +407,129 @@ describe('aggregation', () => {
       MID_RESOLUTION_SECONDS,
     );
     expect(merged.eventLoopLagP99Ms).toBe(55);
+  });
+
+  it('keeps the single worst loop stall and GC pause in a bucket, and sums the stall time', () => {
+    // A three-second freeze is the whole reason these fields exist, so a bucket
+    // holding one must still show it at 30d resolution. The steal ticks and the
+    // PSI milliseconds are per-interval amounts, so a bucket sums them and its
+    // steal percent stays exact.
+    const merged = aggregateHistoryRows(
+      [
+        row({
+          eventLoopLagMaxMs: 21.4,
+          gcPauseMaxMs: 1.2,
+          hostCpuStealTicksDelta: 1,
+          hostCpuTotalTicksDelta: 12_000,
+          pressureCpuSomeMs: 0.5,
+          pressureMemorySomeMs: 0,
+          pressureIoSomeMs: 2,
+        }),
+        row({
+          eventLoopLagMaxMs: 3_150,
+          gcPauseMaxMs: 0.8,
+          hostCpuStealTicksDelta: 4,
+          hostCpuTotalTicksDelta: 12_000,
+          pressureCpuSomeMs: 2_900.3,
+          pressureMemorySomeMs: 10,
+          pressureIoSomeMs: 0,
+        }),
+      ],
+      1_700_000_100_000,
+      MID_RESOLUTION_SECONDS,
+    );
+    expect(merged.eventLoopLagMaxMs).toBe(3_150);
+    expect(merged.gcPauseMaxMs).toBe(1.2);
+    expect(merged.hostCpuStealTicksDelta).toBe(5);
+    expect(merged.hostCpuTotalTicksDelta).toBe(24_000);
+    expect(merged.pressureCpuSomeMs).toBe(2_900.8);
+    expect(merged.pressureMemorySomeMs).toBe(10);
+    expect(merged.pressureIoSomeMs).toBe(2);
+  });
+
+  it('merges a measured row with an unmeasured one without inventing a zero for the bucket', () => {
+    const measuredNothing = aggregateHistoryRows(
+      [row({ eventLoopLagMaxMs: null, pressureCpuSomeMs: null }), row({ eventLoopLagMaxMs: null, pressureCpuSomeMs: null })],
+      1_700_000_100_000,
+      MID_RESOLUTION_SECONDS,
+    );
+    expect(measuredNothing.eventLoopLagMaxMs).toBeNull();
+    expect(measuredNothing.pressureCpuSomeMs).toBeNull();
+
+    const partlyMeasured = aggregateHistoryRows(
+      [row({ eventLoopLagMaxMs: null, pressureCpuSomeMs: null }), row({ eventLoopLagMaxMs: 40, pressureCpuSomeMs: 7 })],
+      1_700_000_100_000,
+      MID_RESOLUTION_SECONDS,
+    );
+    expect(partlyMeasured.eventLoopLagMaxMs).toBe(40);
+    expect(partlyMeasured.pressureCpuSomeMs).toBe(7);
+  });
+
+  it('writes the stall fields even at zero, so "measured nothing" survives a round trip', () => {
+    // The same trap the cp key documents: a quiet relay reads exactly 0 on most
+    // of these, and an omitted zero would parse back as "never measured".
+    const quiet = row({
+      eventLoopLagMaxMs: 0,
+      gcPauseMaxMs: 0,
+      hostCpuStealTicksDelta: 0,
+      hostCpuTotalTicksDelta: 0,
+      pressureCpuSomeMs: 0,
+      pressureMemorySomeMs: 0,
+      pressureIoSomeMs: 0,
+      pongOverdueDrainingDelta: 0,
+    });
+    const parsed = parseHistoryRow(serializeHistoryRow(quiet));
+    if (parsed.kind !== 'row') throw new Error('expected a row');
+    expect(parsed.row.eventLoopLagMaxMs).toBe(0);
+    expect(parsed.row.gcPauseMaxMs).toBe(0);
+    expect(parsed.row.hostCpuStealTicksDelta).toBe(0);
+    expect(parsed.row.hostCpuTotalTicksDelta).toBe(0);
+    expect(parsed.row.pressureCpuSomeMs).toBe(0);
+    expect(parsed.row.pressureMemorySomeMs).toBe(0);
+    expect(parsed.row.pressureIoSomeMs).toBe(0);
+  });
+
+  it('round-trips the stall fields and the drain grace counter', () => {
+    const parsed = parseHistoryRow(serializeHistoryRow(row({ pongOverdueDrainingDelta: 3 })));
+    if (parsed.kind !== 'row') throw new Error('expected a row');
+    expect(parsed.row.eventLoopLagMaxMs).toBe(12.5);
+    expect(parsed.row.gcPauseMaxMs).toBe(2.1);
+    expect(parsed.row.hostCpuStealTicksDelta).toBe(3);
+    expect(parsed.row.hostCpuTotalTicksDelta).toBe(12_000);
+    expect(parsed.row.pressureCpuSomeMs).toBe(4.4);
+    expect(parsed.row.pressureIoSomeMs).toBe(1.1);
+    expect(parsed.row.pongOverdueDrainingDelta).toBe(3);
+  });
+
+  it('reads a row that predates the stall fields as unmeasured, without a schema bump', () => {
+    // Additive keys under the same version, like ob/bl/pb before them. A bump
+    // would turn the whole existing file into unknown-version lines that are
+    // kept but never served, hiding the very baseline these are compared to.
+    const older = parseHistoryRow(JSON.stringify({ v: HISTORY_SCHEMA_VERSION, t: 5, r: 60, w: 60_000, el: 21.3 }));
+    if (older.kind !== 'row') throw new Error('expected a row');
+    expect(older.row.eventLoopLagP99Ms).toBe(21.3);
+    expect(older.row.eventLoopLagMaxMs).toBeNull();
+    expect(older.row.gcPauseMaxMs).toBeNull();
+    expect(older.row.hostCpuStealTicksDelta).toBeNull();
+    expect(older.row.pressureMemorySomeMs).toBeNull();
+    // Literally true for an older row: that code never spared a socket.
+    expect(older.row.pongOverdueDrainingDelta).toBe(0);
+  });
+
+  it('counts drain grace as a per-interval delta like every other counter', () => {
+    const built = buildHistoryRow({
+      timestampMs: 1_700_000_000_000,
+      windowMs: 60_000,
+      instanceId: 'abcd1234',
+      uptimeSeconds: 300,
+      isRestartBoundary: false,
+      previousSnapshot: snapshot({ pongOverdueDrainingTotal: 4 }),
+      currentSnapshot: snapshot({ pongOverdueDrainingTotal: 9 }),
+      processSample,
+      connectionSample: null,
+    });
+    expect(built.pongOverdueDrainingDelta).toBe(5);
+    expect(aggregateHistoryRows([built, built], 1_700_000_100_000, MID_RESOLUTION_SECONDS).pongOverdueDrainingDelta).toBe(10);
   });
 
   it('returns a single already-aligned row untouched, which is what makes compaction idempotent', () => {

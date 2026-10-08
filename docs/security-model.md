@@ -54,11 +54,15 @@ the same 4409 and the same reason string.
 
 The check is liveness, not proof of death, and 2s is a short window. A ping is written behind
 whatever is already queued to a socket, so an incumbent draining a large backlog (`MAX_BUFFERED_BYTES`
-permits 16 MiB) can miss the window while alive. Contention is therefore a lever a slot-id holder
-can pull against a backlogged peer, where the keepalive loop's 30s cadence effectively offered none.
-The blast radius is bounded to what a slot-id holder could already cause - a reconnect and a fresh
-handshake, no read access to anything - but raise `CONTENTION_PROBE_TIMEOUT_MS` or set it to `0` on
-a deployment where that trade does not suit.
+permits 16 MiB) can miss the window while alive. That used to make contention a lever a slot-id
+holder could pull against a backlogged peer. The probe now applies the keepalive loop's drain test:
+an incumbent whose outbound queue fell while the probe was armed is acknowledging data, and is
+spared. A half-open socket acknowledges nothing, so its queue cannot fall, and it is still reaped.
+What remains is narrower: an incumbent whose backlog has already left the relay's own queue for the
+kernel and the proxies downstream, where Node cannot see it drain, is judged by the pong alone as
+before. The blast radius is bounded to what a slot-id holder could already cause - a reconnect and a
+fresh handshake, no read access to anything - but raise `CONTENTION_PROBE_TIMEOUT_MS` or set it to
+`0` on a deployment where that trade does not suit.
 
 **A connection cannot be misrouted to the wrong peer.** When one half of a pair closes, the slot
 is freed at once while the surviving peer's socket is still completing its close handshake, so
@@ -180,6 +184,27 @@ only worth documenting if it fails the build when someone adds `{ slot: conn.slo
 line. `LOG_SLOT_HASHING` and `SLOT_LOG_SALT` configure the salted hash that any future slot
 logging would have to go through; nothing calls it today, so both are currently inert and exist to
 make adding one a deliberate act with a safe default.
+
+**The opt-in connection trace keeps that property.** With `CONNECTION_TRACE` on, the relay logs one
+line per connection at close: a random connection id, the reported role, timings (upgrade,
+admission, 101, pairing, close), and for the first eight frames their arrival time, length, and the
+partner queue they were written behind. It carries no slot id and no IP, it never reads frame
+content, and it is built from an allowlist of fields rather than by filtering a larger object. It
+also logs the `CF-Ray` request header, Cloudflare's per-request id, which links the line to
+Cloudflare's own records and to Caddy's access log for the same request. That header is
+client-controlled when the origin is reached directly, so anything that is not a well-formed ray id
+is dropped rather than copied into the log. Frame timings are metadata of the kind the section
+below already says an operator sees.
+
+**The proxy in front logs the same way, by configuration.** Caddy's access and error logs would
+otherwise record every request URI, which carries the slot id in its query string, plus every
+request header, including `CF-Connecting-IP`, `X-Forwarded-For`, and on `/admin` the Access JWT and
+the viewer's email. Before 2026-10-07 Caddy's error log did exactly that on every 502. Both logs now
+go through Caddy's `filter` encoder (`infra/compose/Caddyfile.prod`, and `Caddyfile.example` for
+self-hosters), which deletes the `slot` query parameter, every request header, and the resolved
+client IP. A Caddy configuration is not covered by the relay's tests, so this was verified against a
+live Caddy 2.8.4 by sending a request with a slot, a client-IP header and an Access header and
+reading both logs back.
 
 **Metrics carry no slot ids, no IPs, and no per-slot labels** - only process-wide counters and
 gauges. The one client-supplied dimension is the reported role on the waiting gauge, and it is not a

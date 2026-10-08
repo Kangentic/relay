@@ -121,6 +121,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     adminEnabled: readBoolean(env, 'ADMIN_ENABLED', false),
     metricsHistoryPath: readOptionalString(env, 'METRICS_HISTORY_PATH'),
     metricsHistoryIntervalMs: readInt(env, 'METRICS_HISTORY_INTERVAL_MS', 60_000),
+    // One info line per connection at close, so it is opt-in: a busy relay
+    // would otherwise multiply its log volume for an investigation nobody
+    // asked for. Off installs no listener and touches no hot path.
+    connectionTrace: readBoolean(env, 'CONNECTION_TRACE', false),
     logLevel: readLogLevel(env, 'LOG_LEVEL', 'info'),
     logSlotHashing: readBoolean(env, 'LOG_SLOT_HASHING', true),
     slotLogSalt: readString(env, 'SLOT_LOG_SALT', randomSalt()),

@@ -150,7 +150,14 @@ export async function handleAdminDataRequest(
       rssBytes: process.memoryUsage.rss(),
       cpuPercent: processSample?.cpuPercent ?? null,
       eventLoopLagP99Ms: processSample?.eventLoopLagP99Ms ?? null,
+      eventLoopLagMaxMs: processSample?.eventLoopLagMaxMs ?? null,
+      gcPauseMaxMs: processSample?.gcPauseMaxMs ?? null,
       rssPercent: processSample?.rssPercent ?? null,
+      // Steal and PSI are deliberately absent: they are deltas over the
+      // recorder's window, and a live row spans only the poll gap, so dividing
+      // one by the other would draw a rate that never happened. Like queue
+      // depth, they live on recorder rows only.
+      pongOverdueDrainingTotal: snapshot.pongOverdueDrainingTotal,
     },
     rows: rows.map(withClosedByCause),
     // Exclusive, and taken from the returned rows rather than server time, so a

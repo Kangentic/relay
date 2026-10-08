@@ -158,6 +158,12 @@ jobs:
           # publishes a year of operational history to anyone who asks.
           # METRICS_HISTORY_PATH must stay inside the relay_history volume
           # mounted at /var/lib/relay, or every deploy discards the history.
+          #
+          # CONNECTION_TRACE logs one timing line per connection (upgrade,
+          # admission, 101, pairing, first frames, keyed by CF-Ray; no slot
+          # id, no IP) for the edge-to-origin latency investigation in
+          # docs/latency.md. The relay service's log rotation in
+          # docker-compose.prod.yml is sized for it. Drop the line to stop.
           cat > "$RUNNER_TEMP/relay.env" <<EOF
           MAX_CONNECTIONS=4000
           MAX_CONNECTIONS_PER_IP=64
@@ -169,6 +175,7 @@ jobs:
           RELAY_HOSTNAME_ALIAS=$RELAY_HOSTNAME_ALIAS
           ADMIN_ENABLED=true
           METRICS_HISTORY_PATH=/var/lib/relay/history.ndjson
+          CONNECTION_TRACE=true
           EOF
           printf '%s' "$ORIGIN_CERT" > "$RUNNER_TEMP/origin.crt"
           printf '%s' "$ORIGIN_KEY" > "$RUNNER_TEMP/origin.key"

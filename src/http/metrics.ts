@@ -30,6 +30,13 @@ export interface MetricsSnapshot {
   readonly bytesForwardedTotal: number;
   readonly peerClosedTotal: number;
   readonly pongTimeoutsTotal: number;
+  /**
+   * Liveness checks a socket missed while its outbound queue was still
+   * draining, so it was spared rather than reaped. Not a teardown cause: a
+   * spared socket either answers later or is reaped and counted as a pong
+   * timeout then.
+   */
+  readonly pongOverdueDrainingTotal: number;
   readonly rejectsByReason: Readonly<Partial<Record<RejectReason, number>>>;
 }
 
@@ -48,6 +55,8 @@ export interface Metrics {
   onForward(bytes: number): void;
   onReject(reason: RejectReason): void;
   onPongTimeout(): void;
+  /** A liveness check found no pong but a falling outbound queue, and spared the socket. */
+  onPongOverdueDraining(): void;
   /**
    * Points the waiting gauge at the slot table, which is the only thing that
    * knows who is parked. Late-bound because the slot table needs a Metrics to
@@ -111,6 +120,7 @@ export function createMetrics(): Metrics {
   let sessionsTotal = 0;
   let peerClosedTotal = 0;
   let pongTimeoutsTotal = 0;
+  let pongOverdueDrainingTotal = 0;
 
   function waitingSlotsTotal(byRole: WaitingSlotsByRole): number {
     return byRole.desktop + byRole.mobile + byRole.unknown;
@@ -129,6 +139,7 @@ export function createMetrics(): Metrics {
       bytesForwardedTotal,
       peerClosedTotal,
       pongTimeoutsTotal,
+      pongOverdueDrainingTotal,
       rejectsByReason: Object.fromEntries(rejectsByReason) as Partial<Record<RejectReason, number>>,
     };
   }
@@ -160,6 +171,9 @@ export function createMetrics(): Metrics {
     },
     onPongTimeout: () => {
       pongTimeoutsTotal += 1;
+    },
+    onPongOverdueDraining: () => {
+      pongOverdueDrainingTotal += 1;
     },
     setWaitingSlotsSource: (source) => {
       waitingSlotsSource = source;
@@ -196,6 +210,9 @@ export function createMetrics(): Metrics {
         `relay_peer_closed_total ${peerClosedTotal}`,
         '# TYPE relay_pong_timeouts_total counter',
         `relay_pong_timeouts_total ${pongTimeoutsTotal}`,
+        '# HELP relay_pong_overdue_draining_total Liveness checks a socket missed while its outbound queue was still draining, so it was spared rather than reaped.',
+        '# TYPE relay_pong_overdue_draining_total counter',
+        `relay_pong_overdue_draining_total ${pongOverdueDrainingTotal}`,
         '# TYPE relay_rejects_total counter',
       ];
       for (const [reason, count] of rejectsByReason) {
@@ -281,6 +298,10 @@ export interface MetricsProcessExtras {
   readonly cpuPercent: number | null;
   readonly sampleWindowMs: number | null;
   readonly eventLoopLagP99Ms: number | null;
+  /** The single worst event loop delay in the window: the stall p99 cannot see. */
+  readonly eventLoopLagMaxMs: number | null;
+  /** The longest garbage collection pause in the window. */
+  readonly gcPauseMaxMs: number | null;
   readonly rssPercent: number | null;
   readonly historyRecorderHealthy: boolean;
   readonly historyPersistence: 'memory' | 'file';
@@ -324,6 +345,8 @@ export function handleMetriczRequest(
     // than a recorder sampling window.
     cpuPercentWindowMs: processExtras?.sampleWindowMs ?? null,
     eventLoopLagP99Ms: processExtras?.eventLoopLagP99Ms ?? null,
+    eventLoopLagMaxMs: processExtras?.eventLoopLagMaxMs ?? null,
+    gcPauseMaxMs: processExtras?.gcPauseMaxMs ?? null,
     rssPercent: processExtras?.rssPercent ?? null,
     ...(processExtras === null
       ? {}
@@ -340,6 +363,7 @@ export function handleMetriczRequest(
     framesForwardedTotal: currentSnapshot.framesForwardedTotal,
     bytesForwardedTotal: currentSnapshot.bytesForwardedTotal,
     closedByCause: closedByCauseFromSnapshot(currentSnapshot),
+    pongOverdueDrainingTotal: currentSnapshot.pongOverdueDrainingTotal,
     rejectsByReason: currentSnapshot.rejectsByReason,
   };
   response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body));

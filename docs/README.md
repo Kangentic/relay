@@ -14,6 +14,7 @@ guarantee, self-hosting quickstart, and full config reference.
 | Assessing what the relay protects | [Security model](security-model.md) |
 | Understanding how a commit becomes a running instance | [Deployment architecture](deployment.md) |
 | Running the tests, or chasing a flaky one | [Testing](testing.md) |
+| Chasing slow dials or multi-second stalls | [Latency investigation](latency.md) |
 | Operating the hosted instance | [`infra/README.md`](../infra/README.md) |
 
 ## Reference
@@ -34,6 +35,10 @@ guarantee, self-hosting quickstart, and full config reference.
   secrets and variables tables, troubleshooting, reading `/metricz`, traffic-budget checks.
 - [`infra/cloudflare/origin-ca.md`](../infra/cloudflare/origin-ca.md) — Minting and rotating the
   Origin CA certificate.
+- [Latency investigation](latency.md) - Where the 2026-10-07 multi-second stalls actually were (the
+  Cloudflare-to-origin leg), how each leg was measured, and the cited before/after for every change
+  it led to: stall attribution in the history, Caddy logs and keep-alive alignment, the forced cert
+  reload, and the keepalive that no longer reaps a slow consumer.
 
 ### Project conventions
 - [Testing](testing.md) - The two test tiers, why Node 22 is pinned (Node 24 crashes the Vitest

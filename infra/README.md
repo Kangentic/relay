@@ -149,11 +149,15 @@ workflow.
 | `MAX_SESSION_MS` | `0` (default, unchanged) | Deliberately left disabled. A wall-clock cap tears down healthy long-lived pairings mid-use; the byte cap (`MAX_SESSION_BYTES`, unchanged) is the actual runaway-bill bound, and keepalive already reaps dead sockets. |
 | `ADMIN_ENABLED` | `true` | Serves the private dashboard at `/admin`. **The relay does not authenticate it** - Cloudflare Access, scoped to the `/admin*` path on the public hostname, is the gate. See "The `/admin` dashboard and its volume" below before turning this on. |
 | `METRICS_HISTORY_PATH` | `/var/lib/relay/history.ndjson` | The `relay_history` named volume's mount point. Must be absolute. Anywhere outside the volume is discarded by the next deploy. |
+| `CONNECTION_TRACE` | `true` | One timing line per connection at close, keyed by CF-Ray, for the edge-to-origin latency investigation in [`docs/latency.md`](../docs/latency.md). No slot id, no IP. About 13k lines a day; the relay service's log rotation in the compose file is sized for it. Remove the line from `deploy.yml` to stop. |
 
 **The single most important non-`.env` value is `mem_limit: 1200m`** in
 `infra/compose/docker-compose.prod.yml`. `MAX_CONNECTIONS` cannot bound the buffered-bytes tail by
 itself, so the container memory limit is the actual OOM control. Do not remove it under the
-assumption the connection cap already covers memory.
+assumption the connection cap already covers memory. **`memswap_limit` is set equal to it**, which
+is how Docker spells "no swap": unset, the container could page another 1200m into the box's 2 GB
+swapfile, and a garbage collector touching a paged-out heap is a stall measured in disk reads. An
+OOM kill and a restart is the honest failure here.
 
 `PING_INTERVAL_MS` stays at the default `30000`, comfortably inside Cloudflare's roughly
 100-second WebSocket idle timeout. **Verify this with a real 10-minute idle pairing** after the
@@ -173,17 +177,42 @@ Rotating a value that lives in `.env` (a new `METRICS_TOKEN`) is just: update th
 then trigger a deploy (`workflow_dispatch` works if there is no code change to publish). The new
 value changes the environment fingerprint, so that deploy recreates the relay rather than skipping.
 
-**Rotating the Origin CA cert needs one extra step, and did not before.** The cert and key are
-written to `/opt/relay/secrets`, never to `/opt/relay/.env`, so they do not move the environment
-fingerprint. Since the skip-when-unchanged baseline was corrected, a `workflow_dispatch` with
-nothing else changed since the last deploy exits at the skip gate and so never reaches the
-`caddy reload` on `deploy.sh`'s success path - the new cert lands on disk, the run reports green,
-and the running Caddy keeps serving the old one. Reload it explicitly after the rotation deploy:
+**Rotating the Origin CA cert is just a deploy too.** Update the two GitHub secrets and run
+`deploy.yml` via `workflow_dispatch`. `deploy.sh` fingerprints everything the running Caddy loaded
+(the Caddyfile, the Cloudflare range list, and the Origin CA cert and key) and, when that
+fingerprint changed, runs `caddy reload --force`, even on a deploy that otherwise skips the relay
+restart. Two earlier bugs made this need a manual step, and both are fixed:
+
+- **A plain `caddy reload` does not load a new cert.** Caddy skips a reload whose config is
+  unchanged, and a rotated cert changes no config, since the `tls` directive names the same two
+  file paths. `--force` is the documented way to reload "manually-loaded TLS certificates"
+  ([Caddy CLI docs](https://caddyserver.com/docs/command-line)). Reproduced on Caddy 2.8.4: after
+  swapping the cert files, a plain reload kept serving the old serial and a forced one served the
+  new one.
+- **The rotation deploy exited at the skip gate** before ever reaching the reload, because the
+  cert lives in `/opt/relay/secrets`, not in `.env`, and moves no fingerprint the skip gate read.
+
+Reloading only on a changed fingerprint is deliberate: a reload closes every proxied WebSocket
+(`stream_close_delay` softens that, it does not avoid it), and it would land seconds after the relay
+recreate had already dropped every session once. A failed reload now fails the run instead of being
+swallowed. To reload by hand anyway, for example to rule Caddy out:
 
 ```
-ssh deploy@relay-ashburn-us-east.kangentic.com \
-  "docker compose --env-file /opt/relay/.env -f /opt/relay/src/infra/compose/docker-compose.prod.yml exec -T caddy caddy reload --config /etc/caddy/Caddyfile"
+ssh deploy@<box> \
+  "docker compose --env-file /opt/relay/.env -f /opt/relay/src/infra/compose/docker-compose.prod.yml exec -T caddy caddy reload --config /etc/caddy/compose/Caddyfile.prod --adapter caddyfile --force"
 ```
+
+`<box>` is the server's own address, not either public hostname: both are proxied through
+Cloudflare and do not accept SSH. To confirm which certificate Caddy is actually serving, compare
+`echo | openssl s_client -connect 127.0.0.1:443 -servername relay.kangentic.com | openssl x509
+-noout -serial` on the box with `openssl x509 -in /opt/relay/secrets/origin.crt -noout -serial`.
+
+**Caddy reads its config through directory mounts, never single files.** A single-file bind mount
+pins the inode it was created with, and `git checkout` replaces a file it updates with a new inode,
+so the container went on reading the old copy, and every `caddy reload` re-read it too. On
+2026-10-07 the box's Caddy was found serving the 2026-07-21 `Caddyfile.prod` (the drift happened
+to be comment-only). The compose file now mounts `infra/compose` and `infra/cloudflare` as
+directories, and Caddy runs `--config /etc/caddy/compose/Caddyfile.prod`.
 
 ## Deploy and rollback
 
@@ -300,6 +329,61 @@ docker compose -f infra/compose/docker-compose.prod.yml ps
 docker compose -f infra/compose/docker-compose.prod.yml logs --tail 200 caddy
 docker compose -f infra/compose/docker-compose.prod.yml logs --tail 200 relay
 ```
+
+`logs caddy` is Caddy's runtime and error log. Its access log is a file on the `caddy_data`
+volume, rolled at 25 MiB and kept about two weeks:
+`docker compose -f infra/compose/docker-compose.prod.yml exec caddy cat /data/logs/access.log`.
+Both are filtered: no slot id, no request headers, no client IP.
+
+## Localizing a slow patch
+
+When clients report multi-second stalls, find the leg first. The full method, and what it found on
+2026-10-07, is in [`docs/latency.md`](../docs/latency.md). In short:
+
+1. **Run [`scripts/legProbe.sh`](../scripts/legProbe.sh) on both ends over the same minutes.**
+   `client <host>` from a workstation times the edge alone (`/cdn-cgi/trace`) against the full
+   path (`/healthz`). `box <host>` on the server times Caddy-plus-relay and the relay alone, and
+   records TCP retransmit and timeout deltas from Caddy's network namespace every 10 s. The box
+   copy of the repo may predate the script; piping it in works:
+   `ssh deploy@<box> "bash -s box relay.kangentic.com 600" < scripts/legProbe.sh`.
+2. **Read the answer off the timestamps.** Origin slow with edge, caddy and relay flat is the
+   Cloudflare-to-origin leg. Caddy slow with relay flat is Caddy. Relay slow is the relay or the VM.
+3. **If it is the relay or the VM, the `/admin` Table view says which.** For the stall minute:
+   loop max high with GC max high is the runtime; with PSI high it is the host starving the
+   process; with low CPU, no GC and no PSI it is the hypervisor pausing the VM. Hetzner's shared
+   vCPU does not report steal (it reads 0 by construction), so that last case has no direct counter.
+4. **To follow one connection end to end**, `CONNECTION_TRACE` logs a line per connection keyed by
+   CF-Ray (`docker compose ... logs relay | grep '"connection trace"'`), and Caddy's access log
+   carries the same `cf_ray` with `upstream_latency_ms`.
+
+## Cloudflare Tunnel A/B
+
+An opt-in experiment for comparing the public-origin path with a Cloudflare Tunnel, should the
+Cloudflare-to-origin leg stay the problem. It runs a second hostname through `cloudflared`'s
+outbound connections into Caddy's internal `:8081` site, so both hostnames cross the same Caddy and
+relay and only that one leg differs. Nothing starts it by default: it is the `tunnel-ab` compose
+profile, and `deploy.sh` never names it. No Cloudflare doc claims a tunnel lowers WebSocket latency,
+which is exactly why it is measured rather than adopted.
+
+1. In the Cloudflare dashboard, create a remotely managed tunnel and a public hostname for it (for
+   example `relay-tunnel-ab.kangentic.com`) whose service is `http://caddy:8081`. Do not create an
+   Access application for it; see the next step instead.
+2. **Never let it serve `/admin`.** Production runs `ADMIN_ENABLED=true` gated only by the Access
+   application on the two main hostnames, and the A/B hostname has none. Caddy's `:8081` site
+   answers `/admin*` with a 404 before proxying anything, so this holds without relying on the
+   dashboard. Check it once live: `curl -s -o /dev/null -w '%{http_code}' https://<ab host>/admin`
+   must print `404`.
+3. Place the token on the box by hand, outside `.env` (that file is the relay's environment, and the
+   relay has no business holding a tunnel credential), readable by cloudflared's non-root user:
+   `install -m 0644 /dev/stdin /opt/relay/secrets/tunnel-token` with the token on stdin.
+4. Start it: `docker compose --env-file /opt/relay/.env -f /opt/relay/src/infra/compose/docker-compose.prod.yml --profile tunnel-ab up -d cloudflared`.
+   A deploy's `--remove-orphans` may remove it; start it again after each deploy for as long as the
+   experiment runs.
+5. Measure both hostnames over the same minutes, several times a day for a week:
+   `scripts/legProbe.sh client relay.kangentic.com 600` and the same against the A/B hostname, plus
+   `scripts/burstProbe.mjs` against each. Compare p50, p99, and samples over 0.25 s.
+6. Tear down: `docker compose ... --profile tunnel-ab stop cloudflared`, delete the tunnel and its
+   DNS record, and remove `/opt/relay/secrets/tunnel-token`.
 
 ## Reading `/metricz`
 
