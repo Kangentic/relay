@@ -81,7 +81,9 @@ deploy.yml (runner)
                                               dependency and recreated too)
             -> compose up -d --force-recreate relay   (scoped to relay only)
             -> health gate (up to 60s)
-            -> on failure: rollback to the previous digest
+            -> on failure: rollback to the previous digest, and put Caddy back
+                           on the previous tree's definition (a no-op
+                           unless this deploy had recreated it)
             -> on success: write state/last_good, prune old images,
                            then reload Caddy (--force) only if its inputs
                            changed and it was not just recreated

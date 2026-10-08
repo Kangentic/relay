@@ -223,6 +223,15 @@ rollback() {
   drill_args=()
   compose up -d --force-recreate --remove-orphans relay
 
+  # Put Caddy back on the restored tree's definition too. If this deploy
+  # recreated Caddy (a changed mount, command or sysctl), the checkout above
+  # has just swapped the files under the NEW container: it keeps serving from
+  # memory, but its next restart (a reboot, a crash) would read a config
+  # written for a different container and could fail to start at all. `up`
+  # is a no-op when the definition did not change, so this costs nothing on
+  # an ordinary rollback.
+  compose up -d --no-deps caddy
+
   if ! wait_for_gate "$prev_container_id" "$prev_digest"; then
     echo "rollback itself failed the gate - manual intervention required" >&2
     exit 1

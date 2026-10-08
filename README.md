@@ -239,7 +239,9 @@ kept that way:
   that) earns another interval instead of a reap. The queue is read from libuv's live write queue
   as well as `bufferedAmount`, because Node hands a backlog to the kernel as one batched write and
   `bufferedAmount` stays flat until all of it lands. Measured on Linux with a reader taking 1 MiB/s
-  of a 24 MiB backlog: reaped mid-stream in 5 of 5 runs before, delivered in full 5 of 5 after.
+  of a 24 MiB backlog: reaped mid-stream in 5 of 5 runs before, delivered in full 5 of 5 after. The
+  limit: bytes already handed to the kernel (and to any proxy in front) cannot be seen draining, so
+  a backlog small enough to sit entirely in those buffers is judged by the pong alone.
 
 Measured on a development machine (relay and test clients sharing one Windows box over loopback,
 Node 22, `scripts/loadTest.mjs`; client-side scheduling is included in the numbers, so treat them
