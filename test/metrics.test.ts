@@ -382,12 +382,23 @@ describe('GET /metricz over the live server', () => {
       adminEnabled: true,
       metricsHistoryIntervalMs: 1_000,
     });
-    const body = (await (await fetch(`${relay.url.replace('ws://', 'http://')}/metricz`)).json()) as Record<
-      string,
-      unknown
-    >;
+    const metriczUrl = `${relay.url.replace('ws://', 'http://')}/metricz`;
+    let body = (await (await fetch(metriczUrl)).json()) as Record<string, unknown>;
 
     expect(body['historyRecorderHealthy']).toBe(true);
     expect(body['historyPersistence']).toBe('memory');
+
+    // A non-null window is the signal that the recorder has taken a sample, so
+    // the sampled fields must now carry it rather than a hard-wired null.
+    const deadline = Date.now() + 6_000;
+    while (body['cpuPercentWindowMs'] === null && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      body = (await (await fetch(metriczUrl)).json()) as Record<string, unknown>;
+    }
+    expect(body['cpuPercentWindowMs']).toEqual(expect.any(Number));
+    // The GC observer reads 0 when no collection ran, so this is a number on
+    // every sample; the loop max is one whenever its histogram saw a tick.
+    expect(body['gcPauseMaxMs']).toEqual(expect.any(Number));
+    expect(body['eventLoopLagMaxMs']).toEqual(expect.any(Number));
   });
 });

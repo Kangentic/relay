@@ -96,6 +96,69 @@ return host.innerHTML;`,
   return run(rows, rangeMs, timeZone);
 }
 
+/** Runs the page's own specs() over the given rows and returns the chart card titles it builds. */
+function chartTitlesOver(rows: readonly Record<string, unknown>[]): string[] {
+  const bodies = [
+    'LIVE_RANGE',
+    'css',
+    'seriesColor',
+    'fmtCount',
+    'fmtBytes',
+    'fmtBytesRate',
+    'fmtPerMinute',
+    'fmtPercent',
+    'fmtMs',
+    'esc',
+    'nominalWindowMs',
+    'rateIsTrustworthy',
+    'perMinute',
+    'stealPercentOf',
+    'activeSeries',
+    'plotRows',
+    'specs',
+  ].map(pageDeclaration);
+  const run = new Function(
+    'rows',
+    `var document = { documentElement: {} };
+var getComputedStyle = function () { return { getPropertyValue: function () { return ""; } }; };
+// Stubbed rather than lifted: its triage prose holds semicolons the declaration
+// lifter would cut at, and these rows carry no teardowns for it to describe.
+var CAUSES = [];
+var state = { meta: { intervalMs: 60000 }, rows: rows, liveRows: [], rangeMs: 3600000 };
+${bodies.join('\n')}
+return specs().map(function (spec) { return spec.title; });`,
+  ) as (rows: readonly Record<string, unknown>[]) => string[];
+  return run(rows);
+}
+
+/** Runs the page's own renderTiles over a live payload and returns the markup it wrote. */
+function renderTilesOver(live: Record<string, unknown>): string {
+  const bodies = [
+    'fmtCount',
+    'fmtBytes',
+    'fmtInt',
+    'fmtPercent',
+    'fmtMs',
+    'fmtDuration',
+    'esc',
+    'statusOf',
+    'WAITING_ROLES',
+    'waitingNote',
+    'latestRow',
+    'renderTiles',
+  ].map(pageDeclaration);
+  const run = new Function(
+    'live',
+    `var host = { innerHTML: "" };
+var document = { getElementById: function () { return host; } };
+var state = { live: live, meta: { capacity: {} }, rows: [] };
+${bodies.join('\n')}
+renderTiles();
+return host.innerHTML;`,
+  ) as (live: Record<string, unknown>) => string;
+  return run(live);
+}
+
 function httpBase(harness: RelayHarness): string {
   return harness.url.replace('ws://', 'http://');
 }
@@ -246,6 +309,131 @@ describe('/admin when enabled', () => {
     // A payload from a relay that predates the split still reads correctly
     // rather than throwing or printing "undefined".
     expect(waitingNote({ waitingSlots: 2 })).toBe('2 waiting to pair');
+  });
+
+  it('builds a live row that carries the stall fields it can and leaves the window deltas as gaps', () => {
+    type SynthesizeLiveRow = (
+      previous: Record<string, unknown>,
+      current: Record<string, unknown>,
+      previousAtMs: number,
+      nowMs: number,
+    ) => Record<string, unknown>;
+    const synthesizeLiveRow = pageFunction(
+      ['subtractMaps', 'synthesizeLiveRow'],
+      'synthesizeLiveRow',
+    )(60_000) as SynthesizeLiveRow;
+    const snapshot = (overrides: Record<string, unknown>): Record<string, unknown> => ({
+      uptimeSeconds: 100,
+      connectionsTotal: 0,
+      sessionsTotal: 0,
+      framesForwardedTotal: 0,
+      bytesForwardedTotal: 0,
+      closedByCause: {},
+      rejectsByReason: {},
+      activeConnections: 0,
+      waitingSlots: 0,
+      pairedSlots: 0,
+      cpuPercent: null,
+      eventLoopLagP99Ms: 21.3,
+      eventLoopLagMaxMs: 3_150,
+      gcPauseMaxMs: 4.5,
+      pongOverdueDrainingTotal: 0,
+      rssBytes: 1_000,
+      rssPercent: null,
+      ...overrides,
+    });
+
+    const row = synthesizeLiveRow(
+      snapshot({ pongOverdueDrainingTotal: 3 }),
+      snapshot({ pongOverdueDrainingTotal: 5 }),
+      0,
+      2_000,
+    );
+    expect(row['pongOverdueDrainingDelta']).toBe(2);
+    expect(row['eventLoopLagMaxMs']).toBe(3_150);
+    expect(row['gcPauseMaxMs']).toBe(4.5);
+    // Steal and PSI are deltas over the recorder's window, not this poll gap,
+    // so the live row has no honest value for them and draws a gap.
+    for (const key of [
+      'hostCpuStealTicksDelta',
+      'hostCpuTotalTicksDelta',
+      'pressureCpuSomeMs',
+      'pressureMemorySomeMs',
+      'pressureIoSomeMs',
+    ]) {
+      expect(row[key]).toBeNull();
+    }
+
+    // A restart zeroes the counter, which must not draw as a negative spike.
+    const afterRestart = synthesizeLiveRow(
+      snapshot({ pongOverdueDrainingTotal: 5 }),
+      snapshot({ pongOverdueDrainingTotal: 1, uptimeSeconds: 1 }),
+      0,
+      2_000,
+    );
+    expect(afterRestart['pongOverdueDrainingDelta']).toBe(0);
+
+    // A relay that predates these fields sends none of them: zero and null,
+    // never NaN or undefined.
+    const older = snapshot({});
+    delete older['pongOverdueDrainingTotal'];
+    delete older['eventLoopLagMaxMs'];
+    delete older['gcPauseMaxMs'];
+    const fromOlderRelay = synthesizeLiveRow(older, older, 0, 2_000);
+    expect(fromOlderRelay['pongOverdueDrainingDelta']).toBe(0);
+    expect(fromOlderRelay['eventLoopLagMaxMs']).toBeNull();
+    expect(fromOlderRelay['gcPauseMaxMs']).toBeNull();
+  });
+
+  it('draws the host stall and steal cards only where the host measured them', () => {
+    const row = (stallFields: Record<string, unknown>): Record<string, unknown> => ({
+      windowMs: 60_000,
+      resolutionSeconds: 60,
+      closedByCause: {},
+      rejectsByReasonDelta: {},
+      ...stallFields,
+    });
+    const unmeasured = { hostCpuStealTicksDelta: null, hostCpuTotalTicksDelta: null, pressureCpuSomeMs: null };
+
+    // No procfs (win32, macOS), or rows written before the fields existed:
+    // two empty cards would read as a healthy host rather than an unmeasured one.
+    const withoutProcfs = chartTitlesOver([row(unmeasured)]);
+    expect(withoutProcfs).toContain('Event loop delay and GC pauses');
+    expect(withoutProcfs).not.toContain('Host stall time');
+    expect(withoutProcfs).not.toContain('Host CPU steal');
+    const predatingFields = chartTitlesOver([row({})]);
+    expect(predatingFields).not.toContain('Host stall time');
+    expect(predatingFields).not.toContain('Host CPU steal');
+
+    // A measured zero is still measured: a quiet Linux host reads 0 PSI most of
+    // the time and must keep its card.
+    const measured = chartTitlesOver([
+      row(unmeasured),
+      row({ hostCpuStealTicksDelta: 0, hostCpuTotalTicksDelta: 12_000, pressureCpuSomeMs: 0 }),
+    ]);
+    expect(measured).toContain('Host stall time');
+    expect(measured).toContain('Host CPU steal');
+  });
+
+  it("adds the window's worst stall to the event loop tile only when it was measured", () => {
+    const live = {
+      activeConnections: 0,
+      pairedSlots: 0,
+      waitingSlots: 0,
+      rssBytes: 1_000,
+      rssPercent: null,
+      cpuPercent: null,
+      eventLoopLagP99Ms: 21.3,
+      eventLoopLagMaxMs: 3_150,
+      uptimeSeconds: 60,
+      bytesForwardedTotal: 0,
+    };
+
+    expect(renderTilesOver(live)).toContain('worst 3150 ms; above ~50 ms p99 delays every forward');
+
+    const unmeasured = renderTilesOver({ ...live, eventLoopLagMaxMs: null });
+    expect(unmeasured).toContain('above ~50 ms delays every forward');
+    expect(unmeasured).not.toContain('worst');
   });
 
   it('formats times in the zone it is given, so the UTC toggle actually moves the clock', () => {
@@ -614,6 +802,10 @@ describe('/admin when enabled', () => {
     ]) {
       expect(payload.live).toHaveProperty(key);
     }
+    // A row exists, so the recorder has sampled, and the live tile must carry
+    // that sample rather than a placeholder null.
+    expect((payload.live as Record<string, unknown>)['gcPauseMaxMs']).toEqual(expect.any(Number));
+    expect((payload.live as Record<string, unknown>)['eventLoopLagMaxMs']).toEqual(expect.any(Number));
     for (const key of [
       'serverTimeMs',
       'historyPersistence',
