@@ -209,11 +209,19 @@ described: contention could reap a live incumbent that was merely backlogged.
   | BBR, no loss | 4.5 / 5.8 ms (10 runs) | |
 
   Cubic's bursts climbed past a second as losses accumulated, which is the shape of the client
-  patches; BBR held, and cost nothing on a clean path. The production kernel ships `tcp_bbr` as a
-  module that is not loaded (available: `reno cubic`), and a container cannot load modules, so
-  `deploy.sh` loads it and lists it in `/etc/modules-load.d/` before compose touches Caddy, failing
-  the deploy rather than leaving Caddy unable to start. `cloud-init.yaml` writes the same file on
-  new boxes. Production after-measure: the burst probe above, pending.
+  patches; BBR held, and cost nothing on a clean path. Two host conditions stood in the way on
+  production, and a container can create neither: the kernel ships `tcp_bbr` as a module that was
+  not loaded (available: `reno cubic`), and a namespace other than the host's may only default to an
+  algorithm on `tcp_allowed_congestion_control` ("Only init netns can set default to a restricted
+  algorithm", `net/ipv4/tcp_cong.c`), which was `reno cubic`. The lab passed only because Docker
+  Desktop's VM already allows `bbr`; with an algorithm the kernel refuses, Docker fails the container
+  with "operation not permitted", which on a Caddy recreate would have been an outage. So
+  `deploy.sh` loads the module, adds `bbr` to the allowed list, persists both (`modules-load.d`,
+  then `sysctl.d`), and starts a throwaway container with Caddy's exact image and sysctl before
+  compose touches Caddy, stopping the deploy if that fails. A dry run of that function against fake
+  `/proc` and `/etc` trees covered the production start state, an idempotent second deploy, and a
+  host where the allowed-list write did not take (the preflight stopped it). `cloud-init.yaml`
+  writes the same two files on new boxes. Production after-measure: the burst probe above, pending.
 - **`tcp_notsent_lowat`: rejected.** The hope was that keeping unsent bytes out of the kernel would
   leave a backlog visible to the keepalive's drain check. With `16384` set on the slow-consumer
   repro (Linux container), the relay's own queue did grow (23.2 MiB against 21.4 MiB), but 4 of 5

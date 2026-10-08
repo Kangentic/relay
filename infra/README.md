@@ -159,16 +159,25 @@ is how Docker spells "no swap": unset, the container could page another 1200m in
 swapfile, and a garbage collector touching a paged-out heap is a stall measured in disk reads. An
 OOM kill and a restart is the honest failure here.
 
-**Caddy runs BBR, which needs a kernel module on the host.** The `caddy` service sets
+**Caddy runs BBR, which needs two host settings.** The `caddy` service sets
 `net.ipv4.tcp_congestion_control=bbr` in its own network namespace (measured: under 0.8% loss, BBR
-held 2 MiB bursts near 200 ms where cubic climbed past a second; see `docs/latency.md`). Ubuntu
-ships `tcp_bbr` as a module, a container cannot load one, and Docker refuses to start a container
-that asks for an algorithm the kernel does not have, so a Caddy recreate without the module loaded
-is an outage. `deploy.sh` therefore runs `modprobe tcp_bbr` and writes
-`/etc/modules-load.d/kangentic-relay.conf` before compose touches Caddy (failing the deploy, not
-Caddy, if it cannot), and `cloud-init.yaml` writes the same file on new boxes so it loads at boot
-before Docker starts. If Caddy ever fails to start with a sysctl error after a reboot, check
-`cat /proc/sys/net/ipv4/tcp_available_congestion_control` for `bbr` first.
+held 2 MiB bursts near 200 ms where cubic climbed past a second; see `docs/latency.md`). The kernel
+accepts that only when `tcp_bbr` is loaded (Ubuntu ships it as a module) **and** `bbr` is on
+`net.ipv4.tcp_allowed_congestion_control`: a namespace other than the host's may only default to an
+allowed algorithm, and the stock list is `reno cubic`. A container can create neither, and without
+them runc refuses to start Caddy ("failed to write sysctl ... operation not permitted"), which on a
+recreate is an outage that `rollback()` would not reach. So `deploy.sh`, before compose touches
+Caddy:
+
+1. runs `modprobe tcp_bbr` and writes `/etc/modules-load.d/kangentic-relay.conf`;
+2. adds `bbr` to the allowed list and writes `/etc/sysctl.d/90-kangentic-relay.conf` (systemd
+   applies `sysctl.d` after `modules-load.d` at boot, so the order holds across a reboot);
+3. starts a throwaway container with the exact Caddy image and sysctl, and stops the deploy, with
+   the running Caddy untouched, if that fails.
+
+`cloud-init.yaml` writes the same two files on new boxes. If Caddy ever fails to start with a
+sysctl error after a reboot, check both `/proc/sys/net/ipv4/tcp_available_congestion_control` and
+`/proc/sys/net/ipv4/tcp_allowed_congestion_control` for `bbr`.
 
 `PING_INTERVAL_MS` stays at the default `30000`, comfortably inside Cloudflare's roughly
 100-second WebSocket idle timeout. **Verify this with a real 10-minute idle pairing** after the

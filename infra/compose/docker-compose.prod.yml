@@ -121,10 +121,13 @@ services:
     # In a lab with this exact Caddy config, 15 ms delay and 0.8% loss, 2 MiB
     # bursts took p90 1224 ms (max 1889) under cubic and p90 198 ms (max 208)
     # under BBR, with no difference on a clean path (docs/latency.md).
-    # tcp_bbr is a kernel module on the host; deploy.sh loads it and lists it
-    # in modules-load.d BEFORE compose touches this service, because a
-    # container cannot load modules itself and Docker refuses to start one
-    # asking for a congestion control the kernel does not have.
+    # Two host conditions, neither of which a container can create: the
+    # tcp_bbr module loaded, and bbr on net.ipv4.tcp_allowed_congestion_control
+    # (a namespace may only default to an allowed algorithm; stock list "reno
+    # cubic"). Without both, runc refuses to start this container. deploy.sh
+    # sets and persists both, then starts a throwaway container with this exact
+    # image and sysctl, all BEFORE compose touches this service, and stops the
+    # deploy if any of it fails.
     sysctls:
       - net.ipv4.tcp_slow_start_after_idle=0
       - net.ipv4.tcp_congestion_control=bbr

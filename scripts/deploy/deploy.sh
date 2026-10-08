@@ -124,21 +124,60 @@ reload_caddy_if_inputs_changed() {
   record_caddy_fingerprint "$current"
 }
 
-# The Caddy service sets net.ipv4.tcp_congestion_control=bbr in its network
-# namespace (docker-compose.prod.yml), and tcp_bbr is a kernel module that a
-# container cannot load for itself. If it is not loaded when Caddy is created,
-# Docker refuses to start the container, and a recreate that fails to start is
-# an outage. So it is loaded here, before compose touches Caddy, and listed in
-# modules-load.d so it is back before Docker starts Caddy after a reboot.
-# `sudo -n` fails at once rather than waiting on a prompt, and set -e then
-# stops the deploy before anything was recreated.
-ensure_tcp_bbr_loaded() {
+# The Caddy service sets net.ipv4.tcp_congestion_control=bbr in its own network
+# namespace (docker-compose.prod.yml). The kernel accepts that only when two
+# host conditions hold, and a container can create neither:
+#
+#  - the tcp_bbr module is loaded. Ubuntu builds it as a module, and a
+#    container cannot load one.
+#  - bbr is on net.ipv4.tcp_allowed_congestion_control. A namespace other than
+#    the host's may only default to an algorithm on that list ("Only init
+#    netns can set default to a restricted algorithm", net/ipv4/tcp_cong.c),
+#    and the stock list is just the host default plus reno: "reno cubic".
+#
+# Miss either and runc refuses to start Caddy ("failed to write sysctl ...
+# operation not permitted"), and a recreate that cannot start is an outage
+# that rollback() would not even reach, since only the relay's health gate
+# triggers it. So both are set here and persisted (modules-load.d, then
+# sysctl.d, which systemd applies after modules at boot), and then a
+# throwaway container proves the exact image and sysctl start before compose
+# touches the real Caddy. Any failure stops the deploy (set -e) with the
+# running Caddy untouched. `sudo -n` fails at once rather than waiting on a
+# prompt.
+ensure_caddy_can_run_bbr() {
   local modules_load_file="/etc/modules-load.d/kangentic-relay.conf"
+  local sysctl_file="/etc/sysctl.d/90-kangentic-relay.conf"
+  local allowed image caddy_image=""
   if ! grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control; then
     sudo -n modprobe tcp_bbr
   fi
   if ! grep -qx tcp_bbr "$modules_load_file" 2>/dev/null; then
     echo tcp_bbr | sudo -n tee "$modules_load_file" >/dev/null
+  fi
+
+  allowed="$(cat /proc/sys/net/ipv4/tcp_allowed_congestion_control)"
+  case " $allowed " in
+    *" bbr "*) ;;
+    *)
+      allowed="$allowed bbr"
+      sudo -n sysctl -q -w "net.ipv4.tcp_allowed_congestion_control=$allowed"
+      ;;
+  esac
+  if ! grep -qxF "net.ipv4.tcp_allowed_congestion_control = $allowed" "$sysctl_file" 2>/dev/null; then
+    echo "net.ipv4.tcp_allowed_congestion_control = $allowed" | sudo -n tee "$sysctl_file" >/dev/null
+  fi
+
+  for image in $(compose config --images); do
+    case "$image" in caddy:*) caddy_image="$image" ;; esac
+  done
+  if [ -z "$caddy_image" ]; then
+    echo "preflight: no caddy image in the compose file" >&2
+    return 1
+  fi
+  if ! docker run --rm --network none --entrypoint true \
+    --sysctl net.ipv4.tcp_congestion_control=bbr "$caddy_image"; then
+    echo "preflight: $caddy_image cannot start with BBR on this host - the running Caddy is untouched" >&2
+    return 1
   fi
 }
 
@@ -297,7 +336,7 @@ wait_for_gate() {
 # image, mount, command or sysctl edit in docker-compose.prod.yml). A fresh
 # container loads every input as it starts, so that case needs no reload
 # afterwards, only its fingerprint recorded.
-ensure_tcp_bbr_loaded
+ensure_caddy_can_run_bbr
 caddy_container_before="$(compose ps -q caddy || true)"
 compose up -d --no-deps caddy
 caddy_container_after="$(compose ps -q caddy || true)"
