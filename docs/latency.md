@@ -195,6 +195,31 @@ described: contention could reap a live incumbent that was merely backlogged.
   1 in Caddy's namespace. Applied as a namespaced `sysctls` entry. `scripts/burstProbe.mjs` through
   `wss://relay.kangentic.com`, 20 runs, before: 16-byte frame p50 36.5 ms; 512 KiB after 10 s idle
   p50 103.7 ms, p90 171.4 ms, max 603.7 ms. After: pending. Keep it if the burst p50 drops.
+- **BBR congestion control on the Caddy service: applied.** The edge-to-origin leg lost 0.8% of
+  segments during a slow patch, and cubic reads every loss as congestion and shrinks its window.
+  Lab: this exact Caddyfile on Caddy 2.8.4, `netem` adding 15 ms delay and 0.8% loss on Caddy's
+  egress, 2 MiB bursts after 2 s idle through Caddy's internal site, 15 runs per arm,
+  `tcp_slow_start_after_idle=0` in both:
+
+  | Arm | Round 1 p50 / p90 / max | Round 2 (order reversed) p50 / p90 / max |
+  |---|---|---|
+  | cubic | 284 / 1,224 / 1,889 ms | 1,485 / 1,664 / 1,872 ms |
+  | BBR | 155 / 198 / 208 ms | 170 / 231 / 423 ms |
+  | cubic, no loss | 5.4 / 7.4 ms (10 runs) | |
+  | BBR, no loss | 4.5 / 5.8 ms (10 runs) | |
+
+  Cubic's bursts climbed past a second as losses accumulated, which is the shape of the client
+  patches; BBR held, and cost nothing on a clean path. The production kernel ships `tcp_bbr` as a
+  module that is not loaded (available: `reno cubic`), and a container cannot load modules, so
+  `deploy.sh` loads it and lists it in `/etc/modules-load.d/` before compose touches Caddy, failing
+  the deploy rather than leaving Caddy unable to start. `cloud-init.yaml` writes the same file on
+  new boxes. Production after-measure: the burst probe above, pending.
+- **`tcp_notsent_lowat`: rejected.** The hope was that keeping unsent bytes out of the kernel would
+  leave a backlog visible to the keepalive's drain check. With `16384` set on the slow-consumer
+  repro (Linux container), the relay's own queue did grow (23.2 MiB against 21.4 MiB), but 4 of 5
+  runs still logged the reap after the last byte: the bytes the check cannot see are in flight to
+  the receiver, not unsent. Caddy has nothing for it to improve either, since it proxies each
+  WebSocket as one ordered stream with nothing to reprioritize.
 - **bufferutil: rejected.** It "improves the performance of certain operations such as masking and
   unmasking" ([ws README](https://github.com/websockets/ws)), and the bar was a 20% gain, because
   adopting it would break the relay's one-runtime-dependency rule. Measured with
@@ -212,8 +237,12 @@ described: contention could reap a live incumbent that was merely backlogged.
 - **Cloudflare.** ECH is on: the zone's HTTPS record carries an `ech=` parameter (public name
   `cloudflare-ech.com`) alongside `alpn=h3,h2`. Nothing to change. Do not buy Argo: "Argo is not
   compatible with WebSockets" ([Cloudflare](https://developers.cloudflare.com/network/websockets/)).
-  Bot Fight Mode, which "may challenge API or mobile app traffic", needs the dashboard to confirm;
-  no request in any probe was challenged.
+  Bot Fight Mode "may challenge API or mobile app traffic". The dashboard setting was not read
+  (it needs an interactive Cloudflare login), but the traffic it would catch first is not being
+  challenged: a bare `curl` from the Hetzner datacenter address got `HTTP/2 200` with no
+  `cf-mitigated` header, the GitHub Actions monitor (also a datacenter, also a non-browser client)
+  passes every 30 minutes, and no request in any probe here was challenged. Confirm the toggle in
+  the dashboard when convenient.
 - **Cloudflare Tunnel A/B.** The gate the task set is met: the measured problem is the origin leg.
   The tunnel is set up as an opt-in compose profile on a second hostname, with `/admin` refused in
   Caddy because that hostname has no Access application. See `infra/README.md`, "Cloudflare Tunnel
@@ -254,17 +283,33 @@ curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://127.0.0.1:8080/metricz
 From a workstation, over the same minutes as `scripts/legProbe.sh box relay.kangentic.com 600` on
 the box: `scripts/legProbe.sh client relay.kangentic.com 600`, and for item 7
 `node scripts/burstProbe.mjs --url wss://relay.kangentic.com`, compared against the burst p50 of
-103.7 ms above.
+103.7 ms (p90 171.4, max 603.7) above. Confirm BBR is live in Caddy's namespace with
+`sudo nsenter -t $(docker inspect -f '{{.State.Pid}}' compose-caddy-1) -n cat /proc/sys/net/ipv4/tcp_congestion_control`
+(expect `bbr`).
 
 ## Already right, unchanged
 
 The forward is zero-copy (`connection.ts` sends the received buffer as-is), `setNoDelay` is on (ws
 sets it), writes are corked (ws), `permessage-deflate` is off, and production runs Node 22.23.2.
 
+## Also changed
+
+- **Caddy is pinned to `caddy:2.8.4`**, the version production ran under the floating `caddy:2.8`
+  tag and the one every config here was validated against, so a Caddy recreate is never also an
+  unannounced upgrade.
+- **The monitor's synthetic pair now times the path.** Every run prints both dial times and the
+  round trip into the job summary, and a dial over 2 s raises a warning annotation. It does not
+  fail the run: dials over a second happen on about 1.4% of attempts on a normal day, so a failure
+  per slow dial would file issues on noise; the 10 s hard timeout is still the failure. First run
+  against production: dials 319 and 315 ms, round trip 85 ms.
+
 ## Follow-ups this data suggests
 
-- **Parked desktops re-dial every minute.** In the week before, 87,763 of 93,517 connections ended
-  in `park_timeout` (60 s): every idle desktop crosses the slow leg with a fresh dial each minute,
-  which is exactly where the 1-6 s dial stalls were measured. Raising `PARK_TIMEOUT_MS` is a
-  product decision tied to the desktop client, not made here.
+- **Parked desktops re-dial every minute, and the clients depend on it.** In the week before,
+  87,763 of 93,517 connections ended in `park_timeout` (60 s): every idle desktop crosses the slow
+  leg with a fresh dial each minute, which is exactly where the 1-6 s dial stalls were measured.
+  Raising `PARK_TIMEOUT_MS` would cut that, but **not from this repo alone**: the desktop relies on
+  the 60 s close to re-initiate a stale handshake (`bridge-session.ts`, #635), and the phone reports
+  a failed pairing only when the relay closes with 4408 (`pairingMachine.ts`). Both need a client
+  change first, so this stays a cross-repo task.
 - **Take the leg evidence to Cloudflare or Hetzner** once a week of CF-Ray-keyed traces exists.

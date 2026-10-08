@@ -77,7 +77,11 @@ services:
       - edge
 
   caddy:
-    image: caddy:2.8
+    # An exact version, not the floating `caddy:2.8`: a Caddy recreate should
+    # never also be an unannounced Caddy upgrade. 2.8.4 is what production ran
+    # under the floating tag, and what every Caddyfile here was validated
+    # against (caddy adapt and a live run).
+    image: caddy:2.8.4
     restart: unless-stopped
     # The config path is explicit because the config now lives in a mounted
     # directory rather than at the image's default /etc/caddy/Caddyfile.
@@ -101,16 +105,29 @@ services:
       - ../cloudflare:/etc/caddy/cloudflare:ro
       - /opt/relay/secrets:/etc/caddy/origin:ro
       - caddy_data:/data
-    # Caddy is the process that sends to Cloudflare, so it is the one whose
-    # congestion window matters. With the kernel default of 1, a connection
-    # idle for one RTO restarts from the initial window: "time out the
-    # congestion window after an idle period. Default: 1"
-    # (https://docs.kernel.org/networking/ip-sysctl.html). Relay traffic is
+    # Caddy is the process that sends to Cloudflare, so its TCP settings are
+    # the ones that govern the lossy edge-to-origin leg. Both are namespaced:
+    # they change Caddy's netns and nothing else on the host.
+    #
+    # slow_start_after_idle=0: with the kernel default of 1, a connection
+    # idle for one RTO restarts from the initial window ("time out the
+    # congestion window after an idle period. Default: 1",
+    # https://docs.kernel.org/networking/ip-sysctl.html). Relay traffic is
     # bursty by nature (idle tunnel, then a transcript), so every burst after
-    # a pause paid slow start again. Namespaced, so it changes Caddy's netns
-    # and nothing else on the host.
+    # a pause paid slow start again.
+    #
+    # BBR instead of cubic: that leg measured 0.8% retransmits during a slow
+    # patch, and cubic reads every loss as congestion and shrinks its window.
+    # In a lab with this exact Caddy config, 15 ms delay and 0.8% loss, 2 MiB
+    # bursts took p90 1224 ms (max 1889) under cubic and p90 198 ms (max 208)
+    # under BBR, with no difference on a clean path (docs/latency.md).
+    # tcp_bbr is a kernel module on the host; deploy.sh loads it and lists it
+    # in modules-load.d BEFORE compose touches this service, because a
+    # container cannot load modules itself and Docker refuses to start one
+    # asking for a congestion control the kernel does not have.
     sysctls:
       - net.ipv4.tcp_slow_start_after_idle=0
+      - net.ipv4.tcp_congestion_control=bbr
     networks:
       - edge
     depends_on:

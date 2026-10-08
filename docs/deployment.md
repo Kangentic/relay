@@ -76,6 +76,9 @@ deploy.yml (runner)
             -> skip check (git diff against the previous deploy's ref)
                  -> on skip: reload Caddy only if its inputs changed, exit
             -> compose pull
+            -> load tcp_bbr and persist it in modules-load.d (Caddy's netns
+                                              runs BBR; a container cannot
+                                              load the module itself)
             -> compose up -d --no-deps caddy  (idempotent; without --no-deps,
                                               relay is pulled in as a
                                               dependency and recreated too)
