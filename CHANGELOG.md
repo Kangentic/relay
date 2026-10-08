@@ -6,7 +6,10 @@ All notable changes to this project are documented in this file. The format is b
 ## [Unreleased]
 
 **Deploy note:** this release changes the Caddy service's definition (directory mounts, an explicit
-`--config`, a sysctl), so its deploy recreates Caddy once, just before the relay recreate. Live
+`--config`, two sysctls, a pinned image), so its deploy recreates Caddy once, just before the relay
+recreate. It also has `deploy.sh` load the `tcp_bbr` kernel module on the host, with `sudo -n`,
+and write `/etc/modules-load.d/kangentic-relay.conf`; if that fails, the deploy stops before
+touching Caddy. Live
 sessions drop twice on that one deploy and reconnect; later deploys drop them once, as before. The
 post-release measurements this release exists for are listed in `docs/latency.md`, "Taking the
 after measurements".
@@ -59,6 +62,16 @@ after measurements".
   page another 1200m into the host's swapfile.
 - **Caddy's congestion window survives idle periods.** `net.ipv4.tcp_slow_start_after_idle=0` on the
   Caddy service, so a burst after a quiet minute does not start over from the initial window.
+- **Caddy runs BBR congestion control toward Cloudflare.** The edge-to-origin leg lost 0.8% of
+  segments during a slow patch, and cubic shrinks its window on every loss. In a lab with this
+  Caddy config, 15 ms delay and 0.8% loss, 2 MiB bursts took p90 1224 ms under cubic and 198 ms
+  under BBR, with no difference on a clean path. `deploy.sh` loads the `tcp_bbr` module and lists it
+  in `/etc/modules-load.d/` before it touches Caddy (a container cannot load a module, and Docker
+  will not start one asking for a missing algorithm); `cloud-init.yaml` does the same on new boxes.
+- **Caddy is pinned to `caddy:2.8.4`** instead of the floating `caddy:2.8`, so a recreate is never
+  also an unannounced upgrade.
+- **The monitor's synthetic pair times the path**: both dial times and the round trip go into the
+  job summary on every run, and a dial over 2 s raises a warning annotation without failing it.
 
 ### Fixed
 

@@ -124,6 +124,24 @@ reload_caddy_if_inputs_changed() {
   record_caddy_fingerprint "$current"
 }
 
+# The Caddy service sets net.ipv4.tcp_congestion_control=bbr in its network
+# namespace (docker-compose.prod.yml), and tcp_bbr is a kernel module that a
+# container cannot load for itself. If it is not loaded when Caddy is created,
+# Docker refuses to start the container, and a recreate that fails to start is
+# an outage. So it is loaded here, before compose touches Caddy, and listed in
+# modules-load.d so it is back before Docker starts Caddy after a reboot.
+# `sudo -n` fails at once rather than waiting on a prompt, and set -e then
+# stops the deploy before anything was recreated.
+ensure_tcp_bbr_loaded() {
+  local modules_load_file="/etc/modules-load.d/kangentic-relay.conf"
+  if ! grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control; then
+    sudo -n modprobe tcp_bbr
+  fi
+  if ! grep -qx tcp_bbr "$modules_load_file" 2>/dev/null; then
+    echo tcp_bbr | sudo -n tee "$modules_load_file" >/dev/null
+  fi
+}
+
 # The previous image digest comes from reality - the container actually
 # running right now - and not from a file that could drift.
 prev_container_id="$(compose ps -q relay || true)"
@@ -279,6 +297,7 @@ wait_for_gate() {
 # image, mount, command or sysctl edit in docker-compose.prod.yml). A fresh
 # container loads every input as it starts, so that case needs no reload
 # afterwards, only its fingerprint recorded.
+ensure_tcp_bbr_loaded
 caddy_container_before="$(compose ps -q caddy || true)"
 compose up -d --no-deps caddy
 caddy_container_after="$(compose ps -q caddy || true)"

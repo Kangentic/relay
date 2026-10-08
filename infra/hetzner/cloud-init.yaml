@@ -70,6 +70,14 @@ write_files:
       [Manager]
       DefaultLimitNOFILE=65535:65535
 
+  # The Caddy service runs BBR congestion control in its network namespace
+  # (infra/compose/docker-compose.prod.yml), and a container cannot load the
+  # module itself, so it is loaded at boot before Docker starts Caddy.
+  # deploy.sh writes the same file on boxes provisioned before this existed.
+  - path: /etc/modules-load.d/kangentic-relay.conf
+    content: |
+      tcp_bbr
+
   - path: /etc/apt/apt.conf.d/20auto-upgrades
     content: |
       APT::Periodic::Update-Package-Lists "1";

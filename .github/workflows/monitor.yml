@@ -78,6 +78,10 @@ jobs:
 
       - run: npm ci --omit=dev
 
+      # Also times each dial and the round trip: the numbers land in this
+      # run's job summary, and a dial over 2 s raises a warning annotation
+      # without failing the run (slow dials are the symptom docs/latency.md
+      # chases, but a single one is noise, not an outage).
       - name: Synthetic pairing probe
         env:
           RELAY_URL: wss://${{ vars.RELAY_PUBLIC_HOSTNAME }}
