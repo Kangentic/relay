@@ -172,8 +172,10 @@ Caddy:
 1. runs `modprobe tcp_bbr` and writes `/etc/modules-load.d/kangentic-relay.conf`;
 2. adds `bbr` to the allowed list and writes `/etc/sysctl.d/90-kangentic-relay.conf` (systemd
    applies `sysctl.d` after `modules-load.d` at boot, so the order holds across a reboot);
-3. starts a throwaway container with the exact Caddy image and sysctl, and stops the deploy, with
-   the running Caddy untouched, if that fails.
+3. starts a throwaway container with the exact Caddy image and sysctl, which also runs `caddy adapt`
+   on the exact `Caddyfile.prod` through the same directory mounts, and stops the deploy, with the
+   running Caddy untouched, if that fails. A config that does not parse would keep a recreated Caddy
+   from starting just as surely, and the relay's health gate cannot see Caddy at all.
 
 `cloud-init.yaml` writes the same two files on new boxes. If Caddy ever fails to start with a
 sysctl error after a reboot, check both `/proc/sys/net/ipv4/tcp_available_congestion_control` and
