@@ -1,7 +1,9 @@
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
+import { performance } from 'node:perf_hooks';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Config, Conn } from './types.js';
+import { millisecondsSinceUpgrade, startConnectionTrace, type ConnectionTrace } from './connectionTrace.js';
 import { createLogger, type Logger } from './logging.js';
 import {
   createMetrics,
@@ -155,6 +157,8 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
       cpuPercent: sample?.cpuPercent ?? null,
       sampleWindowMs: sample?.windowMs ?? null,
       eventLoopLagP99Ms: sample?.eventLoopLagP99Ms ?? null,
+      eventLoopLagMaxMs: sample?.eventLoopLagMaxMs ?? null,
+      gcPauseMaxMs: sample?.gcPauseMaxMs ?? null,
       rssPercent: sample?.rssPercent ?? null,
       historyRecorderHealthy: historyRecorder.healthy(),
       historyPersistence: historyRecorder.persistence(),
@@ -214,6 +218,16 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
   }
 
   const httpServer = createServer(handleHttpRequest);
+
+  // Null unless CONNECTION_TRACE is on, so a relay with tracing off registers
+  // no accept listener at all. A WeakMap so a socket that never upgrades
+  // leaves nothing behind.
+  const socketAcceptedAt: WeakMap<Socket, number> | null = config.connectionTrace ? new WeakMap() : null;
+  if (socketAcceptedAt !== null) {
+    httpServer.on('connection', (socket: Socket) => {
+      socketAcceptedAt.set(socket, performance.now());
+    });
+  }
   // permessage-deflate is explicitly disabled (not just left to the `ws`
   // default): every frame this relay carries is ciphertext, which is
   // incompressible, so compression would burn CPU per frame, add latency,
@@ -227,8 +241,9 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
     ip: string,
     role: PeerRole,
     releaseCapReservation: () => void,
+    trace: ConnectionTrace | null,
   ): void {
-    const conn = createConn(ws, slotId, ip, role);
+    const conn = createConn(ws, slotId, ip, role, trace);
     // The unpaired reservation taken during the upgrade now belongs to this
     // connection; the slot table releases it when the connection pairs or
     // closes, whichever comes first.
@@ -250,6 +265,10 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
   }
 
   async function handleUpgrade(request: IncomingMessage, socket: Socket, head: Buffer): Promise<void> {
+    // First, so the clock starts when the upgrade arrived rather than after
+    // the guards. A rejected upgrade simply drops its trace unlogged.
+    const trace =
+      socketAcceptedAt === null ? null : startConnectionTrace(request.headers['cf-ray'], socketAcceptedAt.get(socket));
     const url = new URL(request.url ?? '/', 'http://localhost');
     if (url.pathname !== config.wsPath) {
       destroySocket(socket, 404);
@@ -337,11 +356,14 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
       destroySocket(socket, 503);
       return;
     }
+    if (trace !== null) trace.admittedAfterMs = millisecondsSinceUpgrade(trace);
 
     let handshakeCompleted = false;
     try {
       wss.handleUpgrade(request, socket, head, (ws) => {
         handshakeCompleted = true;
+        // ws invokes this after writing the 101, so this is "101 written".
+        if (trace !== null) trace.handshakeCompletedAfterMs = millisecondsSinceUpgrade(trace);
         if (!decision.allow) {
           metrics.onReject('admission');
           releaseReservations();
@@ -355,7 +377,7 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
           }
           return;
         }
-        onWebSocketConnection(ws, slotId, ip, role, reservation.release);
+        onWebSocketConnection(ws, slotId, ip, role, reservation.release, trace);
       });
     } finally {
       // ws aborts the handshake without ever invoking the callback for a

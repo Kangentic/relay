@@ -48,7 +48,25 @@ services:
     # Do not remove it under the assumption MAX_CONNECTIONS already covers
     # memory - it does not.
     mem_limit: 1200m
+    # Equal to mem_limit, which is how Docker says "no swap": left unset, "the
+    # container can use as much swap as the --memory setting"
+    # (https://docs.docker.com/engine/containers/resource_constraints/), and
+    # the box has a 2 GB swapfile, so the relay could page up to another
+    # 1200m. A paged-out heap page that a GC then touches is a stall measured
+    # in disk reads. Over the limit, an OOM kill and a restart is the honest
+    # failure; a relay that limps along swapping is not. Baseline on
+    # 2026-10-07: memory.swap.current 3.9 MB, zero memory pressure stalls.
+    memswap_limit: 1200m
     stop_grace_period: 20s
+    # Room for CONNECTION_TRACE: one line per connection at roughly 13k
+    # connections a day is about 8 MB a day, against the daemon default of
+    # 10m x 3 from cloud-init. 20m x 5 keeps about twelve days, longer than
+    # the 7 days of one-minute history a trace is read against.
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -61,21 +79,64 @@ services:
   caddy:
     image: caddy:2.8
     restart: unless-stopped
+    # The config path is explicit because the config now lives in a mounted
+    # directory rather than at the image's default /etc/caddy/Caddyfile.
+    command: ["caddy", "run", "--config", "/etc/caddy/compose/Caddyfile.prod", "--adapter", "caddyfile"]
     ports:
       - "80:80"
       - "443:443"
     environment:
       - RELAY_HOSTNAME=${RELAY_HOSTNAME:?RELAY_HOSTNAME must be set}
       - RELAY_HOSTNAME_ALIAS=${RELAY_HOSTNAME_ALIAS:?RELAY_HOSTNAME_ALIAS must be set}
+    # DIRECTORY mounts, never single files. A single-file bind mount pins the
+    # inode it was created with, and git replaces a file it updates with a new
+    # inode, so the box's Caddy read a stale Caddyfile.prod from 2026-07-22 on
+    # and `caddy reload` re-read the stale copy every time. Found by comparing
+    # sha256 and inode inside and outside the container on 2026-10-07. A
+    # directory mount resolves names at open time, so a reload sees what git
+    # checked out. Neither directory holds a secret: compose files and the
+    # generated Cloudflare range list.
     volumes:
-      - ./Caddyfile.prod:/etc/caddy/Caddyfile:ro
-      - ../cloudflare/trusted-proxies.caddy:/etc/caddy/trusted-proxies.caddy:ro
+      - ./:/etc/caddy/compose:ro
+      - ../cloudflare:/etc/caddy/cloudflare:ro
       - /opt/relay/secrets:/etc/caddy/origin:ro
       - caddy_data:/data
+    # Caddy is the process that sends to Cloudflare, so it is the one whose
+    # congestion window matters. With the kernel default of 1, a connection
+    # idle for one RTO restarts from the initial window: "time out the
+    # congestion window after an idle period. Default: 1"
+    # (https://docs.kernel.org/networking/ip-sysctl.html). Relay traffic is
+    # bursty by nature (idle tunnel, then a transcript), so every burst after
+    # a pause paid slow start again. Namespaced, so it changes Caddy's netns
+    # and nothing else on the host.
+    sysctls:
+      - net.ipv4.tcp_slow_start_after_idle=0
     networks:
       - edge
     depends_on:
       - relay
+
+  # Cloudflare Tunnel A/B, opt-in only: a compose profile, so deploy.sh never
+  # starts it and the public image's quickstart never sees it. It runs a
+  # second hostname over cloudflared's outbound connections into Caddy's
+  # internal :8081 site, so the same Caddy and relay serve both paths and the
+  # only thing compared is the Cloudflare-to-origin leg. See infra/README.md,
+  # "Cloudflare Tunnel A/B", for setup, the /admin rule, and tear-down.
+  #
+  # The token is a file placed by hand under /opt/relay/secrets, never a line
+  # in /opt/relay/.env: that file is the relay's env_file, and the relay has
+  # no business holding a credential for a tunnel it does not run.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.9.0
+    profiles: ["tunnel-ab"]
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run", "--token-file", "/etc/cloudflared/tunnel-token"]
+    volumes:
+      - /opt/relay/secrets/tunnel-token:/etc/cloudflared/tunnel-token:ro
+    networks:
+      - edge
+    depends_on:
+      - caddy
 
 networks:
   edge:

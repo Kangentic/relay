@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { vi } from 'vitest';
 import type { WebSocket } from 'ws';
 import { attachConnectionHandlers, createConn } from '../../src/connection.js';
+import type { ConnectionTrace } from '../../src/connectionTrace.js';
 import { SlotTable } from '../../src/rendezvous.js';
 import { SlotConnectionCaps, UnpairedConnectionCap } from '../../src/guards/caps.js';
 import { createMetrics, type Metrics } from '../../src/http/metrics.js';
@@ -17,6 +18,8 @@ export class FakeSocket extends EventEmitter {
   readonly CONNECTING = READY_STATE.CONNECTING;
   readyState: number = READY_STATE.OPEN;
   bufferedAmount = 0;
+  /** Stands in for the libuv handle the keepalive drain check reads; null hides it. */
+  _socket: { _handle: { writeQueueSize: number } | null } | null = null;
   send = vi.fn();
   close = vi.fn();
   terminate = vi.fn();
@@ -29,6 +32,8 @@ export interface SlotTableHarness {
   readonly slotCaps: SlotConnectionCaps;
   readonly unpairedCap: UnpairedConnectionCap;
   connect(slot: string, initialBufferedAmount?: number, role?: PeerRole): { conn: Conn; socket: FakeSocket };
+  /** Like connect, for a connection created with CONNECTION_TRACE on. */
+  connectTraced(slot: string, trace: ConnectionTrace): { conn: Conn; socket: FakeSocket };
 }
 
 export const silentLogger: Logger = {
@@ -84,26 +89,35 @@ export function createSlotTableHarness(
   // many it parked.
   metrics.setWaitingSlotsSource(() => slotTable.waitingByRole());
 
+  const connectWith = (
+    slot: string,
+    initialBufferedAmount: number,
+    role: PeerRole,
+    trace: ConnectionTrace | null,
+  ): { conn: Conn; socket: FakeSocket } => {
+    const socket = new FakeSocket();
+    socket.bufferedAmount = initialBufferedAmount;
+    const conn = createConn(socket as unknown as WebSocket, slot, '127.0.0.1', role, trace);
+    // Mirrors server.ts: the reservation is taken during the upgrade and
+    // handed to the connection, which releases it on pair or on close.
+    unpairedCap.tryReserve();
+    conn.unpairedReserved = true;
+    attachConnectionHandlers(conn, { slotTable, metrics, logger: silentLogger, config, onClosed: () => {} });
+    slotTable.handleConnection(conn);
+    return { conn, socket };
+  };
+
   return {
     slotTable,
     metrics,
     slotCaps,
     unpairedCap,
-    connect: (slot: string, initialBufferedAmount = 0, role: PeerRole = 'unknown') => {
-      const socket = new FakeSocket();
-      socket.bufferedAmount = initialBufferedAmount;
-      // Defaults to 'unknown' here, matching a client that sends no role, which
-      // is what every suite on this harness is about. createConn itself takes
-      // it as a required argument on purpose: a default there would let the
-      // server forget to thread the parsed value through without a word.
-      const conn = createConn(socket as unknown as WebSocket, slot, '127.0.0.1', role);
-      // Mirrors server.ts: the reservation is taken during the upgrade and
-      // handed to the connection, which releases it on pair or on close.
-      unpairedCap.tryReserve();
-      conn.unpairedReserved = true;
-      attachConnectionHandlers(conn, { slotTable, metrics, logger: silentLogger, config, onClosed: () => {} });
-      slotTable.handleConnection(conn);
-      return { conn, socket };
-    },
+    // Defaults to 'unknown' here, matching a client that sends no role, which
+    // is what every suite on this harness is about. createConn itself takes it
+    // as a required argument on purpose: a default there would let the server
+    // forget to thread the parsed value through without a word.
+    connect: (slot: string, initialBufferedAmount = 0, role: PeerRole = 'unknown') =>
+      connectWith(slot, initialBufferedAmount, role, null),
+    connectTraced: (slot: string, trace: ConnectionTrace) => connectWith(slot, 0, 'unknown', trace),
   };
 }

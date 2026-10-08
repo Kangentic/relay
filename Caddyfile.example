@@ -21,9 +21,41 @@
 # available. Adding RFC1918 ranges here would mean any client whose
 # apparent peer address falls inside them (Docker's userland-proxy path, a
 # LAN or VPN client) could forge X-Forwarded-For and have Caddy believe it.
+{
+	# Caddy's error log includes the request URI, and a relay URI carries the
+	# slot id in its query string, so out of the box every 502 would write a
+	# slot id to the log. This routes that log through a filter that drops
+	# the slot, the request headers, and the client address. Add a `log`
+	# block with the same filter to the site below if you also want an
+	# access log.
+	log default {
+		exclude http.log.error
+	}
+	log errors {
+		include http.log.error
+		format filter {
+			request>uri query {
+				delete slot
+			}
+			request>headers delete
+			request>client_ip delete
+		}
+	}
+}
 
 relay.example.com {
 	reverse_proxy relay:8080 {
+		# Below the relay's 5 s HTTP keep-alive timeout (Node's default).
+		# Caddy's own default is 2m, and its docs warn that a keepalive longer
+		# than the upstream's gets "connection reset by peer" errors and 502s.
+		transport http {
+			keepalive 4s
+		}
+		# Hold a dial for a few seconds while the relay container restarts,
+		# instead of answering 502 at once.
+		lb_try_duration 5s
+		lb_try_interval 250ms
+
 		# Overwrite, never append: header_up with no +/- prefix replaces
 		# the header outright, so a client cannot forge its own entry and
 		# have it survive.

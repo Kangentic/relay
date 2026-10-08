@@ -145,12 +145,13 @@ All configuration is environment variables, documented fully in `.env.example`. 
 | `MAX_MESSAGE_BYTES` | `1114112` | Per-WebSocket-message size ceiling, enforced at the `ws` layer (must exceed the inner protocol's 1 MiB plaintext cap plus Noise/AEAD overhead). |
 | `MAX_SESSION_BYTES` | `1073741824` | Total bytes forwarded across a paired tunnel before it is torn down. |
 | `MAX_BUFFERED_BYTES` | `16777216` | Per-connection outbound buffer cap: when a slow consumer's socket backlog exceeds this, the tunnel is torn down with close code `4431` and both clients reconnect. Bounds worst-case per-connection memory; the 16 MiB default leaves room for one realistic multi-MiB transcript burst to a phone on a slow link. |
-| `PING_INTERVAL_MS` | `30000` | WS-level ping/pong cadence used to reap half-open sockets. Invisible to the client; there is no application-level heartbeat. |
+| `PING_INTERVAL_MS` | `30000` | WS-level ping/pong cadence used to reap half-open sockets. Invisible to the client; there is no application-level heartbeat. A socket that misses its pong while its outbound queue is still draining is spared rather than reaped, since a ping waits behind everything already queued to it (`pongOverdueDrainingTotal` counts these). |
 | `CONTENTION_PROBE_TIMEOUT_MS` | `2000` | How long the incumbents of a contended slot have to answer a liveness probe. When a newcomer arrives on a slot that is already paired, both incumbents are pinged and whichever stays silent is reaped immediately, rather than one to two `PING_INTERVAL_MS` cycles later. This is what lets a roaming phone re-pair in seconds. The newcomer is still rejected with `4409`: eviction is earned by failing the probe, never by arriving later. `0` disables it. |
 | `TRUST_PROXY` / `TRUSTED_PROXY_CIDRS` | `false` / empty | Trust `CF-Connecting-IP` / `X-Forwarded-For` for the real client IP, from peers in the given CIDR list only. **The relay refuses to start with `TRUST_PROXY=true` and an empty list**, since that combination would trust every peer and let any client forge either header to bypass per-IP caps and rate limits - always set both together. `X-Forwarded-For` is read from the rightmost untrusted hop, not the leftmost, so an appending (not replacing) proxy is still safe. See "Deploying for real" above. |
 | `METRICS_ENABLED` / `METRICS_TOKEN` / `METRICS_ALLOW_UNAUTHENTICATED` | `true` / unset / `false` | Prometheus-format `/metrics` and its JSON twin `/metricz`. They carry no slot ids or IPs, but do expose live pairing gauges and a per-guard reject breakdown. **They require a token**: with none set both answer 404 (not 401, which would advertise them). Set `METRICS_ALLOW_UNAUTHENTICATED=true` to serve them openly on a genuinely private deployment. |
 | `LOG_SLOT_HASHING` / `SLOT_LOG_SALT` | `true` / random per process | Configure `slotRef()`, the salted hash any future slot logging would go through. **Currently inert**: no log line contains a slot id, so nothing calls it. They exist so that adding one is deliberate and safe by default. |
 | `ADMISSION_WEBHOOK_URL` | unset | The open-core seam, for an embedder calling `createRelay({ admissionPolicy })`. **The shipped binary does not construct it**, so setting this alone gates nothing. See below. |
+| `CONNECTION_TRACE` | `false` | Logs one timing line per connection at close: upgrade received, admission, 101 written, paired, and the arrival time, size and queue-ahead of the first 8 frames, keyed by the `CF-Ray` header when present. For localizing a slow dial to a leg of the path. No slot id, no IP, no content; off installs no listener and leaves the forwarding path untouched. One line per connection, so budget the log volume. |
 | `ADMIN_ENABLED` / `METRICS_HISTORY_PATH` / `METRICS_HISTORY_INTERVAL_MS` | `false` / unset / `60000` | A private dashboard at `/admin` showing live activity and historical trends, backed by an append-only NDJSON store. **The relay does not authenticate `/admin`** - it stays a blind relay that authenticates nothing, so gate it upstream (Cloudflare Access scoped to `/admin*`, a private network, an SSH tunnel); the relay warns at startup when it is on. Aggregate counters only, never slot ids or IPs. The path must be absolute and on a mounted volume, or the next deploy discards the history. All three default to off, and cost nothing when off: no timer, no file handle, no route. |
 
 See `.env.example` for the complete list.
@@ -161,14 +162,15 @@ Off by default and unaffected by anything else in this table. When enabled, the 
 own aggregate counters on a timer and appends them to `METRICS_HISTORY_PATH`, so trends survive the
 process restart that zeroes every counter.
 
-It is built to answer five questions rather than to display numbers:
+It is built to answer these questions rather than to display numbers:
 
 | Question | What answers it |
 |---|---|
 | How many users are connected? | Active connections and live sessions, against the configured caps. A paired tunnel is two sockets and a waiting peer is one, which the tiles now say rather than leaving the reader to derive |
 | Which side is failing to arrive? | Waiting peers split by the role each one reported, so desktops waiting (the normal idle state) reads differently from phones waiting (the signal worth chasing) |
 | When do we need a bigger box? | Every capacity tile reads as a percentage of its ceiling, with a status badge at 60% and 80% |
-| How is the server holding up? | CPU, event loop delay p99, resident memory against the container limit |
+| How is the server holding up? | CPU, event loop delay (p99 and the single worst stall), the longest GC pause, host stall time from Linux PSI, host CPU steal, resident memory against the container limit |
+| Did the relay cause a stall a client saw? | The stall columns line up by minute: a freeze shows as loop max; GC max says whether the runtime caused it; PSI says whether the host was starved; loop max with low CPU, no GC and no PSI points below the OS, at the hypervisor |
 | How is the relay performing for users? | Outbound queue depth, the closest thing to a latency signal the relay can produce without touching the forwarding path |
 | What problems are users hitting? | Rejections by reason, and teardowns split into the normal case and the abnormal ones, each explaining what it means |
 
@@ -231,6 +233,13 @@ kept that way:
 - **Dead phones are reaped.** The WS ping/pong keepalive terminates a socket that misses a pong
   for a full `PING_INTERVAL_MS` round (30 s default), so devices that vanish without a FIN (doze,
   network switch) release their file descriptor and slot within about a minute.
+- **Slow phones are not.** A ping is queued behind everything already waiting for that socket, so
+  a phone draining a large transcript can answer late while perfectly alive. A missed pong on a
+  socket whose outbound queue drained since the last check (only an acknowledging peer can cause
+  that) earns another interval instead of a reap. The queue is read from libuv's live write queue
+  as well as `bufferedAmount`, because Node hands a backlog to the kernel as one batched write and
+  `bufferedAmount` stays flat until all of it lands. Measured on Linux with a reader taking 1 MiB/s
+  of a 24 MiB backlog: reaped mid-stream in 5 of 5 runs before, delivered in full 5 of 5 after.
 
 Measured on a development machine (relay and test clients sharing one Windows box over loopback,
 Node 22, `scripts/loadTest.mjs`; client-side scheduling is included in the numbers, so treat them
@@ -281,6 +290,14 @@ horizontal scaling needs no code changes, only slot-sticky routing in front.
   `parkedOverflow` (a parked socket overflowing its pre-pair buffer), `heartbeat`, and
   `parkTimeout` count single sockets. Neither surface ever contains a slot id, an IP, or frame
   content.
+- **A missed pong is not always a teardown.** `pongOverdueDrainingTotal` on `/metricz` (and
+  `relay_pong_overdue_draining_total` on `/metrics`) counts liveness checks a socket missed while its
+  outbound queue was still draining, so it was spared rather than reaped. It is not a teardown
+  cause: a spared socket either answers later or is reaped and counted under `heartbeat` then.
+- **Stalls are visible, not only tails.** With the history recorder running, `/metricz` carries
+  `eventLoopLagMaxMs` (the single worst event loop delay of the last sampling window) beside
+  `eventLoopLagP99Ms`, and `gcPauseMaxMs` (its longest garbage collection pause). One multi-second
+  freeze is one sample in thousands, which the p99 cannot show.
 - **Waiting peers are split by the role they reported**, since "N waiting to pair" merged two
   opposite meanings: desktops waiting says phones are not arriving, phones waiting says the reverse.
   `/metricz` carries `waitingSlotsByRole` beside the unchanged `waitingSlots` total, and `/metrics`

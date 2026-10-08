@@ -74,6 +74,7 @@ deploy.yml (runner)
        -> git fetch --tags && git checkout <git-ref>
        -> exec scripts/deploy/deploy.sh <image-tag> <drill-mode>
             -> skip check (git diff against the previous deploy's ref)
+                 -> on skip: reload Caddy only if its inputs changed, exit
             -> compose pull
             -> compose up -d --no-deps caddy  (idempotent; without --no-deps,
                                               relay is pulled in as a
@@ -81,8 +82,16 @@ deploy.yml (runner)
             -> compose up -d --force-recreate relay   (scoped to relay only)
             -> health gate (up to 60s)
             -> on failure: rollback to the previous digest
-            -> on success: write state/last_good, prune old images
+            -> on success: write state/last_good, prune old images,
+                           then reload Caddy (--force) only if its inputs
+                           changed and it was not just recreated
 ```
+
+"Caddy's inputs" are `Caddyfile.prod`, the generated Cloudflare range list, and the Origin CA cert
+and key, fingerprinted into `state/last_caddy_sha256` the way `.env` is fingerprinted into
+`state/last_env_sha256`. A reload closes every proxied WebSocket, so it runs only when one of them
+changed; when it does run it is forced, because Caddy skips a reload whose config is unchanged and
+a rotated certificate changes no config.
 
 ### The health gate
 
@@ -223,10 +232,19 @@ region's box reusing this same file) means adding it to that address line too.
 
 A related trap when applying this kind of fix by hand: `RELAY_HOSTNAME_ALIAS` is a
 compose-level `environment:` value on the `caddy` service, baked into the container at creation
-time. `caddy reload` (which the deploy's success path runs automatically, to pick up Caddyfile
-*content* changes) re-parses the Caddyfile but does not change the running process's environment -
-picking up a new or changed env var needs the container actually recreated
+time. `caddy reload` re-parses the Caddyfile but does not change the running process's
+environment - picking up a new or changed env var needs the container actually recreated
 (`docker compose up -d --force-recreate --no-deps caddy`), not just reloaded.
+
+**Until 2026-10-07, `caddy reload` did not pick up Caddyfile content changes either,** whatever
+this document then claimed. `Caddyfile.prod` and `trusted-proxies.caddy` were mounted as single
+files, a single-file bind mount pins the inode it was created with, and `git checkout` writes an
+updated file as a new inode. The box's Caddy was found reading the 2026-07-21 `Caddyfile.prod`
+(sha256 and inode compared inside and outside the container; the drift was comment-only by luck),
+and every reload since had re-read that same stale copy. Both are now mounted as directories
+(`infra/compose` and `infra/cloudflare`), which resolve names at open time, and Caddy is started
+with `--config /etc/caddy/compose/Caddyfile.prod`. Verified on Caddy 2.8.4: replacing the file by
+rename and reloading put the new config live.
 
 ### Provisioning
 

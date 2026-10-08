@@ -216,6 +216,61 @@ describe('contention probe on a paired slot', () => {
     expect(second.socket.terminate).not.toHaveBeenCalled();
   });
 
+  it('spares a backlogged incumbent that is draining toward its ping', () => {
+    // The lever this closes: a slot-id holder dialing in while a live phone is
+    // still taking a large transcript off its queue. The ping sits behind those
+    // bytes, so no pong lands inside the window, but the queue is falling,
+    // which only an acknowledging TCP peer can cause.
+    const { harness, first, second } = pairedHarness();
+    first.socket.bufferedAmount = 8 * 1024 * 1024;
+    harness.connect(SLOT);
+
+    second.socket.emit('pong');
+    first.socket.bufferedAmount = 6 * 1024 * 1024;
+    vi.advanceTimersByTime(PROBE_MS);
+
+    expect(first.socket.terminate).not.toHaveBeenCalled();
+    expect(second.socket.terminate).not.toHaveBeenCalled();
+    const snapshot = harness.metrics.snapshot();
+    expect(snapshot.pongOverdueDrainingTotal).toBe(1);
+    expect(snapshot.pongTimeoutsTotal).toBe(0);
+    expect(snapshot.rejectsByReason.probe_evicted).toBeUndefined();
+    // The newcomer is still turned away; sparing changes nothing for it.
+    expect(snapshot.rejectsByReason.slot_busy).toBe(1);
+  });
+
+  it('spares an incumbent whose kernel queue drained while bufferedAmount sat flat', () => {
+    // How a real backlog drains: one batched write in flight, so bufferedAmount
+    // does not move until all of it completes, while the kernel steadily takes
+    // parts of it.
+    const { harness, first, second } = pairedHarness();
+    first.socket.bufferedAmount = 12 * 1024 * 1024;
+    first.socket._socket = { _handle: { writeQueueSize: 9 * 1024 * 1024 } };
+    harness.connect(SLOT);
+
+    second.socket.emit('pong');
+    first.socket._socket = { _handle: { writeQueueSize: 8 * 1024 * 1024 } };
+    vi.advanceTimersByTime(PROBE_MS);
+
+    expect(first.socket.terminate).not.toHaveBeenCalled();
+    expect(harness.metrics.snapshot().pongOverdueDrainingTotal).toBe(1);
+  });
+
+  it('still evicts a backlogged incumbent whose queue never moves, which is what a roamed ghost looks like', () => {
+    // A half-open socket acknowledges nothing, so the bytes queued to it stay
+    // put. A backlog alone must buy no grace.
+    const { harness, first, second } = pairedHarness();
+    first.socket.bufferedAmount = 2 * 1024 * 1024;
+    harness.connect(SLOT);
+
+    second.socket.emit('pong');
+    vi.advanceTimersByTime(PROBE_MS);
+
+    expect(first.socket.terminate).toHaveBeenCalledTimes(1);
+    expect(harness.metrics.snapshot().rejectsByReason.probe_evicted).toBe(1);
+    expect(harness.metrics.snapshot().pongOverdueDrainingTotal).toBe(0);
+  });
+
   it('leaves isAlive to the keepalive loop', () => {
     // The two flags have different owners and different clocks. A probe that
     // wrote isAlive would race the reaper: it could rescue a genuinely dead

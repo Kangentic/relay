@@ -74,6 +74,27 @@ function pseudoRandom(seed) {
   return value - Math.floor(value);
 }
 
+/**
+ * The stall-attribution fields for one seeded row. Steal is reported as zero
+ * ticks out of a full window, the way a hypervisor that never reports steal
+ * reads, which is also what production shows.
+ */
+function stallSample(index, load, burst, minutes) {
+  const freeze = pseudoRandom(index * 13.7) > 0.992;
+  const freezeFromGc = freeze && pseudoRandom(index * 14.3) > 0.5;
+  const freezeFromHost = freeze && !freezeFromGc && pseudoRandom(index * 15.1) > 0.5;
+  const freezeMs = Math.round(900 + pseudoRandom(index * 16.9) * 2_300);
+  return {
+    eventLoopLagMaxMs: freeze ? freezeMs : Math.round((21.5 + load * 9 * burst) * 10) / 10,
+    gcPauseMaxMs: freezeFromGc ? freezeMs - 20 : Math.round((0.8 + load * 2.5) * 10) / 10,
+    hostCpuStealTicksDelta: 0,
+    hostCpuTotalTicksDelta: Math.round(12_000 * minutes),
+    pressureCpuSomeMs: Math.round((freezeFromHost ? freezeMs : load * 40 * burst) * minutes * 10) / 10,
+    pressureMemorySomeMs: 0,
+    pressureIoSomeMs: Math.round(load * 6 * minutes * 10) / 10,
+  };
+}
+
 function buildRow(timestampMs, resolutionSeconds, index, restartCount) {
   const windowMs = resolutionSeconds * 1000;
   const minutes = windowMs / 60_000;
@@ -134,6 +155,9 @@ function buildRow(timestampMs, resolutionSeconds, index, restartCount) {
     bytesForwardedDelta: Math.round(framesPerMinute * minutes * 640),
     peerClosedDelta: Math.round(load * 3 * minutes * jitter),
     pongTimeoutsDelta: pongTimeouts,
+    // The occasional slow consumer spared rather than reaped, so the table's
+    // Spared slow column is not all zero in the preview.
+    pongOverdueDrainingDelta: pseudoRandom(index * 12.9) > 0.99 ? 1 : 0,
     rejectsByReasonDelta: rejects,
     activeConnections: series(activePeak, Math.round(pairedMean * 2)),
     waitingSlots: series(waitingPeak, Math.max(0, Math.round(waitingPeak * 0.6))),
@@ -146,6 +170,11 @@ function buildRow(timestampMs, resolutionSeconds, index, restartCount) {
       Math.round(load * 15 * jitter * 10) / 10,
     ),
     eventLoopLagP99Ms: Math.round((1.1 + load * 5 * burst) * 10) / 10,
+    // The shape the stall columns exist for: max sits a little above p99 almost
+    // always, and now and then one multi-second freeze lands in a single
+    // interval with p99 unmoved. Some of those carry a GC pause and some carry
+    // host stall time, so every reading in the attribution table appears.
+    ...stallSample(index, load, burst, minutes),
     rssBytes: Math.round((78 + load * 26) * 1024 * 1024),
     rssPercent: Math.round(((78 + load * 26) / 1200) * 1000) / 10,
     // Queue depth mostly idles near zero and occasionally builds, which is what

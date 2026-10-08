@@ -133,3 +133,14 @@ describe('admin dashboard and metrics history configuration', () => {
     expect(() => loadConfig({ ADMIN_ENABLED: 'yes' })).toThrow(/ADMIN_ENABLED/);
   });
 });
+
+describe('connection trace configuration', () => {
+  it('defaults off, since it adds a log line per connection', () => {
+    expect(loadConfig({}).connectionTrace).toBe(false);
+  });
+
+  it('turns on with CONNECTION_TRACE=true and refuses a non-boolean', () => {
+    expect(loadConfig({ CONNECTION_TRACE: 'true' }).connectionTrace).toBe(true);
+    expect(() => loadConfig({ CONNECTION_TRACE: 'on' })).toThrow(/CONNECTION_TRACE/);
+  });
+});

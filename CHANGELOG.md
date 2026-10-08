@@ -5,6 +5,68 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- **The metrics history can see a multi-second stall.** Clients measured 0.9-3.2 s rough patches on
+  2026-10-07 while every history row read event loop p99 21.3 ms, which is the sampling resolution:
+  one freeze is one sample in ~3000 a minute and never reaches the 99th percentile. Each row now
+  also records the event loop delay maximum, the longest garbage collection pause, host CPU steal
+  ticks from `/proc/stat`, and Linux PSI stall time for CPU, memory and IO. The `/admin` dashboard
+  charts them (event loop and GC, host stall time, host steal) and the Table view gains Loop max, GC
+  max, Steal % and PSI columns; `/metricz` gains `eventLoopLagMaxMs` and `gcPauseMaxMs`. The new row
+  keys are additive under the same schema version, so older rows read back as unmeasured, not zero.
+  Steal reads 0 on the hosted box by construction (Hetzner does not report it).
+- **`CONNECTION_TRACE`**, off by default: one log line per connection at close with the upgrade,
+  admission, 101, pairing and close timings and the first 8 frames' arrival, size and queue-ahead,
+  keyed by the `CF-Ray` header. No slot id, no IP, no content. Off installs no listener and leaves
+  the forwarding path byte-identical; on, the traced listener swaps itself out after the eighth
+  frame. Enabled on the hosted instance, with the relay's log rotation raised to fit it.
+- **`pongOverdueDrainingTotal`** on `/metricz` (`relay_pong_overdue_draining_total` on `/metrics`),
+  a Spared slow column in the `/admin` table, and a matching history counter: liveness checks a
+  socket missed while it was still draining, so it was spared rather than reaped.
+- **Caddy access logging, filtered.** The hosted Caddy now logs requests to a rolled file on its
+  data volume with `cf_ray` and `upstream_latency_ms`, minus the slot query parameter, every
+  request header and the client IP.
+- **`scripts/legProbe.sh`, `scripts/burstProbe.mjs`, `scripts/slowConsumerRepro.mjs`**: the leg-by-leg
+  latency probe, the idle-then-burst probe, and the slow-consumer keepalive A/B. See
+  `docs/latency.md` for what they found.
+
+### Changed
+
+- **The keepalive no longer reaps a socket that is alive but slow.** A ping waits behind everything
+  queued to the socket, so a phone draining a large transcript could miss a pong and be torn down
+  mid-stream. A missed pong on a socket that made delivery progress since the ping now earns another
+  interval. Progress is read from libuv's live write queue as well as `bufferedAmount`, because Node
+  hands a backlog to the kernel as one batched write and `bufferedAmount` stayed flat for 5.4 s
+  against a reader taking 1 MiB/s. On Linux, 24 MiB at 1 MiB/s: reaped mid-stream in 5 of 5 runs
+  before, delivered in full in 5 of 5 after. The contention probe applies the same test, so a slot-id
+  holder can no longer get a backlogged live incumbent reaped by dialing in.
+- **Caddy keep-alives line up with their peers.** The upstream keepalive to the relay is 4 s, below
+  Node's 5 s timeout (Caddy's docs warn a longer one produces resets and 502s), and the server idle
+  timeout is 16m, above Cloudflare's 900 s origin connection reuse, so Cloudflare always closes
+  first. Caddy also retries a dial for up to 5 s while the relay restarts instead of answering 502:
+  every one of the 23 502s it logged since July was a deploy window.
+- **The relay container cannot swap.** `memswap_limit` now equals `mem_limit`; unset, Docker let it
+  page another 1200m into the host's swapfile.
+- **Caddy's congestion window survives idle periods.** `net.ipv4.tcp_slow_start_after_idle=0` on the
+  Caddy service, so a burst after a quiet minute does not start over from the initial window.
+
+### Fixed
+
+- **A rotated Origin CA certificate is now actually loaded.** `deploy.sh` ran `caddy reload` without
+  `--force`, which Caddy skips when the config is unchanged, and a rotated cert changes no config.
+  Reproduced on Caddy 2.8.4: a plain reload kept serving the old serial. The reload is now forced,
+  runs only when the cert, key, Caddyfile or Cloudflare range list changed, also runs on a deploy
+  that otherwise skips the relay restart (where a rotation lands), and fails the run instead of being
+  swallowed. `stream_close_delay 5m` softens the WebSocket cut a reload causes.
+- **Caddy was reading a stale Caddyfile.** It was bind-mounted as a single file, which pins the inode
+  it started with, and `git checkout` replaces the file with a new inode: the box was serving the
+  2026-07-21 copy through every reload since. The config and the Cloudflare range list are now
+  mounted as directories.
+- **Caddy's error log recorded slot ids.** Every 502 logged the request URI, slot included. The
+  error log now goes through the same filter as the access log, on the hosted instance and in
+  `Caddyfile.example`.
+
 ## [0.3.4] - 2026-09-19
 
 ### Added

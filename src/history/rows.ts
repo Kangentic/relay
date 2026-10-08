@@ -79,6 +79,12 @@ export interface HistoryRow {
   readonly bytesForwardedDelta: number;
   readonly peerClosedDelta: number;
   readonly pongTimeoutsDelta: number;
+  /**
+   * Missed liveness checks on a socket that was still draining, so it was
+   * spared. Reads 0 on rows written before the drain check existed, which is
+   * literally true: the older code never spared anything.
+   */
+  readonly pongOverdueDrainingDelta: number;
   readonly rejectsByReasonDelta: Readonly<Partial<Record<RejectReason, number>>>;
 
   readonly activeConnections: HistorySeriesValue;
@@ -106,6 +112,25 @@ export interface HistoryRow {
   readonly cpuPercent: HistorySeriesValue | null;
   /** Max only when aggregated: averaging p99 values across buckets is meaningless. */
   readonly eventLoopLagP99Ms: number | null;
+
+  /**
+   * The stall-attribution group. Each one is null on rows written before it
+   * existed and wherever it cannot be measured, and an explicit 0 otherwise,
+   * so a chart can tell "measured nothing" from "never looked".
+   *
+   * eventLoopLagMaxMs and gcPauseMaxMs aggregate by maximum: the point is the
+   * single worst stall, which a mean would dilute. The steal ticks and the PSI
+   * stall milliseconds are per-interval deltas and aggregate by sum, so a
+   * bucket's steal percent and stall share stay exact.
+   */
+  readonly eventLoopLagMaxMs: number | null;
+  readonly gcPauseMaxMs: number | null;
+  readonly hostCpuStealTicksDelta: number | null;
+  readonly hostCpuTotalTicksDelta: number | null;
+  readonly pressureCpuSomeMs: number | null;
+  readonly pressureMemorySomeMs: number | null;
+  readonly pressureIoSomeMs: number | null;
+
   readonly rssBytes: number | null;
   readonly rssPercent: number | null;
 
@@ -192,6 +217,10 @@ export function buildHistoryRow(input: HistorySampleInput): HistoryRow {
     bytesForwardedDelta: counterDelta(currentSnapshot.bytesForwardedTotal, previousSnapshot.bytesForwardedTotal),
     peerClosedDelta: counterDelta(currentSnapshot.peerClosedTotal, previousSnapshot.peerClosedTotal),
     pongTimeoutsDelta: counterDelta(currentSnapshot.pongTimeoutsTotal, previousSnapshot.pongTimeoutsTotal),
+    pongOverdueDrainingDelta: counterDelta(
+      currentSnapshot.pongOverdueDrainingTotal,
+      previousSnapshot.pongOverdueDrainingTotal,
+    ),
     rejectsByReasonDelta: rejectsDelta(currentSnapshot.rejectsByReason, previousSnapshot.rejectsByReason),
     activeConnections: pointSample(currentSnapshot.activeConnections),
     waitingSlots: pointSample(currentSnapshot.waitingSlots),
@@ -201,6 +230,13 @@ export function buildHistoryRow(input: HistorySampleInput): HistoryRow {
     waitingUnknown: pointSample(currentSnapshot.waitingSlotsByRole.unknown),
     cpuPercent: processSample === null ? null : pointSample(processSample.cpuPercent),
     eventLoopLagP99Ms: processSample?.eventLoopLagP99Ms ?? null,
+    eventLoopLagMaxMs: processSample?.eventLoopLagMaxMs ?? null,
+    gcPauseMaxMs: processSample?.gcPauseMaxMs ?? null,
+    hostCpuStealTicksDelta: processSample?.hostCpuStealTicksDelta ?? null,
+    hostCpuTotalTicksDelta: processSample?.hostCpuTotalTicksDelta ?? null,
+    pressureCpuSomeMs: processSample?.pressureCpuSomeMs ?? null,
+    pressureMemorySomeMs: processSample?.pressureMemorySomeMs ?? null,
+    pressureIoSomeMs: processSample?.pressureIoSomeMs ?? null,
     rssBytes: processSample?.rssBytes ?? null,
     rssPercent: processSample?.rssPercent ?? null,
     maxOutboundBufferBytes: input.connectionSample?.maxOutboundBufferBytes ?? null,
@@ -250,6 +286,18 @@ export function bucketStartMs(timestampMs: number, resolutionSeconds: HistoryRes
   return Math.floor(timestampMs / bucketMs) * bucketMs;
 }
 
+/** Peak-preserving merge of a nullable field: null only when every input was null. */
+function maximumOrNull(accumulated: number | null, value: number | null): number | null {
+  if (value === null) return accumulated;
+  return Math.max(accumulated ?? 0, value);
+}
+
+/** Additive merge of a nullable per-interval delta: null only when every input was null. */
+function sumOrNull(accumulated: number | null, value: number | null): number | null {
+  if (value === null) return accumulated;
+  return roundToTenth((accumulated ?? 0) + value);
+}
+
 function mergeSeries(values: readonly { value: HistorySeriesValue; windowMs: number }[]): HistorySeriesValue {
   let maximum = 0;
   let weightedTotal = 0;
@@ -290,7 +338,15 @@ export function aggregateHistoryRows(
   let bytesForwardedDelta = 0;
   let peerClosedDelta = 0;
   let pongTimeoutsDelta = 0;
+  let pongOverdueDrainingDelta = 0;
   let eventLoopLagP99Ms: number | null = null;
+  let eventLoopLagMaxMs: number | null = null;
+  let gcPauseMaxMs: number | null = null;
+  let hostCpuStealTicksDelta: number | null = null;
+  let hostCpuTotalTicksDelta: number | null = null;
+  let pressureCpuSomeMs: number | null = null;
+  let pressureMemorySomeMs: number | null = null;
+  let pressureIoSomeMs: number | null = null;
   let rssBytes: number | null = null;
   let rssPercent: number | null = null;
   let uptimeSeconds: number | null = null;
@@ -316,6 +372,7 @@ export function aggregateHistoryRows(
     bytesForwardedDelta += row.bytesForwardedDelta;
     peerClosedDelta += row.peerClosedDelta;
     pongTimeoutsDelta += row.pongTimeoutsDelta;
+    pongOverdueDrainingDelta += row.pongOverdueDrainingDelta;
     for (const [reason, count] of Object.entries(row.rejectsByReasonDelta) as [RejectReason, number][]) {
       rejectsByReasonDelta[reason] = (rejectsByReasonDelta[reason] ?? 0) + count;
     }
@@ -329,6 +386,13 @@ export function aggregateHistoryRows(
     if (row.eventLoopLagP99Ms !== null) {
       eventLoopLagP99Ms = Math.max(eventLoopLagP99Ms ?? 0, row.eventLoopLagP99Ms);
     }
+    eventLoopLagMaxMs = maximumOrNull(eventLoopLagMaxMs, row.eventLoopLagMaxMs);
+    gcPauseMaxMs = maximumOrNull(gcPauseMaxMs, row.gcPauseMaxMs);
+    hostCpuStealTicksDelta = sumOrNull(hostCpuStealTicksDelta, row.hostCpuStealTicksDelta);
+    hostCpuTotalTicksDelta = sumOrNull(hostCpuTotalTicksDelta, row.hostCpuTotalTicksDelta);
+    pressureCpuSomeMs = sumOrNull(pressureCpuSomeMs, row.pressureCpuSomeMs);
+    pressureMemorySomeMs = sumOrNull(pressureMemorySomeMs, row.pressureMemorySomeMs);
+    pressureIoSomeMs = sumOrNull(pressureIoSomeMs, row.pressureIoSomeMs);
     if (row.rssBytes !== null) rssBytes = Math.max(rssBytes ?? 0, row.rssBytes);
     if (row.rssPercent !== null) rssPercent = Math.max(rssPercent ?? 0, row.rssPercent);
     if (row.uptimeSeconds !== null) uptimeSeconds = row.uptimeSeconds;
@@ -361,6 +425,7 @@ export function aggregateHistoryRows(
     bytesForwardedDelta,
     peerClosedDelta,
     pongTimeoutsDelta,
+    pongOverdueDrainingDelta,
     rejectsByReasonDelta,
     activeConnections: mergeSeries(activeConnections),
     waitingSlots: mergeSeries(waitingSlots),
@@ -370,6 +435,13 @@ export function aggregateHistoryRows(
     waitingUnknown: mergeSeries(waitingUnknown),
     cpuPercent: cpuPercent.length === 0 ? null : mergeSeries(cpuPercent),
     eventLoopLagP99Ms,
+    eventLoopLagMaxMs,
+    gcPauseMaxMs,
+    hostCpuStealTicksDelta,
+    hostCpuTotalTicksDelta,
+    pressureCpuSomeMs,
+    pressureMemorySomeMs,
+    pressureIoSomeMs,
     rssBytes,
     rssPercent,
     maxOutboundBufferBytes,
@@ -382,7 +454,8 @@ export function aggregateHistoryRows(
  * Short wire keys with zero-valued fields omitted. The abbreviation lives here
  * and in parseHistoryRow and nowhere else, so no other code reads them. Most
  * intervals leave most counters at zero, which takes a quiet row to roughly
- * 110 bytes and keeps the hourly whole-file compaction read small.
+ * 180 bytes (about 70 of them the stall-attribution group, which is written
+ * even at zero) and keeps the hourly whole-file compaction read small.
  */
 export function serializeHistoryRow(row: HistoryRow): string {
   const record: Record<string, unknown> = {
@@ -401,6 +474,7 @@ export function serializeHistoryRow(row: HistoryRow): string {
   if (row.bytesForwardedDelta !== 0) record['b'] = row.bytesForwardedDelta;
   if (row.peerClosedDelta !== 0) record['pc'] = row.peerClosedDelta;
   if (row.pongTimeoutsDelta !== 0) record['pt'] = row.pongTimeoutsDelta;
+  if (row.pongOverdueDrainingDelta !== 0) record['pg'] = row.pongOverdueDrainingDelta;
   if (Object.keys(row.rejectsByReasonDelta).length > 0) record['rj'] = row.rejectsByReasonDelta;
   if (row.activeConnections.maximum !== 0) record['ac'] = row.activeConnections.maximum;
   if (row.activeConnections.mean !== null) record['acm'] = row.activeConnections.mean;
@@ -435,6 +509,19 @@ export function serializeHistoryRow(row: HistoryRow): string {
     if (row.cpuPercent.mean !== null) record['cpm'] = row.cpuPercent.mean;
   }
   if (row.eventLoopLagP99Ms !== null) record['el'] = row.eventLoopLagP99Ms;
+  // The stall-attribution group is written whenever it was measured, zero
+  // included, for the same reason as 'cp': absence is how a reader tells "not
+  // measured" from "measured nothing", and a quiet relay reads exactly 0 on
+  // most of these most of the time. 'elx' is the loop max, 'gcx' the longest
+  // GC pause, 'sts'/'stt' the steal and total host ticks, and 'pcs'/'pms'/'pis'
+  // the cpu/memory/io PSI "some" stall milliseconds.
+  if (row.eventLoopLagMaxMs !== null) record['elx'] = row.eventLoopLagMaxMs;
+  if (row.gcPauseMaxMs !== null) record['gcx'] = row.gcPauseMaxMs;
+  if (row.hostCpuStealTicksDelta !== null) record['sts'] = row.hostCpuStealTicksDelta;
+  if (row.hostCpuTotalTicksDelta !== null) record['stt'] = row.hostCpuTotalTicksDelta;
+  if (row.pressureCpuSomeMs !== null) record['pcs'] = row.pressureCpuSomeMs;
+  if (row.pressureMemorySomeMs !== null) record['pms'] = row.pressureMemorySomeMs;
+  if (row.pressureIoSomeMs !== null) record['pis'] = row.pressureIoSomeMs;
   if (row.rssBytes !== null) record['rb'] = row.rssBytes;
   if (row.rssPercent !== null) record['rp'] = row.rssPercent;
   if (row.maxOutboundBufferBytes !== null) record['ob'] = row.maxOutboundBufferBytes;
@@ -528,6 +615,7 @@ export function parseHistoryRow(line: string): HistoryRowParseResult {
       bytesForwardedDelta: readNumber(fields, 'b', 0),
       peerClosedDelta: readNumber(fields, 'pc', 0),
       pongTimeoutsDelta: readNumber(fields, 'pt', 0),
+      pongOverdueDrainingDelta: readNumber(fields, 'pg', 0),
       rejectsByReasonDelta: readRejects(fields),
       activeConnections: readSeries(fields, 'ac', 'acm'),
       waitingSlots,
@@ -543,6 +631,16 @@ export function parseHistoryRow(line: string): HistoryRowParseResult {
       cpuPercent:
         fields['cp'] === undefined && fields['cpm'] === undefined ? null : readSeries(fields, 'cp', 'cpm'),
       eventLoopLagP99Ms: readNullableNumber(fields, 'el'),
+      // Added after v1 shipped, without a version bump: a bump would make every
+      // older row an unknown version, passed through but never served, and hide
+      // exactly the baseline these fields exist to be compared against.
+      eventLoopLagMaxMs: readNullableNumber(fields, 'elx'),
+      gcPauseMaxMs: readNullableNumber(fields, 'gcx'),
+      hostCpuStealTicksDelta: readNullableNumber(fields, 'sts'),
+      hostCpuTotalTicksDelta: readNullableNumber(fields, 'stt'),
+      pressureCpuSomeMs: readNullableNumber(fields, 'pcs'),
+      pressureMemorySomeMs: readNullableNumber(fields, 'pms'),
+      pressureIoSomeMs: readNullableNumber(fields, 'pis'),
       rssBytes: readNullableNumber(fields, 'rb'),
       rssPercent: readNullableNumber(fields, 'rp'),
       // Added after v1 shipped. Absent on older rows, which read as null rather

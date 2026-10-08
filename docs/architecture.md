@@ -114,6 +114,25 @@ next pong arrives. This is what reaps a half-open socket — a dead TCP peer wit
 `OPEN` — so parked/paired state and connection caps stay accurate. Traffic-idle is never treated as
 death: a quiet-but-alive paired tunnel is normal and must never be killed by this check.
 
+Slowness is not death either. A ping is written behind everything already queued to that socket,
+so a phone draining a multi-MiB transcript can answer more than an interval late. When a pong is
+missing, the loop first asks whether the socket made delivery progress since it was pinged
+(`isDraining` over two `readOutboundQueue` readings). If it did, the socket is spared for another
+interval (`onPongOverdueDraining`), no second ping is sent, and the baseline moves forward, so a
+consumer that stops draining is reaped one interval later.
+
+Progress is read two ways because neither alone sees it. `bufferedAmount` only falls when a whole
+write completes, and Node hands a backlog to libuv as one batched `writev`, so under a deep backlog
+it stays flat for many seconds while the peer reads steadily (measured on Linux: 21.47 MiB, flat
+for 5.4 s). libuv's live `writeQueueSize` on the socket's handle falls as the kernel accepts each
+part. Both are sound proof of life: libuv only leaves bytes queued when the kernel send buffer is
+full, so a queue that later shrinks means the kernel freed space, which only an acknowledging peer
+causes. `writeQueueSize` is not public API, so it is read defensively (null degrades the check to
+`bufferedAmount` alone) and a test reads it off a real socket so an upgrade that moves it fails
+loudly. The blind spot left is the kernel send buffer and anything downstream of it: once both
+readings are 0, a ping still waiting behind bytes the kernel or a proxy holds is judged by the pong
+alone, exactly as before.
+
 That loop is the periodic sweep, and on its own it costs one to two full intervals to notice a
 death. The fast path is the contention probe in `SlotTable.probePairedSlot` (`src/rendezvous.ts`):
 a newcomer arriving on an already-paired slot is still rejected with 4409, but the arrival also
@@ -124,7 +143,8 @@ the ordinary teardown path rather than inventing one: `terminate()` does no slot
 so cleanup runs through the socket's close event exactly as the periodic reap's does, including the
 `4000` sent to the survivor. It is deduped to one probe in flight per slot, tracks its own
 `probePending` flag rather than touching `isAlive` (whose owner runs on a different clock), and
-never fires against a pair that has since been replaced.
+never fires against a pair that has since been replaced. It applies the same drain test, read at
+arm time and at the deadline, so an incumbent that is slow rather than gone is spared.
 
 ## Real client IP (`src/net/clientIp.ts`)
 
@@ -191,6 +211,36 @@ protecting, and a raw slot id doubles as a bearer secret for that rendezvous - s
 handling is not to log it. `LOG_SLOT_HASHING` and `SLOT_LOG_SALT` configure `slotRef()`, the salted
 hash that any future slot logging would have to route through; both are currently inert, and exist
 so adding a slot to a log line is a deliberate act with a safe default.
+
+### Stall attribution (`src/history/processSampler.ts`)
+
+When the history recorder runs, each one-minute row carries what it takes to say whether the relay,
+the runtime, or the machine under it stalled during a minute a client saw a freeze:
+
+| Field | Source | Reads high when |
+|---|---|---|
+| `eventLoopLagMaxMs` | `monitorEventLoopDelay` histogram `max` | the process stopped running JavaScript for that long, for any reason |
+| `eventLoopLagP99Ms` | the same histogram's 99th percentile | the loop is busy all minute; blind to a single freeze, which is one sample in ~3000 |
+| `gcPauseMaxMs` | `PerformanceObserver` on `gc` entries | garbage collection caused the freeze |
+| `pressureCpuSomeMs` / `pressureMemorySomeMs` / `pressureIoSomeMs` | `/proc/pressure/*` "some" totals, host-wide | the host starved the process of CPU, memory, or IO |
+| `hostCpuStealTicksDelta` / `hostCpuTotalTicksDelta` | `/proc/stat` | the hypervisor gave the CPU to another tenant, on hypervisors that report it |
+
+Read together: loop max high with GC max high is the runtime; with PSI high it is the host; with
+low CPU, no GC and no PSI it is below the OS. Hetzner's shared vCPU reports no steal at all (zero
+for 78 days on the production host), so that last case has no direct counter there; a VM pause shows
+only as loop max. The procfs fields are null wherever procfs does not exist. All of it is sampled
+once a minute on the recorder's timer and nothing touches the forwarding path.
+
+### Connection trace (`src/connectionTrace.ts`)
+
+`CONNECTION_TRACE` logs one line per connection at close, for following one dial end to end
+alongside Caddy's access log and a client's own timings, matched on CF-Ray. Its stages are offsets
+from the moment the upgrade request arrived: how old the carrying TCP connection already was (near
+zero for a fresh dial, larger when a proxy reused a keep-alive connection), admission, 101 written,
+paired, closed. The first 8 frames add arrival time, length, and the partner queue each was written
+behind. Off is structural: no accept listener, no trace object, and the plain message listener. On,
+the extra listener swaps itself back to the plain one after the eighth frame, so a traced
+connection's long tail runs the same code as an untraced one.
 
 ## Configuration and shutdown
 

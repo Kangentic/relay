@@ -58,24 +58,35 @@ To rotate: repeat the minting steps above for a new certificate, update
 the two GitHub environment secrets, then trigger a manual deploy
 (`workflow_dispatch` on `deploy.yml`) to push the new cert to the box.
 
-**Then reload Caddy explicitly.** The cert and key go to
-`/opt/relay/secrets`, never to `/opt/relay/.env`, so they do not move the
-environment fingerprint `deploy.sh` uses to decide whether anything
-changed. If nothing else has changed since the last deploy, that
-`workflow_dispatch` exits at the skip gate and never reaches the
-`caddy reload` on the success path: the new cert lands on disk, the run
-reports green, and the running Caddy keeps serving the old certificate.
-This was masked until 2026-09-13 by a stale skip-check baseline that made
-every same-ref redeploy recreate the container.
+That deploy loads the new certificate on its own. `deploy.sh` fingerprints
+the cert, the key, the Caddyfile and the Cloudflare range list, and when the
+fingerprint changed it runs `caddy reload --force`, including on a deploy
+that otherwise skips the relay restart. Both halves were missing before:
+
+- **A plain `caddy reload` does not pick up a new certificate.** Caddy skips
+  a reload whose config is unchanged, and the `tls` directive names the same
+  two file paths either way. `--force` exists for exactly this: "reloading
+  manually-loaded TLS certificates"
+  ([Caddy CLI docs](https://caddyserver.com/docs/command-line)). Reproduced on
+  Caddy 2.8.4 with two self-signed certs: a plain reload kept serving the old
+  serial, a forced one switched.
+- **The rotation deploy never reached the reload.** The cert and key go to
+  `/opt/relay/secrets`, not `/opt/relay/.env`, so they moved no fingerprint
+  the skip gate read, and a `workflow_dispatch` with nothing else changed
+  exited before the success path.
+
+To check what the running Caddy actually serves, rather than what is on disk,
+compare serials on the box (the public hostnames are proxied and present
+Cloudflare's edge certificate, not this one):
 
 ```
-ssh deploy@relay-ashburn-us-east.kangentic.com \
-  "docker compose --env-file /opt/relay/.env -f /opt/relay/src/infra/compose/docker-compose.prod.yml exec -T caddy caddy reload --config /etc/caddy/Caddyfile"
+echo | openssl s_client -connect 127.0.0.1:443 -servername relay.kangentic.com 2>/dev/null | openssl x509 -noout -serial
+openssl x509 -in /opt/relay/secrets/origin.crt -noout -serial
 ```
 
-Confirm with the `openssl x509 ... -enddate` check above, which reads the
-file on disk, and note that it passing does **not** prove the running
-Caddy picked the cert up.
+On 2026-10-07 both read `60EE8516...`, so no rotation had yet been lost to
+the bug. A manual forced reload, if ever needed, is in
+[`infra/README.md`](../README.md#how-secrets-reach-the-box).
 
 ## What is deliberately not used
 
