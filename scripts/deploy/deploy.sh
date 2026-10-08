@@ -144,7 +144,16 @@ reload_caddy_if_inputs_changed() {
 # touches the real Caddy. Any failure stops the deploy (set -e) with the
 # running Caddy untouched. `sudo -n` fails at once rather than waiting on a
 # prompt.
-ensure_caddy_can_run_bbr() {
+#
+# The same throwaway container also adapts the exact Caddyfile.prod a
+# recreate would load, through the same two directory mounts compose gives
+# Caddy. A config that does not parse stops `caddy run` as surely as a refused
+# sysctl, and that outage is just as invisible to the relay's health gate, so
+# without this a recreate onto a broken config deployed green. Adapting
+# resolves every import and checks every directive without opening a
+# certificate, a socket or the data volume, which is why the hostnames only
+# need to be well formed, not real.
+preflight_caddy() {
   local modules_load_file="/etc/modules-load.d/kangentic-relay.conf"
   local sysctl_file="/etc/sysctl.d/90-kangentic-relay.conf"
   local allowed image caddy_image=""
@@ -174,9 +183,13 @@ ensure_caddy_can_run_bbr() {
     echo "preflight: no caddy image in the compose file" >&2
     return 1
   fi
-  if ! docker run --rm --network none --entrypoint true \
-    --sysctl net.ipv4.tcp_congestion_control=bbr "$caddy_image"; then
-    echo "preflight: $caddy_image cannot start with BBR on this host - the running Caddy is untouched" >&2
+  if ! docker run --rm --network none \
+    --sysctl net.ipv4.tcp_congestion_control=bbr \
+    -v "$repo_root/infra/compose:/etc/caddy/compose:ro" \
+    -v "$repo_root/infra/cloudflare:/etc/caddy/cloudflare:ro" \
+    -e RELAY_HOSTNAME=preflight.invalid -e RELAY_HOSTNAME_ALIAS=preflight-alias.invalid \
+    "$caddy_image" caddy adapt --config "$caddy_config_path" --adapter caddyfile >/dev/null; then
+    echo "preflight: $caddy_image cannot start with BBR on this host, or cannot load Caddyfile.prod - the running Caddy is untouched" >&2
     return 1
   fi
 }
@@ -336,7 +349,7 @@ wait_for_gate() {
 # image, mount, command or sysctl edit in docker-compose.prod.yml). A fresh
 # container loads every input as it starts, so that case needs no reload
 # afterwards, only its fingerprint recorded.
-ensure_caddy_can_run_bbr
+preflight_caddy
 caddy_container_before="$(compose ps -q caddy || true)"
 compose up -d --no-deps caddy
 caddy_container_after="$(compose ps -q caddy || true)"

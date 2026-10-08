@@ -76,11 +76,13 @@ deploy.yml (runner)
             -> skip check (git diff against the previous deploy's ref)
                  -> on skip: reload Caddy only if its inputs changed, exit
             -> compose pull
-            -> BBR preflight: load tcp_bbr, add bbr to the allowed
+            -> Caddy preflight: load tcp_bbr, add bbr to the allowed
                  congestion-control list, persist both, then start a
-                 throwaway container with Caddy's image and sysctl; stop
-                 here if it fails (Caddy's netns runs BBR, and a container
-                 can neither load the module nor widen the allowed list)
+                 throwaway container with Caddy's image and sysctl that
+                 also adapts Caddyfile.prod; stop here if it fails
+                 (Caddy's netns runs BBR, a container can neither load
+                 the module nor widen the allowed list, and the health
+                 gate never sees a Caddy that fails to start)
             -> compose up -d --no-deps caddy  (idempotent; without --no-deps,
                                               relay is pulled in as a
                                               dependency and recreated too)

@@ -10,8 +10,8 @@ All notable changes to this project are documented in this file. The format is b
 recreate. It also changes two host settings through `deploy.sh` (`sudo -n`): it loads the `tcp_bbr`
 kernel module and adds `bbr` to `net.ipv4.tcp_allowed_congestion_control`, persisting them in
 `/etc/modules-load.d/kangentic-relay.conf` and `/etc/sysctl.d/90-kangentic-relay.conf`, then starts
-a throwaway container with Caddy's image and BBR sysctl. If any step fails, the deploy stops before
-touching Caddy. Live
+a throwaway container with Caddy's image and BBR sysctl that also adapts the new `Caddyfile.prod`. If
+any step fails, the deploy stops before touching Caddy. Live
 sessions drop twice on that one deploy and reconnect; later deploys drop them once, as before. The
 post-release measurements this release exists for are listed in `docs/latency.md`, "Taking the
 after measurements".
@@ -69,8 +69,9 @@ after measurements".
   Caddy config, 15 ms delay and 0.8% loss, 2 MiB bursts took p90 1224 ms under cubic and 198 ms
   under BBR, with no difference on a clean path. A container namespace may only use an algorithm
   that is loaded and on the host's allowed list (stock: `reno cubic`), so `deploy.sh` loads
-  `tcp_bbr`, allows it, persists both, and preflights the exact image and sysctl in a throwaway
-  container before it touches Caddy; `cloud-init.yaml` writes the same settings on new boxes.
+  `tcp_bbr`, allows it, persists both, and preflights the exact image, sysctl and Caddyfile in a
+  throwaway container before it touches Caddy; `cloud-init.yaml` writes the same settings on new
+  boxes.
 - **Caddy is pinned to `caddy:2.8.4`** instead of the floating `caddy:2.8`, so a recreate is never
   also an unannounced upgrade.
 - **The monitor's synthetic pair times the path**: both dial times and the round trip go into the
