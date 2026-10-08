@@ -66,7 +66,7 @@ readable from inside the relay container.
 
 | | Before | After |
 |---|---|---|
-| A 250 ms freeze among ~125 ordinary samples (test) | p99 under 100 ms, nothing else recorded | `eventLoopLagMaxMs` >= 150 ms in that row, p99 still under 100 ms |
+| A 250 ms freeze among ~125 ordinary samples (test) | p99 stays near the timer floor, nothing else recorded | `eventLoopLagMaxMs` >= 150 ms in that row, p99 still below it |
 | Production row for a stall minute | p99 21.3 ms whatever happened | pending: max, GC, PSI per minute |
 
 **Steal reads 0 on this host by construction.** `/proc/stat` steal was 0 across 78 days of uptime,
@@ -219,6 +219,42 @@ described: contention could reap a live incumbent that was merely backlogged.
   Caddy because that hostname has no Access application. See `infra/README.md`, "Cloudflare Tunnel
   A/B". No Cloudflare doc claims a tunnel lowers WebSocket latency, so it is measured before anything
   depends on it.
+
+## Taking the after measurements
+
+Once the release carrying these changes has deployed, on the box (`deploy@<box>`, the server's own
+address; both public hostnames are proxied and refuse SSH). Each comment's number is the item above
+it measures:
+
+```
+# 1. The stall fields are being written: the newest rows carry elx, gcx, sts/stt, pcs/pms/pis.
+sudo tail -3 /var/lib/docker/volumes/compose_relay_history/_data/history.ndjson
+
+# 3. No swap for the relay container: expect 0.
+cat /sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' compose-relay-1).scope/memory.swap.current
+
+# 4. Cloudflare reuses origin connections longer: compare against the pre-release rate.
+sudo nsenter -t $(docker inspect -f '{{.State.Pid}}' compose-caddy-1) -n nstat -asz TcpPassiveOpens
+
+# 5. The served cert matches the file (and does again after the next rotation).
+echo | openssl s_client -connect 127.0.0.1:443 -servername relay.kangentic.com 2>/dev/null | openssl x509 -noout -serial
+openssl x509 -in /opt/relay/secrets/origin.crt -noout -serial
+
+# 2. No slot id and no slot-length hex string in either Caddy log: expect no output.
+docker logs compose-caddy-1 2>&1 | grep -E 'slot=[0-9a-f]|[0-9a-f]{32,64}'
+docker exec compose-caddy-1 grep -E 'slot=[0-9a-f]|[0-9a-f]{32,64}' /data/logs/access.log
+
+# 4. 502s since the release, now that Caddy logs every request: expect none outside deploys.
+docker exec compose-caddy-1 grep -c '"status":502' /data/logs/access.log
+
+# 6. Slow consumers spared, from the /admin Table view's Spared slow column, or:
+curl -s -H "Authorization: Bearer $METRICS_TOKEN" http://127.0.0.1:8080/metricz
+```
+
+From a workstation, over the same minutes as `scripts/legProbe.sh box relay.kangentic.com 600` on
+the box: `scripts/legProbe.sh client relay.kangentic.com 600`, and for item 7
+`node scripts/burstProbe.mjs --url wss://relay.kangentic.com`, compared against the burst p50 of
+103.7 ms above.
 
 ## Already right, unchanged
 

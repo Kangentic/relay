@@ -25,7 +25,8 @@
 	# Caddy's error log includes the request URI, and a relay URI carries the
 	# slot id in its query string, so out of the box every 502 would write a
 	# slot id to the log. This routes that log through a filter that drops
-	# the slot, the request headers, and the client address. Add a `log`
+	# the slot, the request headers, and the client address. Both address
+	# fields go: with no proxy in front, remote_ip IS the client. Add a `log`
 	# block with the same filter to the site below if you also want an
 	# access log.
 	log default {
@@ -39,6 +40,7 @@
 			}
 			request>headers delete
 			request>client_ip delete
+			request>remote_ip delete
 		}
 	}
 }

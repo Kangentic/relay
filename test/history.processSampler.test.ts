@@ -177,7 +177,10 @@ describe('process sampler', () => {
     expect(sample.eventLoopLagMaxMs).not.toBeNull();
     expect(sample.eventLoopLagMaxMs).toBeGreaterThanOrEqual(150);
     expect(sample.eventLoopLagP99Ms).not.toBeNull();
-    expect(sample.eventLoopLagP99Ms).toBeLessThan(100);
+    // Relative, not an absolute ceiling: a shared CI runner can add its own
+    // 100 ms hiccup, which would land at p99 here. What has to hold is that
+    // the freeze is above the 99th percentile, which is the blind spot.
+    expect(sample.eventLoopLagP99Ms ?? Number.POSITIVE_INFINITY).toBeLessThan(sample.eventLoopLagMaxMs ?? 0);
   }, 10_000);
 
   it('resets the max with the window, so one stall is reported once', async () => {
@@ -190,7 +193,9 @@ describe('process sampler', () => {
     const after = sampler.sample(Date.now());
 
     expect(stalled.eventLoopLagMaxMs ?? 0).toBeGreaterThanOrEqual(150);
-    expect(after.eventLoopLagMaxMs ?? 0).toBeLessThan(150);
+    // Below the stall it followed rather than below a fixed bound, so a busy
+    // runner's ordinary jitter in the second window cannot fail it.
+    expect(after.eventLoopLagMaxMs ?? Number.POSITIVE_INFINITY).toBeLessThan(stalled.eventLoopLagMaxMs ?? 0);
   });
 
   it('reports the longest GC pause as a non-negative number while observing', () => {

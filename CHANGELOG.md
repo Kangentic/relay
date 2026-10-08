@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+**Deploy note:** this release changes the Caddy service's definition (directory mounts, an explicit
+`--config`, a sysctl), so its deploy recreates Caddy once, just before the relay recreate. Live
+sessions drop twice on that one deploy and reconnect; later deploys drop them once, as before. The
+post-release measurements this release exists for are listed in `docs/latency.md`, "Taking the
+after measurements".
+
 ### Added
 
 - **The metrics history can see a multi-second stall.** Clients measured 0.9-3.2 s rough patches on
@@ -33,14 +39,17 @@ All notable changes to this project are documented in this file. The format is b
 
 ### Changed
 
-- **The keepalive no longer reaps a socket that is alive but slow.** A ping waits behind everything
-  queued to the socket, so a phone draining a large transcript could miss a pong and be torn down
-  mid-stream. A missed pong on a socket that made delivery progress since the ping now earns another
-  interval. Progress is read from libuv's live write queue as well as `bufferedAmount`, because Node
-  hands a backlog to the kernel as one batched write and `bufferedAmount` stayed flat for 5.4 s
-  against a reader taking 1 MiB/s. On Linux, 24 MiB at 1 MiB/s: reaped mid-stream in 5 of 5 runs
-  before, delivered in full in 5 of 5 after. The contention probe applies the same test, so a slot-id
-  holder can no longer get a backlogged live incumbent reaped by dialing in.
+- **The keepalive no longer reaps a socket that is alive but slow, while its backlog is still in
+  the relay's own queue.** A ping waits behind everything queued to the socket, so a phone draining a
+  large transcript could miss a pong and be torn down mid-stream. A missed pong on a socket that made
+  delivery progress since the ping now earns another interval. Progress is read from libuv's live
+  write queue as well as `bufferedAmount`, because Node hands a backlog to the kernel as one batched
+  write and `bufferedAmount` stayed flat for 5.4 s against a reader taking 1 MiB/s. On Linux, 24 MiB
+  at 1 MiB/s: reaped mid-stream in 5 of 5 runs before, delivered in full in 5 of 5 after. Bytes that
+  have already left for the kernel and the proxies downstream cannot be seen draining, so a backlog
+  that fits entirely in those buffers is judged by the pong alone, as before. The contention probe
+  applies the same test, so a slot-id holder can no longer get a backlogged live incumbent reaped by
+  dialing in.
 - **Caddy keep-alives line up with their peers.** The upstream keepalive to the relay is 4 s, below
   Node's 5 s timeout (Caddy's docs warn a longer one produces resets and 502s), and the server idle
   timeout is 16m, above Cloudflare's 900 s origin connection reuse, so Cloudflare always closes
