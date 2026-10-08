@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-07
+
 **Deploy note:** this release changes the Caddy service's definition (directory mounts, an explicit
 `--config`, two sysctls, a pinned image), so its deploy recreates Caddy once, just before the relay
 recreate. It also changes two host settings through `deploy.sh` (`sudo -n`): it loads the `tcp_bbr`
