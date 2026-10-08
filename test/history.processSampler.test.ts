@@ -1,5 +1,6 @@
 import { totalmem } from 'node:os';
-import { afterEach, describe, expect, it } from 'vitest';
+import { PerformanceObserver } from 'node:perf_hooks';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createProcessSampler,
   isBelievableMemoryLimit,
@@ -247,6 +248,40 @@ describe('process sampler', () => {
     const second = sampler.sample(Date.now());
     expect(second.hostCpuStealTicksDelta).toBe(0);
     expect(second.pressureCpuSomeMs).toBe(0);
+  });
+
+  it('clamps a procfs counter that went backwards to zero rather than drawing a negative stall', () => {
+    // A counter only falls when its source reset underneath the sampler (a
+    // container moved to a fresh host, a kernel that zeroed PSI). A negative
+    // delta would draw as a stall that ran backwards in time.
+    const procfs = fakeProcfs();
+    procfs.setStat(100, 50_000);
+    procfs.setPressure('cpu', 5_000_000);
+    sampler = createProcessSampler({ containerMemoryLimitBytes: null, readProcFile: procfs.read });
+
+    procfs.setStat(10, 1_000);
+    procfs.setPressure('cpu', 1_000);
+    const sample = sampler.sample(Date.now());
+
+    // Exactly 0, not negative and not null: both readings exist, so the
+    // window was measured.
+    expect(sample.hostCpuStealTicksDelta).toBe(0);
+    expect(sample.hostCpuTotalTicksDelta).toBe(0);
+    expect(sample.pressureCpuSomeMs).toBe(0);
+  });
+
+  it('disconnects its GC observer on stop, so the subscription ends with the recorder', () => {
+    const disconnect = vi.spyOn(PerformanceObserver.prototype, 'disconnect');
+    try {
+      // Local rather than the shared `sampler`, so afterEach does not stop it
+      // a second time and double the count.
+      const stopped = createProcessSampler({ containerMemoryLimitBytes: null, readProcFile: () => null });
+      expect(disconnect).not.toHaveBeenCalled();
+      stopped.stop();
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      disconnect.mockRestore();
+    }
   });
 
   it('treats a source that disappears as unmeasured rather than as a huge or negative delta', () => {

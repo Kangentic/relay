@@ -6,6 +6,8 @@ export interface RelayHarness {
   readonly url: string;
   readonly config: Config;
   readonly metrics: ReturnType<typeof createRelay>['metrics'];
+  /** For asserting what the relay registered on its server, e.g. that an opt-in feature added no listener. */
+  readonly httpServer: ReturnType<typeof createRelay>['httpServer'];
   close(): Promise<void>;
 }
 
@@ -23,6 +25,7 @@ export async function startTestRelay(
     url: `ws://127.0.0.1:${port}`,
     config,
     metrics: relay.metrics,
+    httpServer: relay.httpServer,
     close: () => relay.close(),
   };
 }

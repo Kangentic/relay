@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
-import { parseCfRay, startConnectionTrace, TRACE_FRAME_LIMIT } from '../src/connectionTrace.js';
+import { markTracePaired, parseCfRay, startConnectionTrace, TRACE_FRAME_LIMIT } from '../src/connectionTrace.js';
 import type { Logger } from '../src/logging.js';
 import { startTestRelay, type RelayHarness } from './helpers/relayHarness.js';
 import { createSlotTableHarness } from './helpers/slotTableHarness.js';
@@ -112,6 +112,52 @@ describe('the traced message listener', () => {
   });
 });
 
+describe('the pairing stamp', () => {
+  it('is set before a parked frame is flushed, so that frame is dated by its actual forward', () => {
+    const harness = createSlotTableHarness();
+    const trace = startConnectionTrace(undefined, undefined);
+    const parked = harness.connectTraced(SLOT, trace);
+    parked.socket.emit('message', Buffer.alloc(16), true);
+    expect(trace.pairedAfterMs).toBeNull();
+
+    // The flush runs synchronously inside the partner's connect, so the stamp
+    // is read at the moment the parked frame is counted as forwarded.
+    const pairedAfterMsAtForward: (number | null)[] = [];
+    const onForward = vi.spyOn(harness.metrics, 'onForward').mockImplementation(() => {
+      pairedAfterMsAtForward.push(trace.pairedAfterMs);
+    });
+    try {
+      harness.connect(SLOT);
+    } finally {
+      onForward.mockRestore();
+    }
+
+    expect(pairedAfterMsAtForward).toHaveLength(1);
+    expect(pairedAfterMsAtForward[0]).not.toBeNull();
+  });
+
+  it('is taken once per connection and never moved by a later call', () => {
+    const harness = createSlotTableHarness();
+    const trace = startConnectionTrace(undefined, undefined);
+    const traced = harness.connectTraced(SLOT, trace);
+    harness.connect(SLOT);
+    const stamped = trace.pairedAfterMs;
+    expect(stamped).not.toBeNull();
+
+    // Long enough that a re-stamp would read a different hundredth of a ms.
+    const until = performance.now() + 5;
+    while (performance.now() < until) {
+      // spin
+    }
+    markTracePaired(traced.conn);
+    expect(trace.pairedAfterMs).toBe(stamped);
+  });
+
+  it('reports no socket age when the accept was never observed', () => {
+    expect(startConnectionTrace(undefined, undefined).socketAgeAtUpgradeMs).toBeNull();
+  });
+});
+
 describe('connection trace over a live relay', () => {
   let relay: RelayHarness | undefined;
 
@@ -189,5 +235,17 @@ describe('connection trace over a live relay', () => {
     await waitFor(() => relay?.metrics.snapshot().activeConnections === 0);
 
     expect(traceLines(lines)).toHaveLength(0);
+  });
+
+  it('registers its accept listener only when tracing is on', async () => {
+    // Off is structural: no listener at all, not one that checks a flag. Node's
+    // http.Server registers its own 'connection' listener, so the comparison is
+    // against an untraced relay rather than against zero.
+    relay = await startTestRelay({ connectionTrace: false });
+    const untracedListenerCount = relay.httpServer.listenerCount('connection');
+    await relay.close();
+
+    relay = await startTestRelay({ connectionTrace: true });
+    expect(relay.httpServer.listenerCount('connection')).toBe(untracedListenerCount + 1);
   });
 });
