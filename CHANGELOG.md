@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-27
+
+**Deploy note:** no source change. The deploy recreates the relay container once, so live sessions
+drop and reconnect. Caddy is not recreated and nothing needs operator action.
+
+### Security
+
+- **The image is rebuilt on Node 22.23.4**, which carries the fixes from the
+  [October 2026 Node.js security releases](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases).
+  v0.4.0 was built before `node:22-bookworm-slim` moved to 22.23.4, so production ran Node 22.23.3
+  until this release. Exposure was low: the relay never calls `dns.resolve`, never decompresses
+  incoming data, and its only outgoing request is the optional admission webhook.
+
 ## [0.4.0] - 2026-10-07
 
 **Deploy note:** this release changes the Caddy service's definition (directory mounts, an explicit
