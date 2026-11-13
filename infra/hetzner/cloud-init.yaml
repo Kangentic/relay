@@ -86,6 +86,16 @@ write_files:
     content: |
       net.ipv4.tcp_allowed_congestion_control = reno cubic bbr
 
+  # The relay's no-swap limit (memswap_limit equal to mem_limit) reaches the
+  # cgroup but not systemd's record of the container scope, so the next
+  # daemon-reload (unattended upgrades run them) re-applies MemorySwapMax=infinity.
+  # This prefix drop-in covers every docker-*.scope. deploy.sh writes the same
+  # file on boxes provisioned before it; see its pin_no_swap_for_containers.
+  - path: /etc/systemd/system/docker-.scope.d/90-kangentic-relay.conf
+    content: |
+      [Scope]
+      MemorySwapMax=0
+
   - path: /etc/apt/apt.conf.d/20auto-upgrades
     content: |
       APT::Periodic::Update-Package-Lists "1";

@@ -5,6 +5,37 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+**Deploy note:** the deploy writes one host file through `deploy.sh` (`sudo -n`),
+`/etc/systemd/system/docker-.scope.d/90-kangentic-relay.conf`, and runs `systemctl daemon-reload`
+once. That reload re-applies the relay's no-swap limit to the running container, so it needs no
+restart. Neither the relay nor Caddy is recreated by this change on its own.
+
+### Added
+
+- **`scripts/originLegStalls.mjs`: the origin leg measured over every real dial, not a probe.** It
+  reads an export of the relay's `CONNECTION_TRACE` lines, dates each dial at the edge by its CF-Ray,
+  and reports the time it spent between Cloudflare's edge and the relay, by day and colo, grouped
+  into episodes. Over the week to 2026-11-12 it found 1.87% of 136,000 dials over 1 s on that leg,
+  in bursts across 6 to 17 colos at once while the relay and host stayed idle. Results and the
+  decisions taken on them are in `docs/latency.md`, "Results, 2026-11-12".
+
+### Fixed
+
+- **The relay container's no-swap limit survives a systemd reload.** 0.4.0 set `memswap_limit` equal
+  to `mem_limit`, and runc wrote `memory.swap.max=0` into the container's cgroup, but systemd's own
+  record of the container scope kept `MemorySwapMax=infinity`. The next `daemon-reload` from
+  unattended upgrades put it back to `max`: production read 0 on 2026-10-30 and `max` on
+  2026-11-12, on the same container, with swap use still 0. `deploy.sh` and `cloud-init.yaml` now
+  install a systemd drop-in that makes `MemorySwapMax=0` systemd's own setting for every container
+  scope on the box, Caddy included. Reproduced and verified on the box with throwaway units first.
+
+### Security
+
+- **The deploy log no longer prints the origin server's address.** The deploy job resolved the box's
+  IP and printed it in two steps' environment blocks in the public run log. It is now masked as soon
+  as it is resolved. Past runs still show it. Ports 80 and 443 accept only Cloudflare's ranges, so
+  the address alone does not bypass Cloudflare.
+
 ## [0.4.1] - 2026-10-27
 
 **Deploy note:** no source change. The deploy recreates the relay container once, so live sessions

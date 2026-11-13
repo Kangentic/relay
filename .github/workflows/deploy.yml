@@ -105,6 +105,10 @@ jobs:
             exit 1
           fi
           ip="$(echo "$response" | jq -r '.servers[0].public_net.ipv4.ip')"
+          # Not a secret, but the address Cloudflare proxies is not for the
+          # public run log either, and the later steps print it in their env
+          # blocks. Masked before it becomes an output, so they print ***.
+          echo "::add-mask::$ip"
           echo "ip=$ip" >> "$GITHUB_OUTPUT"
           echo "found=true" >> "$GITHUB_OUTPUT"
 
@@ -163,7 +167,10 @@ jobs:
           # admission, 101, pairing, first frames, keyed by CF-Ray; no slot
           # id, no IP) for the edge-to-origin latency investigation in
           # docs/latency.md. The relay service's log rotation in
-          # docker-compose.prod.yml is sized for it. Drop the line to stop.
+          # docker-compose.prod.yml holds about a week of it, and this
+          # deploy's relay recreate (if any) wipes it: export it first
+          # (docs/latency.md, "Taking the after measurements"). Drop the
+          # line to stop.
           cat > "$RUNNER_TEMP/relay.env" <<EOF
           MAX_CONNECTIONS=4000
           MAX_CONNECTIONS_PER_IP=64
