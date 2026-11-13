@@ -5,10 +5,15 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-12
+
 **Deploy note:** the deploy writes one host file through `deploy.sh` (`sudo -n`),
 `/etc/systemd/system/docker-.scope.d/90-kangentic-relay.conf`, and runs `systemctl daemon-reload`
-once. That reload re-applies the relay's no-swap limit to the running container, so it needs no
-restart. Neither the relay nor Caddy is recreated by this change on its own.
+once, which re-applies the relay's no-swap limit to the running container. The release's version bump
+in `package.json` still trips the deploy's skip gate, so the relay container is recreated once: live
+sessions drop and reconnect, and the relay's in-container trace log is wiped (export it first, see
+`docs/latency.md`, "Taking the after measurements"). Caddy is not recreated and nothing needs
+operator action.
 
 ### Added
 
