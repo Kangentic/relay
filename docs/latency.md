@@ -364,6 +364,9 @@ windows differ by source, because a relay recreate wipes its log and zeroes its 
 | Relay trace lines | 11-05 15:04 to 11-12, all that log rotation still held |
 | Monitor runs | 176 runs, 10-08 to 11-12 |
 
+The Caddy timestamps for the monitor's 10-15 and 10-24 runs below come from an earlier export of
+the access log, made before those files rolled out.
+
 The per-item after figures are in the items above (1, 3, 4, 6 and 7). What the five weeks add:
 
 ### The origin leg stalls in episodes
@@ -374,8 +377,8 @@ the request. Cloudflare does not document this, so it is used only as far as it 
 offset between the two clocks drifts by seconds over days, so it is re-anchored every hour, and each
 colo's ordinary transit (its median) is subtracted. What remains is each dial's excess time between
 the edge and the relay. `scripts/originLegStalls.mjs` computes it from an exported trace. Against a
-calm window, the rig's own 3,570 dials below, it read p99 0.08 s and max 0.43 s, so it does not
-invent stalls. The monitor's slow run on 11-09, located by a different method (two rays from one run
+calm window, the 3,570 dials (the rig's and real users') traced during the rig's two hours below, it
+read p99 0.08 s and max 0.43 s, so it does not invent stalls. The monitor's slow run on 11-09, located by a different method (two rays from one run
 reaching the edge together), read 1.77 s on this leg.
 
 **What it found.** 136,000 real dials, 11-05 15:04 to 11-12 22:02, through 48 colos:
@@ -398,24 +401,28 @@ until the origin answered: they were slow, not failed.
 Caddy to the relay. Ruled out across every episode:
 
 - **The relay.** Loop max 22 to 25 ms in nearly every episode minute and at most 109 ms, with GC
-  under 14 ms, CPU under 2% and PSI at its baseline. Caddy to relay (`socketAgeAtUpgradeMs`) read
-  0.12 to 0.40 ms on the largest stalls themselves.
+  under 14 ms, CPU under 2%, and PSI in its usual range (memory 0, IO at most 9 ms in a minute,
+  where all minutes' p99 is 10). Caddy to relay (`socketAgeAtUpgradeMs`) read 0.12 to 0.40 ms on
+  the largest stalls themselves.
 - **The host.** No receive drops or errors on the NIC, conntrack at 43 of 65,536 entries, no
   listen-queue overflow or drop in Caddy's namespace, no network message in the kernel log, and
   Caddy never CPU-throttled.
 - **A freeze of Caddy as a whole.** Established sockets kept answering: pong timeouts went from a
   baseline of 0.03 a minute to about 0.3 in the two worst bursts, against hundreds of stalled dials.
-- **Caddy's own errors.** Its runtime log over 11-06 to 11-11 holds only the daily storage cleanup,
-  with no TLS, certificate or handshake error.
+- **Certificate or storage work in Caddy.** Its runtime log over 11-06 to 11-11 holds only the daily
+  storage cleanup at 01:25, nowhere near an episode. That log would not show a handshake that
+  merely stalled, so this rules out Caddy's own housekeeping, not its TLS path.
 
 That leaves the network path between Cloudflare and the box, or Caddy's TLS accept path alone, which
-this data cannot tell apart. The timing favors the network. Hetzner's status page posted "Urgent
-maintenance on all core routers" (network redundancy "reduced globally", "you may experience
-increased latency") from 10-15 to 11-11 11:37. The stall rate was 2.28% of dials before that end
-and 0.10% (26 of 25,720) after, with no change to Caddy in between. Cloudflare posted "Network
-Performance Issues in Eastern North America" for 11-09 16:34 to 20:12, inside the worst stretch.
-Neither names the box's location, and 11-05 and 11-06 fell inside the Hetzner window yet were calm,
-so this is a correlation, not a cause.
+this data cannot tell apart. The timing favors the network. Hetzner posted
+["Urgent maintenance on all core routers"](https://status.hetzner.com/incident/cd31dd45-f431-4639-8f9a-d4bfb5353f30)
+from 10-15 10:00 to 11-11 11:37: "network redundancy is reduced globally. We do not expect any
+service interruptions, but you may experience increased latency." The stall rate was 2.28% of
+dials before that end and 0.10% (26 of 25,720) after, with no change to Caddy in between.
+Cloudflare posted
+["Network Performance Issues in Eastern North America"](https://www.cloudflarestatus.com/incidents/88hc76jnq2gn)
+for 11-09 16:34 to 20:12, inside the worst stretch. Neither names the box's location, and 11-05 and
+11-06 fell inside the Hetzner window yet were calm, so this is a correlation, not a cause.
 
 ### Desktop task #774's rig, rerun
 
@@ -450,6 +457,14 @@ is not known, and it is not a leg this repo controls. The path probe's edge conn
 | 11-09 13:10 | 3.14 / 1.37 s | about 1.3 s | 1.77 s on one dial |
 
 The second-plus before the edge is the GitHub runner's own path, which nothing here can reach.
+
+### The relay's own stalls
+
+Over the last 7 days of one-minute rows, loop max read 21.7 ms at the median and 91 ms at p99. It
+read 21.9 ms in the minutes of both 19 s rig dials. The one outlier in 36 days, 320 ms at 11-08
+01:08, had GC 0.5 ms and 233 ms of IO pressure against a usual 5 ms: the host's disk held the
+process once. No client reported a slow dial then, and the trace's nearest stalled dial came at
+01:07:31 (1.2 s on the origin leg), outside any episode.
 
 ### Decisions
 
