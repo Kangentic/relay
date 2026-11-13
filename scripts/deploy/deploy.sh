@@ -194,6 +194,37 @@ preflight_caddy() {
   fi
 }
 
+# docker-compose.prod.yml sets the relay's memswap_limit equal to mem_limit,
+# Docker's way of saying "no swap", and runc honours it by writing
+# memory.swap.max=0 into the container's cgroup at start. It does not tell
+# systemd, though: systemd's record of the container's docker-<id>.scope keeps
+# MemorySwapMax=infinity (memory.max it does pass on). systemd re-applies its
+# own record on every daemon-reload or re-exec, which unattended upgrades run
+# routinely, so the limit silently lapsed in production: memory.swap.max read
+# 0 on 2026-10-30 and max on 2026-11-12, on the same container, after
+# apt-daily-upgrade reloaded systemd twice. A drop-in for the docker- prefix,
+# which systemd applies to every docker-*.scope ("foo-.service.d/" also serves
+# "foo-bar-baz.service", systemd.unit(5)), makes systemd itself hold
+# MemorySwapMax=0, so a reload re-applies 0. That covers Caddy and every other
+# container here too, deliberately: nothing on this box should page.
+#
+# Runs before the skip gate, so a release that does not recreate the relay
+# still installs it, and the reload that loads it re-applies 0 to the running
+# relay without a restart. Verified on the box with throwaway units: a reload
+# turned a fresh container's 0 into max, and with the drop-in it stayed 0
+# (docs/latency.md).
+pin_no_swap_for_containers() {
+  local drop_in_dir="/etc/systemd/system/docker-.scope.d"
+  local drop_in_file="$drop_in_dir/90-kangentic-relay.conf"
+  local wanted
+  wanted="$(printf '[Scope]\nMemorySwapMax=0')"
+  if [ "$(cat "$drop_in_file" 2>/dev/null || echo "")" != "$wanted" ]; then
+    sudo -n install -d -m 0755 "$drop_in_dir"
+    printf '%s\n' "$wanted" | sudo -n tee "$drop_in_file" >/dev/null
+    sudo -n systemctl daemon-reload
+  fi
+}
+
 # The previous image digest comes from reality - the container actually
 # running right now - and not from a file that could drift.
 prev_container_id="$(compose ps -q relay || true)"
@@ -228,6 +259,8 @@ if [ -z "$prev_git_ref" ]; then
 fi
 
 echo "deploying image_tag=$image_tag drill=$drill (previous digest: ${prev_digest:-none})"
+
+pin_no_swap_for_containers
 
 # The environment file is delivered out of band by the workflow moments
 # before this script runs and is deliberately not in git, so the git diff

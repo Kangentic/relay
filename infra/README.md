@@ -149,7 +149,7 @@ workflow.
 | `MAX_SESSION_MS` | `0` (default, unchanged) | Deliberately left disabled. A wall-clock cap tears down healthy long-lived pairings mid-use; the byte cap (`MAX_SESSION_BYTES`, unchanged) is the actual runaway-bill bound, and keepalive already reaps dead sockets. |
 | `ADMIN_ENABLED` | `true` | Serves the private dashboard at `/admin`. **The relay does not authenticate it** - Cloudflare Access, scoped to the `/admin*` path on the public hostname, is the gate. See "The `/admin` dashboard and its volume" below before turning this on. |
 | `METRICS_HISTORY_PATH` | `/var/lib/relay/history.ndjson` | The `relay_history` named volume's mount point. Must be absolute. Anywhere outside the volume is discarded by the next deploy. |
-| `CONNECTION_TRACE` | `true` | One timing line per connection at close, keyed by CF-Ray, for the edge-to-origin latency investigation in [`docs/latency.md`](../docs/latency.md). No slot id, no IP. About 13k lines a day; the relay service's log rotation in the compose file is sized for it. Remove the line from `deploy.yml` to stop. |
+| `CONNECTION_TRACE` | `true` | One timing line per connection at close, keyed by CF-Ray, for the edge-to-origin latency investigation in [`docs/latency.md`](../docs/latency.md). No slot id, no IP. About 20k lines a day in November 2026, so the relay service's log rotation in the compose file (20 MB x 5) holds about a week, and a relay recreate wipes it: export before a release (`docs/latency.md`, "Taking the after measurements") and read the export with `scripts/originLegStalls.mjs`. Remove the line from `deploy.yml` to stop. |
 
 **The single most important non-`.env` value is `mem_limit: 1200m`** in
 `infra/compose/docker-compose.prod.yml`. `MAX_CONNECTIONS` cannot bound the buffered-bytes tail by
@@ -377,6 +377,10 @@ When clients report multi-second stalls, find the leg first. The full method, an
 4. **To follow one connection end to end**, `CONNECTION_TRACE` logs a line per connection keyed by
    CF-Ray (`docker compose ... logs relay | grep '"connection trace"'`), and Caddy's access log
    carries the same `cf_ray` with `upstream_latency_ms`.
+5. **To measure the origin leg over every real dial**, with no probe running at the time, export the
+   trace and run `node scripts/originLegStalls.mjs traces.ndjson`. It dates each dial at the edge
+   by its CF-Ray and reports the time each one spent between the edge and the relay, by day and
+   colo, grouped into episodes. That is how the 2026-11 episodes were found.
 
 ## Cloudflare Tunnel A/B
 
@@ -403,7 +407,10 @@ which is exactly why it is measured rather than adopted.
    experiment runs.
 5. Measure both hostnames over the same minutes, several times a day for a week:
    `scripts/legProbe.sh client relay.kangentic.com 600` and the same against the A/B hostname, plus
-   `scripts/burstProbe.mjs` against each. Compare p50, p99, and samples over 0.25 s.
+   `scripts/burstProbe.mjs` against each. Compare p50, p99, and samples over 0.25 s. The origin leg
+   stalls in episodes (`docs/latency.md`, "Results, 2026-11-12"), and between them it stalled on
+   0.10% of dials, so a calm week shows no difference either way. Keep the run going until
+   `scripts/originLegStalls.mjs` over the exported trace shows an episode inside it.
 6. Tear down: `docker compose ... --profile tunnel-ab stop cloudflared`, delete the tunnel and its
    DNS record, and remove `/opt/relay/secrets/tunnel-token`.
 

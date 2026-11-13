@@ -62,6 +62,7 @@ scripts/
   slowConsumerRepro.mjs  # A/B: does the keepalive reap a live reader draining a deep backlog (run on Linux)
   legProbe.sh         # 1 Hz per-leg latency probe (client: edge vs origin; box: Caddy, relay, TCP counters)
   burstProbe.mjs      # time a burst after an idle period through a relay URL (slow-start before/after)
+  originLegStalls.mjs # edge-to-relay time of every traced dial, dated by CF-Ray; stall episodes by day/colo
   review-verdict.mjs  # /code-review's Ready-or-Blocked verdict + commit ledger, computed from findings.json
   lib/is-entrypoint.mjs  # realpath-based "was this module the entry script", so a test can import one
 ```

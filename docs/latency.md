@@ -67,7 +67,7 @@ readable from inside the relay container.
 | | Before | After |
 |---|---|---|
 | A 250 ms freeze among ~125 ordinary samples (test) | p99 stays near the timer floor, nothing else recorded | `eventLoopLagMaxMs` >= 150 ms in that row, p99 still below it |
-| Production row for a stall minute | p99 21.3 ms whatever happened | pending: max, GC, PSI per minute |
+| Production row for a stall minute | p99 21.3 ms whatever happened | at every slow dial a client reported since the release, loop max 22-23 ms, GC under 3 ms, PSI at its baseline: the relay was idle. Worst minute in 36 days: 320 ms, no GC, with an IO stall that minute (see "Results, 2026-11-12") |
 
 **Steal reads 0 on this host by construction.** `/proc/stat` steal was 0 across 78 days of uptime,
 sar `%steal` 0.00, and dmesg has no `kvm-stealtime` line: Hetzner's hypervisor does not report it.
@@ -106,7 +106,22 @@ trace line for the same dial: `socketAgeAtUpgradeMs` 0.47, admitted after 0.44 m
   `HostConfig.MemorySwap` was 2x the memory limit. Swap was not the cause (zero memory stall), but
   a paged-out heap that a garbage collector touches is a stall measured in disk reads, so
   `memswap_limit` is now equal to `mem_limit`, which "prevents containers from using any swap".
-  Before: `memory.swap.current` 3.9 MB. After: pending, expected 0.
+  Before: `memory.swap.current` 3.9 MB. After: 0 on 2026-10-30 and on 2026-11-12, every
+  `memory.events` counter 0, **but the limit itself did not hold.** `memory.swap.max` read 0 on 10-30
+  and `max` on 11-12, on the same container. runc writes the 0 into the cgroup without telling
+  systemd: systemd's record of the container's `docker-<id>.scope` carries `MemoryMax` but keeps
+  `MemorySwapMax=infinity`. systemd re-applies its record on every daemon-reload or re-exec, and
+  `apt-daily-upgrade` ran one of each (11-05 and 11-07). Reproduced on the box with a throwaway
+  container: 0 at start, `max` after a single `systemctl daemon-reload`. `memory.max`, the OOM
+  control, held throughout. The fix is a systemd drop-in that makes systemd itself hold
+  `MemorySwapMax=0`: `/etc/systemd/system/docker-.scope.d/90-kangentic-relay.conf`, which applies
+  to every `docker-*.scope` because systemd also searches a unit name's dash-truncated prefixes for
+  drop-ins ([systemd.unit](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html)).
+  On the box, the throwaway scope with a drop-in kept 0 across two reloads, and a transient scope
+  created after a prefix drop-in started at 0 and stayed there. `deploy.sh`
+  (`pin_no_swap_for_containers`) writes it before its skip gate, so the next release applies it
+  even if it does not recreate the relay, and `cloud-init.yaml` writes it on new boxes. It covers
+  Caddy as well, deliberately: nothing on this box should page.
 - **Shared vCPU.** "the compute resources are distributed among all instances on the same physical
   server" ([Hetzner](https://docs.hetzner.com/cloud/servers/faq)). No change: steal is not reported
   here, and the measured patch was not on the VM. Revisit only if a loop-max spike with low CPU, no
@@ -128,7 +143,15 @@ trace line for the same dial: `socketAgeAtUpgradeMs` 0.47, admitted after 0.44 m
   [Cloudflare connection limits](https://developers.cloudflare.com/fundamentals/reference/connection-limits/)),
   and Caddy's `idle` defaulted to 5m, so Caddy closed connections Cloudflare still meant to reuse,
   and the next request paid a fresh TCP and TLS handshake over the lossy leg. Now `idle 16m`, so
-  Cloudflare always closes first. After: pending, `TcpPassiveOpens` per hour in Caddy's namespace.
+  Cloudflare always closes first. After: churn did not change, and the measurement shows there was
+  none for this setting to win. Caddy's namespace logged 533,088 passive opens in the 35.9 days to
+  2026-11-12 against 528,324 relay connections, 1.01 per connection. The pre-release 3.8 a minute
+  was over months that averaged about 4 connections a minute, also about 1 per connection. A
+  WebSocket consumes the connection it upgrades, so nearly every dial is a fresh origin connection:
+  Caddy's access log shows 0 TLS resumptions in 299,308 requests (10-26 to 11-12). The raw rate
+  rose only because traffic did (2.4 connections a minute in August, 10.2 since the release). The
+  setting still closes the reuse race for the few plain requests. The churn itself is the
+  park-timeout re-dial, below in "Follow-ups this data suggests".
 - **Relay restarts.** `lb_try_duration 5s`: retries are off by default ("By default, retries are
   disabled"). Every one of the 23 logged 502s was a deploy window. Lab: a dial that arrived while the
   relay was restarting got its 101 after 3.2 s instead of an immediate 502.
@@ -183,7 +206,11 @@ leading to a phone also includes Caddy's socket buffers and Cloudflare, so the r
 only while a backlog overflows all of those, and production's sampled outbound queue was 0 at every
 minute for the week before (0 minutes with a backlogged connection, against 936 pong timeouts). The
 production after-measure is the new `pongOverdueDrainingTotal` counter, alongside the task's query
-(minutes with pong timeouts and a backlog), which read 0 before and is expected to stay 0.
+(minutes with pong timeouts and a backlog), which read 0 before and is expected to stay 0. After, over
+the 36 days to 2026-11-12: 0 spared (history `pg`, and `/metricz` since the 10-27 restart), 4,439
+pong timeouts, none in a history row with a backlogged connection, and the sampled outbound queue
+never left 0. The spare has had nothing to do in production yet. That is expected while no phone
+drains a deep backlog.
 
 The contention probe applies the same test, which closes the lever `docs/security-model.md`
 described: contention could reap a live incumbent that was merely backlogged.
@@ -194,7 +221,17 @@ described: contention could reap a live incumbent that was merely backlogged.
   idle period. Default: 1" ([kernel](https://docs.kernel.org/networking/ip-sysctl.html)); confirmed
   1 in Caddy's namespace. Applied as a namespaced `sysctls` entry. `scripts/burstProbe.mjs` through
   `wss://relay.kangentic.com`, 20 runs, before: 16-byte frame p50 36.5 ms; 512 KiB after 10 s idle
-  p50 103.7 ms, p90 171.4 ms, max 603.7 ms. After: pending. Keep it if the burst p50 drops.
+  p50 103.7 ms, p90 171.4 ms, max 603.7 ms. After, the same command in two sessions of 20 runs:
+
+  | Session (UTC) | 16-byte frame p50 | 512 KiB burst p50 / p90 / max |
+  |---|---|---|
+  | Before, 2026-10-07 | 36.5 ms | 103.7 / 171.4 / 603.7 ms |
+  | 2026-10-30 02:50 | 36.8 ms | 67.5 / 68.9 / 178.9 ms |
+  | 2026-11-12 21:55 | 40.2 ms | 71.5 / 73.7 / 175.0 ms |
+
+  Kept. The burst now costs about 31 ms over the small frame instead of 67, with the tail gone; the
+  single slow run in each session is the first, on a fresh connection. This and BBR below shipped
+  together, so the after figures are their combined effect.
 - **BBR congestion control on the Caddy service: applied.** The edge-to-origin leg lost 0.8% of
   segments during a slow patch, and cubic reads every loss as congestion and shrinks its window.
   Lab: this exact Caddyfile on Caddy 2.8.4, `netem` adding 15 ms delay and 0.8% loss on Caddy's
@@ -221,7 +258,13 @@ described: contention could reap a live incumbent that was merely backlogged.
   compose touches Caddy, stopping the deploy if that fails. A dry run of that function against fake
   `/proc` and `/etc` trees covered the production start state, an idempotent second deploy, and a
   host where the allowed-list write did not take (the preflight stopped it). `cloud-init.yaml`
-  writes the same two files on new boxes. Production after-measure: the burst probe above, pending.
+  writes the same two files on new boxes. Production after-measure: the burst probe above, p90
+  171.4 to 73.7 ms at worst and max 603.7 to 178.9 ms, with `bbr` live in Caddy's namespace
+  throughout. Kept. Over Caddy's 35.9 days, retransmission timeouts per relay connection held
+  (9,096 over 528,324, 0.017, against roughly 0.018 before), and the segment retransmit rate rose
+  from 0.16% to 0.19% (44,923 of 23,546,357). That is not a clean BBR-versus-cubic comparison:
+  traffic more than doubled, clients now arrive through 38 Cloudflare colos from Sydney to Dhaka,
+  and BBR probes for bandwidth by design. No user-visible figure regressed.
 - **`tcp_notsent_lowat`: rejected.** The hope was that keeping unsent bytes out of the kernel would
   leave a backlog visible to the keepalive's drain check. With `16384` set on the slow-consumer
   repro (Linux container), the relay's own queue did grow (23.2 MiB against 21.4 MiB), but 4 of 5
@@ -249,13 +292,13 @@ described: contention could reap a live incumbent that was merely backlogged.
   (it needs an interactive Cloudflare login), but the traffic it would catch first is not being
   challenged: a bare `curl` from the Hetzner datacenter address got `HTTP/2 200` with no
   `cf-mitigated` header, the GitHub Actions monitor (also a datacenter, also a non-browser client)
-  passes every 30 minutes, and no request in any probe here was challenged. Confirm the toggle in
-  the dashboard when convenient.
+  passes on every run, and no request in any probe here was challenged. The dashboard read on
+  2026-10-30: Bot Fight Mode off for the zone (AI Labyrinth off too). Nothing to change.
 - **Cloudflare Tunnel A/B.** The gate the task set is met: the measured problem is the origin leg.
   The tunnel is set up as an opt-in compose profile on a second hostname, with `/admin` refused in
   Caddy because that hostname has no Access application. See `infra/README.md`, "Cloudflare Tunnel
   A/B". No Cloudflare doc claims a tunnel lowers WebSocket latency, so it is measured before anything
-  depends on it.
+  depends on it. After five weeks it is recommended but not yet run: see "Results, 2026-11-12".
 
 ## Taking the after measurements
 
@@ -269,6 +312,9 @@ sudo tail -3 /var/lib/docker/volumes/compose_relay_history/_data/history.ndjson
 
 # 3. No swap for the relay container: expect 0.
 cat /sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' compose-relay-1).scope/memory.swap.current
+# 3. The limit itself, once the systemd drop-in has deployed: expect 0 and MemorySwapMax=0.
+cat /sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' compose-relay-1).scope/memory.swap.max
+systemctl show docker-$(docker inspect -f '{{.Id}}' compose-relay-1).scope -p MemorySwapMax
 
 # 4. Cloudflare reuses origin connections longer: compare against the pre-release rate.
 sudo nsenter -t $(docker inspect -f '{{.State.Pid}}' compose-caddy-1) -n nstat -asz TcpPassiveOpens
@@ -295,6 +341,133 @@ the box: `scripts/legProbe.sh client relay.kangentic.com 600`, and for item 7
 `sudo nsenter -t $(docker inspect -f '{{.State.Pid}}' compose-caddy-1) -n cat /proc/sys/net/ipv4/tcp_congestion_control`
 (expect `bbr`).
 
+The origin leg over every real dial the trace still holds, from a workstation. The trace lives only
+in the container log, so export it before a release recreates the relay, and at least weekly while
+watching for episodes (rotation keeps about a week):
+
+```
+ssh deploy@<box> "docker logs compose-relay-1 2>&1 | grep -F 'connection trace'" > traces.ndjson
+node scripts/originLegStalls.mjs traces.ndjson
+```
+
+## Results, 2026-11-12
+
+Taken 2026-11-12 from 20:00 UTC, plus a two-hour dial rig to 00:02 on 11-13. Production had run
+this release's changes for 36 days (v0.4.1 on 10-27 only rebuilt the image on a patched Node). The
+windows differ by source, because a relay recreate wipes its log and zeroes its counters:
+
+| Source | Window |
+|---|---|
+| Caddy namespace counters and logs | 10-08 01:25 to 11-12, 35.9 days (Caddy's uptime) |
+| History rows | 36 days; one-minute rows for the last 7 |
+| Caddy access log | 10-26 to 11-12 (it rolls at 25 MiB) |
+| Relay trace lines | 11-05 15:04 to 11-12, all that log rotation still held |
+| Monitor runs | 176 runs, 10-08 to 11-12 |
+
+The per-item after figures are in the items above (1, 3, 4, 6 and 7). What the five weeks add:
+
+### The origin leg stalls in episodes
+
+**How it is measured.** A CF-Ray's first 10 hex digits rise by about 1600 a second (a least-squares
+fit of ray against the relay's `upgradeReceivedAt`), so a ray dates the moment Cloudflare's edge took
+the request. Cloudflare does not document this, so it is used only as far as it was checked. The
+offset between the two clocks drifts by seconds over days, so it is re-anchored every hour, and each
+colo's ordinary transit (its median) is subtracted. What remains is each dial's excess time between
+the edge and the relay. `scripts/originLegStalls.mjs` computes it from an exported trace. Against a
+calm window, the rig's own 3,570 dials below, it read p99 0.08 s and max 0.43 s, so it does not
+invent stalls. The monitor's slow run on 11-09, located by a different method (two rays from one run
+reaching the edge together), read 1.77 s on this leg.
+
+**What it found.** 136,000 real dials, 11-05 15:04 to 11-12 22:02, through 48 colos:
+
+| | Over 1 s | Over 2 s |
+|---|---|---|
+| All dials | 2,545 (1.87%) | 1,126 (0.83%) |
+| Dials that went on to pair, the ones a person waits on | 56 of 1,260 (4.4%) | 43 (3.4%) |
+| 11-05, 11-06 and 11-12, the calm days | 0.05 to 0.16% | 0.01 to 0.06% |
+| 11-09, the worst day | 1,663 of 21,635 (7.7%) | 813 (3.8%) |
+
+The worst single dial waited 48.7 s. These are episodes, not background noise. 49 bursts of 10 or
+more stalls hold 1,891 of the 2,545. Each burst lasted 1 to 40 minutes and stalled 10 to 92% of the
+dials inside it, hitting 6 to 17 colos at the same moments, from Boston to Brisbane. Sizes fall off
+smoothly from 1 s, with no peaks at the 1, 3 and 7 s of a SYN retransmit schedule. Cloudflare's
+dashboard shows the zone's 5xx rate as 0.00% over the same 7 days, so the edge held these dials
+until the origin answered: they were slow, not failed.
+
+**Where it is, and is not.** The excess spans Cloudflare's connection to the origin, Caddy's TLS, and
+Caddy to the relay. Ruled out across every episode:
+
+- **The relay.** Loop max 22 to 25 ms in nearly every episode minute and at most 109 ms, with GC
+  under 14 ms, CPU under 2% and PSI at its baseline. Caddy to relay (`socketAgeAtUpgradeMs`) read
+  0.12 to 0.40 ms on the largest stalls themselves.
+- **The host.** No receive drops or errors on the NIC, conntrack at 43 of 65,536 entries, no
+  listen-queue overflow or drop in Caddy's namespace, no network message in the kernel log, and
+  Caddy never CPU-throttled.
+- **A freeze of Caddy as a whole.** Established sockets kept answering: pong timeouts went from a
+  baseline of 0.03 a minute to about 0.3 in the two worst bursts, against hundreds of stalled dials.
+- **Caddy's own errors.** Its runtime log over 11-06 to 11-11 holds only the daily storage cleanup,
+  with no TLS, certificate or handshake error.
+
+That leaves the network path between Cloudflare and the box, or Caddy's TLS accept path alone, which
+this data cannot tell apart. The timing favors the network. Hetzner's status page posted "Urgent
+maintenance on all core routers" (network redundancy "reduced globally", "you may experience
+increased latency") from 10-15 to 11-11 11:37. The stall rate was 2.28% of dials before that end
+and 0.10% (26 of 25,720) after, with no change to Caddy in between. Cloudflare posted "Network
+Performance Issues in Eastern North America" for 11-09 16:34 to 20:12, inside the worst stretch.
+Neither names the box's location, and 11-05 and 11-06 fell inside the Hetzner window yet were calm,
+so this is a correlation, not a cause.
+
+### Desktop task #774's rig, rerun
+
+The same rig on Electron 44.5.1 (Chromium 152, Node 24), two stacks at one dial every 30 s each,
+plus its path probe, 11-12 22:02 to 00:02:
+
+| Stack | Dials | Over 1 s | p50 / p90 / p99 |
+|---|---|---|---|
+| Chromium | 960 | 2 (0.21%) | 168 / 199 / 308 ms |
+| Node | 958 | 0, and 1 failed (abnormal close after 10.7 s) | 157 / 187 / 258 ms |
+
+This is **not comparable** with #774's 1.73% (Chromium) and 1.36% (Node). The origin leg was calm all
+evening (0 stalls over 1 s among the 3,570 traced dials in the window). #774's hour held two rough
+patches and pooled five rig configurations. Both slow Chromium dials took 19.2 s, and both were on the
+client-to-edge leg instead. Chromium's netlog shows TCP to the edge in 24 to 28 ms and the
+ClientHello sent. No reply came for 19.0 s, then a connection reset, and a retry on a fresh socket
+finished TLS in about 30 ms. The relay saw the retry's upgrade at once. The second one, at 23:16:23,
+landed in the same seconds as the Node failure, so it hit both stacks on one workstation. Its cause
+is not known, and it is not a leg this repo controls. The path probe's edge connect stayed flat (p99
+28.5 ms), with `/healthz` p99 84.9 ms and max 301 ms.
+
+### Monitor
+
+176 runs and 352 dials since the release: p50 237 ms, p90 418 ms, p99 1,372 ms, max 4,643 ms; 7 over
+1 s and 3 over 2 s. The four slow runs, located by CF-Ray in Caddy's access log and the trace:
+
+| Run (UTC) | Dials A / B | Before the edge | Edge to origin |
+|---|---|---|---|
+| 10-15 19:17 | 1.35 / 1.37 s | about 1.1 s | none: the two arrived 26 ms apart |
+| 10-24 23:30 | 4.64 / 0.29 s | about 0.2 s | 4.35 s on one dial |
+| 10-26 21:06 | 3.25 / 1.21 s | about 1.1 s | 2.02 s on one dial |
+| 11-09 13:10 | 3.14 / 1.37 s | about 1.3 s | 1.77 s on one dial |
+
+The second-plus before the edge is the GitHub runner's own path, which nothing here can reach.
+
+### Decisions
+
+- **BBR and `tcp_slow_start_after_idle=0`: kept** (item 7).
+- **Cloudflare Tunnel A/B: recommended, still a separate opt-in.** The origin leg is the largest
+  delay this data can attribute, and in a bad week it held 4.4% of the dials people waited on past
+  a second. A tunnel removes exactly the per-dial work in that leg: requests ride `cloudflared`'s
+  standing connections, with no fresh origin TCP and TLS handshake per dial and no public TLS at
+  Caddy. Run it across an episode, not a calm week: since 11-11 11:37 the leg stalled on 0.10% of
+  dials, so a quiet run would show nothing either way (`infra/README.md`, "Cloudflare Tunnel A/B").
+- **Escalation: evidence assembled, not sent.** The episodes line up with incidents both providers
+  posted, and both have ended. The evidence (episode times, rays, the rig's netlogs) is kept on the
+  task board, not in this public repo. See the follow-up below for when to send it.
+- **`CONNECTION_TRACE`: kept on.** It is the instrument for both of the above. Its lines live only in
+  the container log: a relay recreate wipes them, and the 20 MB x 5 rotation drops them after about a
+  week at November 2026 traffic. Export before either (see "Taking the after measurements").
+- **Bot Fight Mode: off, nothing to change** (item 7).
+
 ## Already right, unchanged
 
 The forward is zero-copy (`connection.ts` sends the received buffer as-is), `setNoDelay` is on (ws
@@ -313,11 +486,23 @@ sets it), writes are corked (ws), `permessage-deflate` is off, and production ru
 
 ## Follow-ups this data suggests
 
-- **Parked desktops re-dial every minute, and the clients depend on it.** In the week before,
-  87,763 of 93,517 connections ended in `park_timeout` (60 s): every idle desktop crosses the slow
-  leg with a fresh dial each minute, which is exactly where the 1-6 s dial stalls were measured.
-  Raising `PARK_TIMEOUT_MS` would cut that, but **not from this repo alone**: the desktop relies on
-  the 60 s close to re-initiate a stale handshake (`bridge-session.ts`, #635), and the phone reports
-  a failed pairing only when the relay closes with 4408 (`pairingMachine.ts`). Both need a client
-  change first, so this stays a cross-repo task.
-- **Take the leg evidence to Cloudflare or Hetzner** once a week of CF-Ray-keyed traces exists.
+- **Parked desktops re-dial every minute: filed in both client repos.** In the 36 days to
+  2026-11-12, 96.8% of 528,324 connections ended in `park_timeout` (60 s), and 98.8% in the last 7
+  days (12.9 a minute, with 8 to 14 desktops waiting). Every one is a fresh origin connection across
+  the leg measured above. Checked against the client code, two earlier premises were stale:
+  - The phone does not depend on 4408 to report a failed pairing. `pairingMachine.ts` arms its own
+    20 s timeout and clears it only at the SAS step, and its session transport maps 4408 to a 5 s
+    retry. Verify-only, filed in kangentic-mobile: "Verify pairing and the session transport with a
+    10-minute relay park timeout".
+  - The desktop re-dials a parked socket about every 125 s anyway. Its 120 s rekey tick probes the
+    socket, and a `parked-stale` redial follows when nothing answers, which with no phone present is
+    always. A longer park alone would halve idle dials, not cut them tenfold. The fix judges a parked
+    socket by the relay's own 30 s pings instead, filed in kangentic: "Mobile bridge: keep a parked
+    relay socket for the relay's whole park timeout".
+  - The relay step waits until that desktop change has shipped and been adopted:
+    `PARK_TIMEOUT_MS=600000` in `deploy.yml`'s env heredoc, plus a row in `infra/README.md`'s
+    "Production `.env`" table. The documented default stays 60000.
+- **Escalate if the episodes come back.** The 11-07 to 11-11 episodes coincide with incidents Hetzner
+  and Cloudflare posted, and both are over. If `scripts/originLegStalls.mjs` shows bursts again with
+  nothing posted, take the evidence to Hetzner. Add `mtr` from the box to Cloudflare's addresses run
+  during a burst, which a trace export alone cannot provide.
