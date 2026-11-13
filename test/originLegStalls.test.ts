@@ -178,17 +178,18 @@ describe('scripts/originLegStalls.mjs', () => {
   // misspelled flag was taken as the traces file.
   it('refuses a malformed flag value or an unknown flag instead of reporting on it', () => {
     const tracesPath = writeTraces(calmDials().map(traceLine));
-    const refusals: ReadonlyArray<{ readonly cliArguments: readonly string[]; readonly named: string }> = [
-      { cliArguments: [tracesPath, '--threshold-seconds', 'abc'], named: '--threshold-seconds' },
-      { cliArguments: [tracesPath, '--episode-gap-seconds'], named: '--episode-gap-seconds' },
-      { cliArguments: [tracesPath, '--top', '-3'], named: '--top' },
-      { cliArguments: [tracesPath, '--exclude', '2026-11-09T10:29:00Z'], named: '--exclude' },
-      { cliArguments: [tracesPath, '--treshold-seconds', '2'], named: '--treshold-seconds' },
+    // The problem text, not the bare flag name: the usage line printed after it names every flag.
+    const refusals: ReadonlyArray<{ readonly cliArguments: readonly string[]; readonly problem: string }> = [
+      { cliArguments: [tracesPath, '--threshold-seconds', 'abc'], problem: '--threshold-seconds needs a number of seconds, 0 or more, got "abc"' },
+      { cliArguments: [tracesPath, '--episode-gap-seconds'], problem: '--episode-gap-seconds needs a number of seconds, 0 or more, got nothing' },
+      { cliArguments: [tracesPath, '--top', '-3'], problem: '--top needs a whole number, 0 or more, got "-3"' },
+      { cliArguments: [tracesPath, '--exclude', '2026-11-09T10:29:00Z'], problem: '--exclude needs <startIso>/<endIso>, start first' },
+      { cliArguments: [tracesPath, '--treshold-seconds', '2'], problem: 'unknown flag --treshold-seconds' },
     ];
     for (const refusal of refusals) {
       const { exitCode, stderr } = runScriptExpectingFailure(refusal.cliArguments);
       expect(exitCode, refusal.cliArguments.join(' ')).toBe(2);
-      expect(stderr).toContain(refusal.named);
+      expect(stderr).toContain(refusal.problem);
       expect(stderr).toContain('usage: node scripts/originLegStalls.mjs');
     }
   });
