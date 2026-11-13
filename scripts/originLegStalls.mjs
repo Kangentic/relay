@@ -26,6 +26,8 @@
 //   --exclude              <startIso>/<endIso> to drop, e.g. a probe's own dials (repeatable)
 //   --episode-gap-seconds  stalls closer together than this form one episode (default 120)
 //   --top                  largest stalls listed                            (default 10)
+// A malformed value or an unknown flag stops with the usage line and exit 2. Run on, NaN compares
+// false everywhere: a NaN threshold reads 0 stalls and a NaN episode gap makes every stall its own.
 
 import fs from 'node:fs';
 import process from 'node:process';
@@ -35,25 +37,51 @@ const RAY_UNITS_PER_SECOND = 1600;
 const RARE_COLO_DIALS = 20;
 const RARE_COLO_BASELINE_SECONDS = 0.5;
 const RAY_PATTERN = /^[0-9a-f]{16}-[A-Z]{3}$/;
+const USAGE =
+  'usage: node scripts/originLegStalls.mjs <traces.ndjson> [--threshold-seconds 1] [--exclude <startIso>/<endIso>] [--episode-gap-seconds 120] [--top 10]';
 
+const isNonNegativeNumber = (value) => Number.isFinite(value) && value >= 0;
+const NUMERIC_FLAGS = new Map([
+  ['--threshold-seconds', { option: 'thresholdSeconds', wanted: 'a number of seconds, 0 or more', isUsable: isNonNegativeNumber }],
+  ['--episode-gap-seconds', { option: 'episodeGapSeconds', wanted: 'a number of seconds, 0 or more', isUsable: isNonNegativeNumber }],
+  ['--top', { option: 'top', wanted: 'a whole number, 0 or more', isUsable: (value) => Number.isInteger(value) && value >= 0 }],
+]);
+
+/** The options, plus every problem found in them. The caller refuses to run when there is any. */
 function parseArgs(argv) {
   const options = { file: undefined, thresholdSeconds: 1, excludeWindows: [], episodeGapSeconds: 120, top: 10 };
+  const problems = [];
   for (let index = 2; index < argv.length; index += 1) {
     const argument = argv[index];
-    const value = argv[index + 1];
-    if (argument === '--threshold-seconds') options.thresholdSeconds = Number(value);
-    else if (argument === '--episode-gap-seconds') options.episodeGapSeconds = Number(value);
-    else if (argument === '--top') options.top = Number(value);
-    else if (argument === '--exclude') {
-      const [startIso, endIso] = String(value).split('/');
-      options.excludeWindows.push({ startMs: Date.parse(startIso), endMs: Date.parse(endIso) });
-    } else {
+    if (!argument.startsWith('--')) {
+      if (options.file !== undefined) problems.push(`more than one traces file: ${options.file} and ${argument}`);
       options.file = argument;
       continue;
     }
+    // Every flag takes a value, so an unknown one (most likely a misspelled one) takes its value
+    // with it rather than leaving it to be read as the traces file.
+    const value = argv[index + 1];
     index += 1;
+    const shownValue = value === undefined ? 'nothing' : JSON.stringify(value);
+    const numericFlag = NUMERIC_FLAGS.get(argument);
+    if (numericFlag !== undefined) {
+      const parsedValue = Number(value);
+      if (value === undefined || !numericFlag.isUsable(parsedValue)) problems.push(`${argument} needs ${numericFlag.wanted}, got ${shownValue}`);
+      else options[numericFlag.option] = parsedValue;
+    } else if (argument === '--exclude') {
+      const [startIso, endIso, ...extraParts] = String(value).split('/');
+      const startMs = Date.parse(startIso);
+      const endMs = Date.parse(endIso);
+      if (value === undefined || extraParts.length > 0 || Number.isNaN(startMs) || Number.isNaN(endMs) || startMs > endMs) {
+        problems.push(`--exclude needs <startIso>/<endIso>, start first, got ${shownValue}`);
+      } else {
+        options.excludeWindows.push({ startMs, endMs });
+      }
+    } else {
+      problems.push(`unknown flag ${argument}`);
+    }
   }
-  return options;
+  return { options, problems };
 }
 
 function median(values) {
@@ -93,7 +121,12 @@ export function readDials(text, excludeWindows = []) {
   return dials.sort((left, right) => left.relayMs - right.relayMs);
 }
 
-/** Sets `excessSeconds` on every dial: its edge-to-relay time over its colo's ordinary transit. */
+/**
+ * Sets `excessSeconds` on every dial: its edge-to-relay time over its colo's ordinary transit. It
+ * mutates the dials it is given, adding the two intermediates `rawOffsetSeconds` (relay time minus
+ * ray time) and `lagSeconds` (that, minus the hour's anchor) as well. Returns the hour and colo
+ * counts and each colo's dial count.
+ */
 export function measureExcess(dials) {
   const hourOf = (dial) => Math.floor(dial.relayMs / 3_600_000);
   const offsetsByHour = new Map();
@@ -114,7 +147,8 @@ export function measureExcess(dials) {
     [...lagsByColo].map(([colo, lags]) => [colo, lags.length < RARE_COLO_DIALS ? RARE_COLO_BASELINE_SECONDS : median(lags)]),
   );
   for (const dial of dials) dial.excessSeconds = dial.lagSeconds - baselineByColo.get(dial.colo);
-  return { hours: offsetsByHour.size, colos: lagsByColo.size, dialsByColo: new Map([...lagsByColo].map(([colo, lags]) => [colo, lags.length])) };
+  const dialsByColo = new Map([...lagsByColo].map(([colo, lags]) => [colo, lags.length]));
+  return { hours: offsetsByHour.size, colos: lagsByColo.size, dialsByColo };
 }
 
 /** Groups stalled dials into episodes: a gap longer than `gapSeconds` starts a new one. */
@@ -161,7 +195,11 @@ function report(options) {
   const stalled = dials.filter((dial) => dial.excessSeconds > threshold);
   const stallsByColo = new Map();
   for (const dial of stalled) stallsByColo.set(dial.colo, (stallsByColo.get(dial.colo) ?? 0) + 1);
-  console.log(`\nstalls by colo (stalls/dials): ${[...stallsByColo].sort((left, right) => right[1] - left[1]).slice(0, 15).map(([colo, count]) => `${colo} ${count}/${dialsByColo.get(colo)}`).join(', ') || 'none'}`);
+  const topColos = [...stallsByColo]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 15)
+    .map(([colo, count]) => `${colo} ${count}/${dialsByColo.get(colo)}`);
+  console.log(`\nstalls by colo (stalls/dials): ${topColos.join(', ') || 'none'}`);
 
   const episodes = groupEpisodes(stalled, options.episodeGapSeconds);
   const large = episodes.filter((episode) => episode.stalls.length >= 10);
@@ -179,9 +217,11 @@ function report(options) {
 }
 
 if (isEntrypoint(import.meta.url)) {
-  const options = parseArgs(process.argv);
-  if (!options.file) {
-    console.error('usage: node scripts/originLegStalls.mjs <traces.ndjson> [--threshold-seconds 1] [--exclude <startIso>/<endIso>] [--episode-gap-seconds 120] [--top 10]');
+  const { options, problems } = parseArgs(process.argv);
+  if (options.file === undefined) problems.push('no traces file given');
+  if (problems.length > 0) {
+    for (const problem of problems) console.error(problem);
+    console.error(USAGE);
     process.exit(2);
   }
   report(options);

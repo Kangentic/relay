@@ -378,9 +378,10 @@ When clients report multi-second stalls, find the leg first. The full method, an
    CF-Ray (`docker compose ... logs relay | grep '"connection trace"'`), and Caddy's access log
    carries the same `cf_ray` with `upstream_latency_ms`.
 5. **To measure the origin leg over every real dial**, with no probe running at the time, export the
-   trace and run `node scripts/originLegStalls.mjs traces.ndjson`. It dates each dial at the edge
-   by its CF-Ray and reports the time each one spent between the edge and the relay, by day and
-   colo, grouped into episodes. That is how the 2026-11 episodes were found.
+   trace (the command is in [`docs/latency.md`](../docs/latency.md), "Taking the after
+   measurements") and run `node scripts/originLegStalls.mjs traces.ndjson`. It dates each dial at
+   the edge by its CF-Ray and reports the time each one spent between the edge and the relay, by
+   day and colo, grouped into episodes. That is how the 2026-11 episodes were found.
 
 ## Cloudflare Tunnel A/B
 

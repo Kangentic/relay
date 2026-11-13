@@ -73,6 +73,10 @@ deploy.yml (runner)
        (ci-deploy-wrapper.sh, forced command, no shell/pty/port-forward)
        -> git fetch --tags && git checkout <git-ref>
        -> exec scripts/deploy/deploy.sh <image-tag> <drill-mode>
+            -> pin MemorySwapMax=0 for every docker-*.scope (a systemd
+                 drop-in, so a daemon-reload cannot lapse the relay's
+                 no-swap limit; reloads only when the file changed, and
+                 runs on every path, skip and drill included)
             -> skip check (git diff against the previous deploy's ref)
                  -> on skip: reload Caddy only if its inputs changed, exit
             -> compose pull
