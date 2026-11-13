@@ -378,8 +378,9 @@ offset between the two clocks drifts by seconds over days, so it is re-anchored 
 colo's ordinary transit (its median) is subtracted. What remains is each dial's excess time between
 the edge and the relay. `scripts/originLegStalls.mjs` computes it from an exported trace. Against a
 calm window, the 3,570 dials (the rig's and real users') traced during the rig's two hours below, it
-read p99 0.08 s and max 0.43 s, so it does not invent stalls. The monitor's slow run on 11-09, located by a different method (two rays from one run
-reaching the edge together), read 1.77 s on this leg.
+read p99 0.08 s and max 0.43 s, so it does not invent stalls. The monitor's slow run on 11-09,
+located by a different method (two rays from one run reaching the edge together), read 1.77 s on
+this leg.
 
 **What it found.** 136,000 real dials, 11-05 15:04 to 11-12 22:02, through 48 colos:
 
