@@ -157,8 +157,9 @@ worktree has none and `git diff --output=` will not.
 9. **Report.** In `review-only` mode, emit the Review-only-mode footer and run no script. In
    default mode, run `node scripts/review-verdict.mjs .kangentic/findings.json` and emit the
    **Output Format** below, ending with that command's output pasted verbatim. Its closing block
-   (`Verdict: Ready`, or `Verdict: Blocked` followed by the numbered steps) is the LAST thing in
-   your final message: no closing prose after it, no `Next:` line, and no offer of another pass.
+   (`Verdict: Ready`, or the numbered steps followed by `Verdict: Blocked`) is the LAST thing in
+   your final message, and the verdict line itself is the last line of all: no closing prose after
+   it, no `Next:` line, and no offer of another pass. The board routes the card on that line.
    A person reading the board and an agent reading the transcript both act on those lines, so
    never relabel the verdict or soften it in your own words.
 
@@ -506,9 +507,14 @@ its Decisions made list, and its closing block. Nothing follows the closing bloc
 The closing block reads, for example:
 
 ```
-Verdict: Blocked
 1. src/history/recorder.ts:88: re-run the compaction over a real 7-day store and confirm the bucket count
+Verdict: Blocked
 ```
+
+The verdict is the LAST line, below its numbered steps. That is not cosmetic: the Code Review
+column's turn-end automations are Text matches read against the final line of your message, so a
+verdict printed above its steps would match nothing and strand the card. The script emits this
+order on its own; never reorder it when pasting.
 
 Edge cases the report must handle cleanly:
 - No diff at all -> short-circuit at Step 4 with "No changes to review."

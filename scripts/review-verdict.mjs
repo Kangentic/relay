@@ -12,7 +12,8 @@
  *   default   prints the Summary block, the Decisions made list, and the closing verdict block.
  *             The skill pastes that output verbatim and makes the closing block the LAST thing in
  *             the pass's final message, so a person and an agent read the same signal: the line
- *             `Verdict: Ready`, or `Verdict: Blocked` followed by one numbered step per blocker.
+ *             `Verdict: Ready`, or one numbered step per blocker followed by `Verdict: Blocked`.
+ *             The verdict is always the LAST line, because the board routes the card on it.
  *   --ledger  prints only the `Refuted:` and `Decisions:` lines for the review commit body. A later
  *             pass reads them back with `git log --grep="(review)" --format=%B <base>..HEAD`. Keyed
  *             by file, symbol and mechanism, never by line number, because line numbers drift
@@ -232,11 +233,19 @@ export function renderSummary(report) {
   return lines.join('\n');
 }
 
-/** The last block of the pass's final message: the verdict, then any blocking steps. */
+/**
+ * The last block of the pass's final message: any blocking steps, then the verdict LAST.
+ *
+ * The verdict has to be the final line, not the first. The Code Review column's turn-end
+ * automations are Text matches read against the last line of the agent's final message, so a
+ * `Verdict: Blocked` printed above its numbered steps would never match and a blocked card
+ * would sit in Code Review until someone moved it by hand.
+ * `test/boardTurnEndContracts.test.ts` pins this ordering against the rows in `kangentic.json`.
+ */
 export function renderClosingBlock(report) {
   const { verdict, blockers } = computeVerdict(report);
-  const lines = [`Verdict: ${verdict}`];
-  blockers.forEach((blocker, blockerIndex) => lines.push(`${blockerIndex + 1}. ${blocker.location}: ${blocker.step}`));
+  const lines = blockers.map((blocker, blockerIndex) => `${blockerIndex + 1}. ${blocker.location}: ${blocker.step}`);
+  lines.push(`Verdict: ${verdict}`);
   return lines.join('\n');
 }
 

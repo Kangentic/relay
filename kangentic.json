@@ -11,6 +11,7 @@
     {
       "id": "fd95ca95-d4fa-450e-9ea1-295831476e8b",
       "name": "Planning",
+      "description": "Reads the code and writes the implementation plan in plan mode. For work whose approach is not settled: a feature, or a fix that spans several areas. A small, well-understood change can skip it.",
       "icon": "map",
       "color": "#8b5cf6",
       "autoSpawn": true,
@@ -22,15 +23,35 @@
     {
       "id": "7f8f21cc-9c6b-4377-9b16-6dc630411a0b",
       "name": "Executing",
+      "description": "Writes and commits the change, then applies its own findings. Every task that changes the repository needs it. Ends a turn on \"Findings: applied\" to move on to Code Review.",
       "icon": "square-terminal",
       "autoSpawn": true,
       "permissionMode": "auto",
       "modelOverride": "opus",
-      "effortOverride": "xhigh"
+      "effortOverride": "xhigh",
+      "automations": {
+        "onTurnEnd": [
+          {
+            "name": "On to Code Review",
+            "type": "move_to_column",
+            "condition": {
+              "text": "Findings: applied"
+            },
+            "maxRuns": 4,
+            "targetColumn": "Code Review"
+          },
+          {
+            "name": "Apply findings",
+            "type": "send_message",
+            "message": "Check your last message for findings, recommendations or follow-up changes you have not applied yet, and apply them here in this task, not as follow-up tasks. Skip anything already filed as a task on the board, and never delete or move one. Where one needs a decision, take your recommended option and name the alternative. If there are none, say so. Either way, end your turn with a short summary and the line \"Findings: applied\"."
+          }
+        ]
+      }
     },
     {
       "id": "f9a52261-564e-4f56-ade1-6bc651ed472d",
       "name": "Code Review",
+      "description": "Reviews the branch in a session of its own and fixes what it verifies. Every task that changes the repository needs it. Ends on \"Verdict: Ready\" to move on, or \"Verdict: Blocked\" to send the card back to Executing.",
       "icon": "code",
       "color": "#f59e0b",
       "autoSpawn": true,
@@ -47,12 +68,34 @@
             "message": "/code-review {{baseBranch}}",
             "mode": "immediate"
           }
+        ],
+        "onTurnEnd": [
+          {
+            "name": "Back for revisions",
+            "type": "move_to_column",
+            "condition": {
+              "text": "Verdict: Blocked"
+            },
+            "maxRuns": 3,
+            "targetColumn": "Executing",
+            "message": "Code Review sent this back. Do the numbered steps above its verdict, commit, then end your turn.\n\n{{agentReply}}"
+          },
+          {
+            "name": "On to Testing",
+            "type": "move_to_column",
+            "condition": {
+              "text": "Verdict: Ready"
+            },
+            "maxRuns": 1,
+            "targetColumn": "Testing"
+          }
         ]
       }
     },
     {
       "id": "1af21c24-d084-488b-a5af-6fb3be2c8d66",
       "name": "Testing",
+      "description": "Opens the PR and drives its CI checks to green, without merging. Every task that lands through a PR needs it. Ends on \"PR: ready to merge\".",
       "icon": "flask-conical",
       "color": "#06b6d4",
       "autoSpawn": true,
@@ -67,18 +110,31 @@
             "message": "/pull-request",
             "mode": "immediate"
           }
+        ],
+        "onTurnEnd": [
+          {
+            "name": "On to Merge",
+            "type": "move_to_column",
+            "condition": {
+              "text": "PR: ready to merge"
+            },
+            "maxRuns": 3,
+            "targetColumn": "Merge"
+          }
         ]
       }
     },
     {
       "id": "89d4eb55-77e9-4cc6-9c45-a8bdad88579a",
       "name": "Merge",
+      "description": "Merges the green PR one task at a time and fast-forwards local main. Every task that lands through a PR needs it. Ends on \"PR: merged\", which sends the card to Release and therefore ships it, or \"PR: checks red\" to send it back to Testing.",
       "icon": "merge",
       "color": "#f97316",
       "autoSpawn": true,
       "permissionMode": "auto",
       "modelOverride": "sonnet",
       "effortOverride": "high",
+      "maxAgents": 1,
       "automations": {
         "onEnter": [
           {
@@ -86,6 +142,26 @@
             "type": "send_message",
             "message": "/merge-pull-request",
             "mode": "immediate"
+          }
+        ],
+        "onTurnEnd": [
+          {
+            "name": "On to Release",
+            "type": "move_to_column",
+            "condition": {
+              "text": "PR: merged"
+            },
+            "maxRuns": 1,
+            "targetColumn": "Release"
+          },
+          {
+            "name": "Back to Testing",
+            "type": "move_to_column",
+            "condition": {
+              "text": "PR: checks red"
+            },
+            "maxRuns": 2,
+            "targetColumn": "Testing"
           }
         ]
       }
@@ -99,6 +175,7 @@
       "autoSpawn": true,
       "modelOverride": "sonnet",
       "effortOverride": "high",
+      "maxAgents": 1,
       "automations": {
         "onEnter": [
           {
@@ -106,6 +183,17 @@
             "type": "send_message",
             "message": "/release",
             "mode": "immediate"
+          }
+        ],
+        "onTurnEnd": [
+          {
+            "name": "Finish",
+            "type": "move_to_column",
+            "condition": {
+              "text": "Release: shipped"
+            },
+            "maxRuns": 1,
+            "targetColumn": "Done"
           }
         ]
       }

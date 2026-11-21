@@ -222,13 +222,29 @@ or `--no-file-parallelism`.
   **Merge** column runs `/merge-pull-request` (merge, pull back to local `main`), and the
   **Release** column runs `/release` (promote the changelog, tag `vX.Y.Z`, ship). For a
   deliberate direct quick-push, use `/merge-back`.
-- **Merging does not ship.** A merge to `main` publishes an image and stops; only a `vX.Y.Z` tag
-  deploys to the hosted instance. So landing work and putting it in front of users are separate
-  acts, `main` may hold merged-but-unreleased changes, and production always runs a version with
-  a changelog entry. `/release` is the only skill here that reaches real users - the deploy has a
-  health gate and automatic rollback, but treat it with that in mind. A deploy that is not a
-  release (rollback, redeploy, rollback drill) runs `deploy.yml` via `workflow_dispatch`, not a
-  new tag.
+- **The board advances itself, on the last line of each turn.** Every column's
+  "On agent turn end" rows in `kangentic.json` are Text matches read against the final line of
+  the agent's message, so a card walks Executing -> Code Review -> Testing -> Merge -> Release ->
+  Done without anyone dragging it. The lines are a contract, not prose:
+  `Findings: applied`, `Verdict: Ready` / `Verdict: Blocked`, `PR: ready to merge`, `PR: merged`,
+  `PR: checks red`, and `Release: shipped`. `test/boardTurnEndContracts.test.ts` fails when a
+  skill and the row that reads it drift apart, because nothing else would: a drifted card simply
+  waits in its column forever. **The verdict line must be the LAST line**, below its numbered
+  steps, which is why `scripts/review-verdict.mjs` prints the blockers first. Printing no
+  outcome line is how a skill deliberately leaves a card where it is for a person.
+- **Merging now ships, by way of the board.** A merge to `main` still only publishes an image,
+  and only a `vX.Y.Z` tag deploys to the hosted instance, but the Merge column now advances a
+  merged card straight to Release, so in practice landing work releases it. That was a
+  deliberate choice (2026-11-21): the alternative, Merge going to Done with Release entered by
+  hand, is what batches several merges into one version, and switching back is one
+  `targetColumn` in `kangentic.json` plus this paragraph. `/release` is the only skill here that
+  reaches real users - the deploy has a health gate and automatic rollback, but treat it with
+  that in mind, and keep every `Release: shipped` precondition in that skill honest, since they
+  are now what stands between a bad deploy and an archived card. A deploy that is not a release
+  (rollback, redeploy, rollback drill) runs `deploy.yml` via `workflow_dispatch`, not a new tag.
+- **To keep one task off the chain**, set `automationsDisabled` on it
+  (`kangentic_update_task`). An investigation or spike that should not end in a production
+  deploy wants that; task #14 carries it.
 - A plain **local commit** goes through `/commit`: stages and commits on the current branch
   only, no push, no rebase. A bare "commit" / "commit changes" means `/commit`.
 - `/commit`, `/pull-request`, `/merge-pull-request`, `/merge-back`, and `/release` all write

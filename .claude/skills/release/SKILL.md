@@ -134,7 +134,30 @@ A green deploy job is necessary, not sufficient. Confirm the product works:
   from the changelog, called out explicitly.
 - Which digest production is running, and whether the deploy rolled or correctly skipped.
 - The synthetic pairing result.
-- Reminder to move the task to Done on the board, which triggers `cleanup_worktree`.
+- Only for a run outside the Release column, a reminder to move the task to Done, which triggers
+  `cleanup_worktree`. In the Release column the line below moves the card.
+- Then, only when "Outcome line" below allows it, the last line of the message, alone:
+  `Release: shipped`.
+
+## Outcome line
+
+The Release column's "Finish" turn-end automation (`kangentic.json`) is a Text match on the last
+line of your final message, and moves the task to Done when it reads `Release: shipped`. Done
+removes the worktree, so the line is a contract: `test/boardTurnEndContracts.test.ts` fails when
+this section and that row drift.
+
+This is the only outcome line in the chain that is printed **after** real users are already
+served, so it reports what happened rather than authorizing it. Print it only when all of these
+hold:
+
+- The tag exists and the Release workflow run is green.
+- Step 5's `/healthz` reports the version you just cut, **or** you established and said plainly
+  that the deploy correctly skipped the restart for a docs-only release.
+- The synthetic pairing probe passed.
+
+If the deploy rolled back, the health gate tripped, or the probe failed, print no outcome line.
+Report what happened and leave the card in Release: production is in a state a person needs to
+see, and moving the card to Done would bury it. Rolling back is not this skill (see below).
 
 ## Not this skill
 

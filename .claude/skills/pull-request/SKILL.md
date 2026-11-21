@@ -176,8 +176,11 @@ link once the MCP is back, or report the PR number prominently so the user can l
 
 The PR is green. Report:
 - PR URL (with link) and branch name.
-- Number of commits.
-- Next step: the user moves the task Testing -> Merge, where `/merge-pull-request` merges it.
+- Number of commits, and any test written or rewritten in Step 7b.
+- "All checks green."
+- The last line of the message, alone: `PR: ready to merge`. On the board that moves the task to
+  Merge, where `/merge-pull-request` merges it. Outside the Testing column nothing reads the line,
+  so the user moves the task.
 
 **Do NOT merge.** Merging is `/merge-pull-request`'s job.
 
@@ -210,7 +213,26 @@ For each round:
 Stop. Do not start a 4th round and do not `--admin` bypass. Leave the PR open, pushed, and with
 no half-finished rebase. Report concrete, learned recommendations so a human can finish
 quickly: for each still-failing check, the classification, what each round tried, and the root
-cause as far as determined.
+cause as far as determined. Then the last line of the message, alone: `PR: blocked`. The task
+stays in Testing for a human.
+
+## Outcome line
+
+The Testing column's "On to Merge" automation (`kangentic.json`) judges the last line of your
+final message each time a turn ends, and moves the task to Merge when it reads
+`PR: ready to merge`. The line is a contract, so this section and that row change together:
+`test/boardTurnEndContracts.test.ts` fails when they drift.
+
+- `PR: ready to merge` comes only from Step 7, with every check green.
+- `PR: blocked` comes only from Step 8b.
+- Every other stop prints no outcome line, which leaves the card in Testing for a person. Each
+  one still ends a turn, so the automation still reads the last line: the Step 0 typecheck or
+  lint failure, a failed `gh auth status`, a detached HEAD, a Step 3 rebase conflict, and a push
+  the lease rejects.
+
+The `PR:` prefix marks a pull-request outcome, shared with Merge's `PR: merged` and
+`PR: checks red`. Code Review ends on `Verdict: Ready` and Release on `Release: shipped`: a
+separate token per column keeps each Text match readable on its own.
 
 ## Rules
 

@@ -166,8 +166,10 @@ describe('review-verdict: the verdict itself', () => {
     });
 
     const lines = result.stdout.trimEnd().split('\n');
-    expect(lines.at(-2)).toBe('Verdict: Blocked');
-    expect(lines.at(-1)).toBe('1. src/rendezvous.ts:42: run the compaction over a real 7-day store');
+    // The verdict is LAST, below its numbered steps. The Code Review column's turn-end
+    // automations read the final line, so an inverted order would strand every blocked card.
+    expect(lines.at(-2)).toBe('1. src/rendezvous.ts:42: run the compaction over a real 7-day store');
+    expect(lines.at(-1)).toBe('Verdict: Blocked');
     expect(result.stdout).not.toContain('Next:');
   });
 });

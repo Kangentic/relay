@@ -79,8 +79,9 @@ Re-check the anchor files across the whole branch diff so a gap cannot slip thro
    **Require every status check in `statusCheckRollup` to be green (SUCCESS)** before
    proceeding. If a check is failing or still pending, stop (or wait).
 4. If the rebase re-triggered checks and they are pending, wait: `gh pr checks <pr> --watch
-   --fail-fast --interval 30` (Bash `timeout` about `600000` ms). If they go red, stop and
-   report - the user can move the task back to Testing to re-run `/pull-request`.
+   --fail-fast --interval 30` (Bash `timeout` about `600000` ms). If they go red, stop, report
+   which checks failed, and end your turn on the line `PR: checks red`, alone. On the board that
+   sends the task back to Testing, where `/pull-request` drives the checks green again.
 
 ## Step 3 - Merge the PR
 
@@ -140,9 +141,42 @@ to it - use a worktree or feature branch.
 
 ## Step 5 - Report
 
-Summarize: PR URL and merged branch, source branch and commit count landed, branch cleanup
-status, local `main` checkout status, and a reminder to move the task to Done on the board to
-trigger `cleanup_worktree`.
+Summarize:
+- PR URL and the branch that was merged.
+- The source branch that received the changes and the number of commits landed.
+- Branch cleanup status: the remote PR head (`<prHead>`) deleted by `--delete-branch`; the local
+  worktree branch (`<branch>`, a different name) realigned to the merged base.
+- Local `main` checkout status: fast-forwarded, or the divergence you surfaced in Step 4.
+- Only for a run outside the Merge column, a reminder to move the task on. Step 0 noted the
+  task's column. In the Merge column, leave that out: the line below moves the card.
+- Then, only when "Outcome line" below allows it, the last line of the message, alone:
+  `PR: merged`.
+
+## Outcome line
+
+The Merge column's two turn-end automations (`kangentic.json`) are Text matches: each time a turn
+ends here they read the last line of your final message that still has a word in it, ignoring
+case, punctuation and markdown. "Finish" moves the task to **Release** when that line reads
+`PR: merged`, and "Back to Testing" moves it to Testing when it reads `PR: checks red`. The lines
+are a contract, so this section and those rows change together:
+`test/boardTurnEndContracts.test.ts` fails when they drift.
+
+**Releasing is now automatic, so `PR: merged` ships.** The card moves straight to Release, where
+`/release` promotes the changelog, tags `vX.Y.Z` and deploys to the hosted instance. Do not print
+the line to tidy up a run that did not fully land. All three must hold:
+
+- **The PR is merged.** `gh pr view <pr> --json state` reads `MERGED`. Read it; never infer it
+  from `gh pr merge`'s exit code.
+- **The realign finished clean.** `git status --porcelain` is empty and
+  `git rev-list --count origin/<sourceBranch>..HEAD` reads 0. A realign skipped for uncommitted
+  work leaves work behind; one that aborted on a conflict, or replayed a leftover commit, would
+  advance the card with commits that never landed and nobody told.
+- **Step 4 fast-forwarded the local main checkout.** When Step 4 stopped to report a divergence,
+  or offered to reconcile, print no outcome line: the card stays in Merge for a person.
+
+Every other stop prints no outcome line, which leaves the card in Merge. The `PR:` prefix marks a
+pull-request outcome, shared with Testing's `PR: ready to merge`. Code Review ends on
+`Verdict: Ready` and Release on `Release: shipped`.
 
 ## Rules
 
