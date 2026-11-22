@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-21
+
+**Deploy note:** the release's version bump in `package.json` trips the deploy's skip gate, so the
+relay container is recreated once: live sessions drop and reconnect, and the relay's in-container
+trace log is wiped. The image grows by about 100 MB (see Changed). Both new features are inert
+until something opts in: `&dial=` does nothing until a client sends it, and crash reporting does
+nothing until `SENTRY_DSN` is set, which on the hosted instance means the `RELAY_SENTRY_DSN`
+production secret. Self-hosters on Node 21 or 22.0 to 22.11 must move to a supported Node before
+installing from source (see Changed); the Docker image is unaffected.
+
 ### Added
 
 - **Crash reporting to Sentry, off unless `SENTRY_DSN` is set.** Until now a crash printed a stack
