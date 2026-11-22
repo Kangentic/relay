@@ -262,9 +262,9 @@ rename and reloading put the new config live.
 ### Provisioning
 
 `infra/hetzner/provision.sh` is an idempotent shell script (describe-then-create for every
-resource) wrapping the `hcloud` CLI directly rather than a bespoke API client — the project's
-whole identity is one runtime dependency (`ws`), and a self-hoster should be able to read the
-provisioning path top to bottom. `infra/hetzner/cloud-init.yaml` is fully static and committed
+resource) wrapping the `hcloud` CLI directly rather than a bespoke API client. The project keeps
+its runtime dependencies to two (`ws`, and `@sentry/node`, which is not even loaded unless
+`SENTRY_DSN` is set), and a self-hoster should be able to read the provisioning path top to bottom. `infra/hetzner/cloud-init.yaml` is fully static and committed
 with **no secrets in it** (Hetzner instance metadata is readable from inside the box, so
 user-data is treated as public). It installs Docker, unattended-upgrades, SSH hardening, fd
 limits, and a forced-command SSH wrapper for the ci-deploy key.

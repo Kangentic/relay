@@ -55,6 +55,14 @@ export interface Config {
    * content. Off by default, and off installs nothing.
    */
   readonly connectionTrace: boolean;
+  /**
+   * Where crash and error reports go. Null (the default) means the Sentry SDK is never imported:
+   * no handler, no client, no network connection. Set, it reports the two fatal process events and
+   * a fixed handful of capped error paths, scrubbed to an allowlist (src/crashReporting.ts).
+   */
+  readonly sentryDsn: string | null;
+  /** The Sentry `environment` the reports are filed under. Inert while sentryDsn is null. */
+  readonly sentryEnvironment: string;
   readonly logLevel: LogLevel;
   readonly logSlotHashing: boolean;
   readonly slotLogSalt: string;

@@ -38,7 +38,7 @@ Kangentic's own hosted one, can still observe:
 - Frame sizes and frequency (traffic shape, not content).
 - The pairing graph: which slot ids co-occur, i.e. which two connections were rendezvoused together.
 
-Three further disclosures, because "blind to content" is easy to over-read:
+Four further disclosures, because "blind to content" is easy to over-read:
 
 - **The slot id travels in the request URL**, and on Kangentic's hosted instance TLS is terminated
   at Cloudflare, so Cloudflare sees it. The slot id is a routing label, not key material: the
@@ -56,6 +56,11 @@ Three further disclosures, because "blind to content" is easy to over-read:
   given connection is the desktop or the phone, which they could largely infer from connection
   timing anyway. Sending it is entirely the client's choice, and a client that omits it discloses
   nothing new.
+- **With `SENTRY_DSN` set, error reports leave the box**, to Sentry. Kangentic's hosted instance
+  sets it. A report is an error's type, message and stack frames plus the relay's release and
+  environment, rebuilt from an allowlist, so it carries no request URL, header, slot id, IP, or
+  frame content, and slot-shaped hex and IP addresses are masked out of the message too. Unset,
+  which is the default, the reporting SDK is not even loaded.
 
 This is inherent to operating any relay and is not specific to this implementation. Self-hosting
 removes Kangentic (or anyone else) from that observation entirely. As for the pairing graph itself,
@@ -152,6 +157,7 @@ All configuration is environment variables, documented fully in `.env.example`. 
 | `LOG_SLOT_HASHING` / `SLOT_LOG_SALT` | `true` / random per process | Configure `slotRef()`, the salted hash any future slot logging would go through. **Currently inert**: no log line contains a slot id, so nothing calls it. They exist so that adding one is deliberate and safe by default. |
 | `ADMISSION_WEBHOOK_URL` | unset | The open-core seam, for an embedder calling `createRelay({ admissionPolicy })`. **The shipped binary does not construct it**, so setting this alone gates nothing. See below. |
 | `CONNECTION_TRACE` | `false` | Logs one timing line per connection at close: upgrade received, admission, 101 written, paired, and the arrival time, size and queue-ahead of the first 8 frames, keyed by the `CF-Ray` header when present. For localizing a slow dial to a leg of the path. No slot id, no IP, no content; off installs no listener and leaves the forwarding path untouched. One line per connection, so budget the log volume. |
+| `SENTRY_DSN` / `SENTRY_ENVIRONMENT` | unset / `production` | Crash and error reporting to Sentry. **Unset, the SDK is never imported**: no handler, no client, no network connection. Set, the relay reports a process crash (and still dies exactly as it would without it, after at most 2 s spent sending) plus a fixed handful of operator-actionable errors, each capped at one an hour. Every event is rebuilt from an allowlist (error type, message and stack frames, release, environment), so it never carries a request URL, header, slot id or IP. A malformed DSN fails startup. |
 | `ADMIN_ENABLED` / `METRICS_HISTORY_PATH` / `METRICS_HISTORY_INTERVAL_MS` | `false` / unset / `60000` | A private dashboard at `/admin` showing live activity and historical trends, backed by an append-only NDJSON store. **The relay does not authenticate `/admin`** - it stays a blind relay that authenticates nothing, so gate it upstream (Cloudflare Access scoped to `/admin*`, a private network, an SSH tunnel); the relay warns at startup when it is on. Aggregate counters only, never slot ids or IPs. The path must be absolute and on a mounted volume, or the next deploy discards the history. All three default to off, and cost nothing when off: no timer, no file handle, no route. |
 
 See `.env.example` for the complete list.

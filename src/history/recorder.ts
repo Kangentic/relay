@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { appendFile, open, rename, rm } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
+import type { CrashReporter } from '../crashReporting.js';
 import type { Logger } from '../logging.js';
 import type { Metrics, MetricsSnapshot } from '../http/metrics.js';
 import { createProcessSampler, type ProcessSample, type ProcessSampler } from './processSampler.js';
@@ -66,6 +67,8 @@ export interface HistoryRecorderDeps {
   readonly processSampler?: ProcessSampler;
   /** Reads live connection queue depths. Called once per tick, never per frame. */
   readonly sampleConnections?: () => ConnectionSample;
+  /** Reports the two failures an operator has to act on: the file half disabling, and runaway compaction. */
+  readonly crashReporter?: CrashReporter | null;
 }
 
 export interface HistoryReadResult {
@@ -185,6 +188,7 @@ export function createHistoryRecorder(deps: HistoryRecorderDeps): HistoryRecorde
         error: errorMessageOf(error),
         consecutiveFailureCount,
       });
+      deps.crashReporter?.capture('history_write_disabled', error);
       return;
     }
     // Suppress repeats so a persistently full disk cannot flood the log.
@@ -333,6 +337,7 @@ export function createHistoryRecorder(deps: HistoryRecorderDeps): HistoryRecorde
         };
         if (consecutiveCompactionFailureCount >= COMPACTION_FAILURES_BEFORE_ESCALATION) {
           logger.error('metrics history compaction failing repeatedly, file will grow unbounded', details);
+          deps.crashReporter?.capture('history_compaction', error);
         } else {
           logger.warn('metrics history compaction failed', details);
         }

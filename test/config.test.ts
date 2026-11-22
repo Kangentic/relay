@@ -52,6 +52,47 @@ describe('loadConfig', () => {
   });
 });
 
+describe('crash reporting configuration', () => {
+  const DSN = 'https://0123456789abcdef0123456789abcdef@o123456.ingest.us.sentry.io/4510000000000000';
+
+  it('defaults to off, which is what keeps the SDK from ever being imported', () => {
+    const config = loadConfig({});
+    expect(config.sentryDsn).toBeNull();
+    expect(config.sentryEnvironment).toBe('production');
+    // An empty value, which is what deploy.yml writes while the secret is unset, is also off.
+    expect(loadConfig({ SENTRY_DSN: '' }).sentryDsn).toBeNull();
+  });
+
+  it('reads a well-formed DSN and an environment', () => {
+    const config = loadConfig({ SENTRY_DSN: DSN, SENTRY_ENVIRONMENT: 'staging' });
+    expect(config.sentryDsn).toBe(DSN);
+    expect(config.sentryEnvironment).toBe('staging');
+  });
+
+  it.each([
+    ['not a URL at all', 'definitely not a dsn'],
+    ['a non-http scheme', 'ftp://key@example.com/1'],
+    ['no public key', 'https://o123456.ingest.us.sentry.io/4510000000000000'],
+    ['no project id', 'https://key@o123456.ingest.us.sentry.io/'],
+  ])('refuses a DSN with %s, without echoing it', (_label, raw) => {
+    // The SDK would treat any of these as "disabled" and say so only at debug level.
+    expect(() => loadConfig({ SENTRY_DSN: raw })).toThrow(/SENTRY_DSN/);
+    let message = '';
+    try {
+      loadConfig({ SENTRY_DSN: raw });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).not.toContain(raw);
+  });
+
+  it('refuses an environment Sentry would drop the event over', () => {
+    expect(() => loadConfig({ SENTRY_ENVIRONMENT: 'has space' })).toThrow(/SENTRY_ENVIRONMENT/);
+    expect(() => loadConfig({ SENTRY_ENVIRONMENT: 'a/b' })).toThrow(/SENTRY_ENVIRONMENT/);
+    expect(() => loadConfig({ SENTRY_ENVIRONMENT: 'x'.repeat(65) })).toThrow(/SENTRY_ENVIRONMENT/);
+  });
+});
+
 describe('connection cap configuration', () => {
   it('derives MAX_UNPAIRED_CONNECTIONS from MAX_CONNECTIONS so raising one raises both', () => {
     expect(loadConfig({}).maxUnpairedConnections).toBe(5_000);
