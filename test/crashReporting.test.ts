@@ -244,8 +244,12 @@ describe('the SDK stays behind the DSN check, mechanically', () => {
   );
 
   it('src/crashReporting.ts loads it in exactly one place, a dynamic import', () => {
+    // Split on either ending, because the allowlist below is `$`-anchored and git checks this
+    // file out with CRLF on Windows. Splitting on '\n' alone left a trailing '\r' on every line,
+    // so every pattern failed and this test was red for any Windows developer while CI, on a
+    // LF checkout, stayed green.
     const lines = readFileSync(path.join(SRC_ROOT, 'crashReporting.ts'), 'utf8')
-      .split('\n')
+      .split(/\r?\n/)
       .filter((line) => SDK_SPECIFIER.test(line));
     const allowed = [
       // Erased at compile time under verbatimModuleSyntax: loads nothing.
