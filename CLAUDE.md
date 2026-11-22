@@ -232,6 +232,12 @@ or `--no-file-parallelism`.
   waits in its column forever. **The verdict line must be the LAST line**, below its numbered
   steps, which is why `scripts/review-verdict.mjs` prints the blockers first. Printing no
   outcome line is how a skill deliberately leaves a card where it is for a person.
+- **Planning approves its own plans.** The Planning column carries
+  `"planApproval": "automatic"`, so a card that finishes planning moves itself to Executing
+  (`planExitTarget`) instead of waiting on someone in the agent's terminal. That is the one
+  step of the chain a turn-end Text match cannot carry, since the plan prompt is not a message
+  line, and it is the setting this board shipped without and had to be fixed by hand. Only the
+  plan prompt is answered: a question the planning agent asks still waits for a person.
 - **Merging now ships, by way of the board.** A merge to `main` still only publishes an image,
   and only a `vX.Y.Z` tag deploys to the hosted instance, but the Merge column now advances a
   merged card straight to Release, so in practice landing work releases it. That was a
