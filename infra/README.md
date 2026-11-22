@@ -425,6 +425,15 @@ What this does not prove: a crash inside the relay process itself. That path is 
 `test/crashReporting.process.test.ts` drives in real child processes, and step 1 shows the relay
 process runs it with this DSN.
 
+**First run, 2026-11-22, on 0.5.0** (`RELAY-1`): the process exited 1, 42 ms after its throw, and
+the event reached project `4512472383488000` as `fatal`, release `relay@0.5.0`. The message read
+`slot=[redacted-hex] ip=[redacted-ip] ip6=[redacted-ip]`. The stored event carried none of the
+canaries and no IP-shaped string anywhere, and `user.ip_address` was null. Its only contexts
+entry was `trace` (random ids from the envelope header), and its tags were all Sentry's own
+(environment, handled, level, mechanism, release). Sentry did add `user.geo` (Ashburn, Virginia),
+derived from the connection without storing the address. That is the datacenter the region
+hostname already names, so the setting above was left as it is.
+
 ## Localizing a slow patch
 
 When clients report multi-second stalls, find the leg first. The full method, and what it found on
