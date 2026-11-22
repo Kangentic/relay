@@ -8,13 +8,15 @@
  * 1. A crash-restart loop (a process up 40 s, the last deploy days ago) fails, and writes the
  *    output monitor.yml files its issue from. This is the case that used to pass silently.
  * 2. A start inside a deployment passes, including a rollback (a failed deployment, which still
- *    recreated the container) and a deployment still running.
+ *    recreated the container) and a deployment still running, but not one opened hours earlier
+ *    that never posted a final status.
  * 3. A crash between two deployments fails: neither the earlier deploy nor a later one that skipped
  *    its restart explains it, and an `inactive` status set when a later deployment superseded the
  *    earlier one does not stretch the earlier window over the crash.
- * 4. A start an earlier run already judged passes, so one restart is reported once and not on every
- *    run until the next deploy. A run whose check was skipped judged nothing, and the current run
- *    never counts as its own predecessor.
+ * 4. A start from before an earlier run read /metricz passes, since that run judged it, so one
+ *    restart is reported once and not on every run until the next deploy. A start after that read
+ *    fails even when it came before that run's own check step. A run whose check was skipped judged
+ *    nothing, and the current run never counts as its own predecessor.
  * 5. An API failure fails closed without the restart output, and the token never reaches the log.
  * 6. The workflow wiring: the token scopes, the step name a later run looks the verdict up by, the
  *    step order, and the outputs the issue step reads. Drift there disables the check silently.
@@ -54,6 +56,10 @@ interface DeploymentFixture {
 interface RunFixture {
   readonly id: number;
   readonly startedAt: string;
+  /** When its Check /metricz step started: the run's start when absent, no start at all when null. */
+  readonly metriczStartedAt?: string | null;
+  /** When its Restart check step started: the /metricz step's start when absent. */
+  readonly restartCheckStartedAt?: string;
   /** The Restart check step's conclusion in that run, or null when the run had no such step. */
   readonly restartCheck: 'success' | 'failure' | 'skipped' | null;
 }
@@ -107,8 +113,19 @@ function routesFor(
     body: { workflow_runs: runs.map((run) => ({ id: run.id, run_started_at: run.startedAt, status: 'completed' })) },
   });
   for (const run of runs) {
-    const steps = [{ name: 'Check /metricz', conclusion: 'success' }];
-    if (run.restartCheck !== null) steps.push({ name: 'Restart check', conclusion: run.restartCheck });
+    const metriczStartedAt = run.metriczStartedAt === undefined ? run.startedAt : run.metriczStartedAt;
+    const steps: Array<{ readonly name: string; readonly conclusion: string; readonly started_at?: string }> = [
+      metriczStartedAt === null
+        ? { name: 'Check /metricz', conclusion: 'success' }
+        : { name: 'Check /metricz', conclusion: 'success', started_at: metriczStartedAt },
+    ];
+    if (run.restartCheck !== null) {
+      steps.push({
+        name: 'Restart check',
+        conclusion: run.restartCheck,
+        started_at: run.restartCheckStartedAt ?? metriczStartedAt ?? run.startedAt,
+      });
+    }
     routes.set(`/repos/${REPOSITORY}/actions/runs/${run.id}/jobs`, {
       status: 200,
       body: { jobs: [{ name: 'Scheduled health check', steps }] },
@@ -216,9 +233,9 @@ describe('restart-check: a crash-restart loop', () => {
     expect(result.exitCode).toBe(1);
     expect(result.outputs).toContain('unexplained_restart=true\n');
     expect(result.outputs).toMatch(/^verdict=process started 2026-11-10T09:59:20Z, outside every production deployment/m);
-    expect(result.outputs).toContain('after run 501 started its check at 2026-11-10T04:00:00Z');
+    expect(result.outputs).toContain('after run 501 read /metricz at 2026-11-10T04:00:00Z');
     expect(result.summary).toContain('Restart check: process started 2026-11-10T09:59:20Z');
-    // Days older than any deploy job runs, so its statuses are never fetched.
+    // Days older than the longest deployment window, so its statuses are never fetched.
     expect(result.requests.some((request) => request.url.includes('/deployments/101/statuses'))).toBe(false);
     // Only the production environment can explain a restart.
     expect(result.requests.some((request) => request.url.includes('environment=production'))).toBe(true);
@@ -254,6 +271,26 @@ describe('restart-check: a start a deployment explains', () => {
     const result = await runCheck('2026-11-10T02:00:30Z', routesFor([running], [EARLIER_CHECK]));
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('to still running');
+  });
+
+  it('stops a deployment explaining starts 30 minutes after it opened, final status or not', async () => {
+    // No deploy job sets timeout-minutes, so a hung one stays open, or ends by timeout, hours later.
+    const hung: DeploymentFixture = {
+      ...DEPLOY_EARLY,
+      statuses: [{ state: 'in_progress', createdAt: '2026-11-10T02:00:05Z' }],
+    };
+    const timedOut: DeploymentFixture = {
+      ...DEPLOY_EARLY,
+      statuses: [
+        { state: 'in_progress', createdAt: '2026-11-10T02:00:05Z' },
+        { state: 'failure', createdAt: '2026-11-10T08:00:05Z' },
+      ],
+    };
+    for (const deployment of [hung, timedOut]) {
+      const result = await runCheck('2026-11-10T02:45:00Z', routesFor([deployment], [EARLIER_CHECK]));
+      expect(result.exitCode).toBe(1);
+      expect(result.outputs).toContain('unexplained_restart=true\n');
+    }
   });
 });
 
@@ -295,7 +332,38 @@ describe('restart-check: each restart is reported once', () => {
       ),
     );
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain('before run 503 started its check at 2026-11-10T06:00:00Z: already judged there');
+    expect(result.stdout).toContain('before run 503 read /metricz at 2026-11-10T06:00:00Z: already judged there');
+  });
+
+  // Run 506 started at 06:00:00 but read /metricz at 06:01:30 and ran its check at 06:03:00.
+  const SLOW_READ_RUN: RunFixture = {
+    id: 506,
+    startedAt: '2026-11-10T06:00:00Z',
+    metriczStartedAt: '2026-11-10T06:01:30Z',
+    restartCheckStartedAt: '2026-11-10T06:03:00Z',
+    restartCheck: 'failure',
+  };
+
+  it('passes a start between an earlier run starting and its /metricz read, since that read saw it', async () => {
+    const result = await runCheck('2026-11-10T06:01:00Z', routesFor([DEPLOY_EARLY], [SLOW_READ_RUN]));
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('before run 506 read /metricz at 2026-11-10T06:01:30Z: already judged there');
+  });
+
+  it('fails a start after an earlier run read /metricz, even one before that run ran its check', async () => {
+    // 506 read the process before this one, so no run has reported this restart yet.
+    const result = await runCheck('2026-11-10T06:02:00Z', routesFor([DEPLOY_EARLY], [SLOW_READ_RUN]));
+    expect(result.exitCode).toBe(1);
+    expect(result.outputs).toContain('after run 506 read /metricz at 2026-11-10T06:01:30Z');
+  });
+
+  it('dates the read by the run start when the /metricz step has none, which can only report twice', async () => {
+    const result = await runCheck(
+      '2026-11-10T06:01:00Z',
+      routesFor([DEPLOY_EARLY], [{ ...SLOW_READ_RUN, metriczStartedAt: null }]),
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.outputs).toContain('after run 506 read /metricz at 2026-11-10T06:00:00Z');
   });
 
   it('fails an unexplained start when no earlier run has a check, and never counts the current run', async () => {
@@ -358,6 +426,13 @@ describe('monitor.yml wiring', () => {
     expect(restartStep).toContain('        id: restart\n');
     expect(restartStep).toContain("        if: ${{ !cancelled() && steps.metricz.outputs.started_at != '' }}\n");
     expect(restartStep).toContain('          STARTED_AT: ${{ steps.metricz.outputs.started_at }}\n');
+  });
+
+  it('names the /metricz step exactly what the script dates an earlier read by', () => {
+    const stepName = /export const METRICZ_STEP_NAME = '([^']+)';/.exec(script)?.[1];
+    expect(stepName).toBeDefined();
+    const metriczStep = steps[stepIndex('        id: metricz\n')] ?? '';
+    expect(metriczStep.startsWith(`      - name: ${stepName}\n`)).toBe(true);
   });
 
   it('records the start in /metricz before any assertion can stop that step', () => {
