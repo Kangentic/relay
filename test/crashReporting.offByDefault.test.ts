@@ -15,8 +15,9 @@ vi.mock('@sentry/node', () => {
   // A factory runs when the module is first imported, and only then.
   sdk.loadCount += 1;
   return {
-    init: (options: unknown) => {
+    init: (options: { dsn?: string }) => {
       sdk.initCalls.push(options);
+      if (options.dsn?.includes('init-fails') === true) throw new Error('sdk could not initialize');
     },
     onUncaughtExceptionIntegration: () => ({ name: 'OnUncaughtException' }),
     captureException: () => 'event-id',
@@ -47,5 +48,18 @@ describe('crash reporting with no DSN', () => {
     expect(reporter).not.toBeNull();
     expect(sdk.loadCount).toBe(1);
     expect(sdk.initCalls).toHaveLength(1);
+  });
+});
+
+describe('crash reporting with a DSN the SDK cannot honor', () => {
+  it('fails startup rather than running on unreported', async () => {
+    // A configured DSN that silently reports nothing is the failure this exists to remove, and
+    // a relay that will not start fails the deploy's health gate, which rolls back.
+    await expect(
+      startCrashReporting(
+        { sentryDsn: 'https://init-fails@o1.ingest.sentry.io/1', sentryEnvironment: 'production' },
+        { logger },
+      ),
+    ).rejects.toThrow('sdk could not initialize');
   });
 });

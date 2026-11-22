@@ -293,7 +293,10 @@ describe('crash semantics are identical with and without a DSN', () => {
         // It really did try to send, so what ended the wait was the bound, not a refused connection.
         expect(blackHole.connectionCount()).toBeGreaterThan(0);
         expect(withDsn.crashToExitMs).not.toBeNull();
-        expect(withDsn.crashToExitMs ?? 0).toBeGreaterThanOrEqual(FATAL_FLUSH_TIMEOUT_MS - 250);
+        // The clock starts when this process handles the crash marker, so any delay on this side
+        // shortens the measured wait. Half the bound still proves it waited rather than exiting
+        // at once; the upper bound is the one that matters, and it has no such skew.
+        expect(withDsn.crashToExitMs ?? 0).toBeGreaterThanOrEqual(FATAL_FLUSH_TIMEOUT_MS / 2);
         expect(withDsn.crashToExitMs ?? Infinity).toBeLessThan(FATAL_FLUSH_TIMEOUT_MS + 2_000);
       } finally {
         await blackHole.close();

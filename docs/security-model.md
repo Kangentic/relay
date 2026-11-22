@@ -259,7 +259,8 @@ since anything that reaches the origin directly controls it. Sign-out links to C
 imported: `src/crashReporting.ts` loads it with a dynamic `import()` inside the DSN check, so there
 is no handler, no client, and no connection to anywhere. `test/crashReporting.offByDefault.test.ts`
 proves the module is never loaded, and a static check keeps every other file in `src/` from
-referencing the SDK at all.
+referencing the SDK at all. The converse holds too: with a DSN set, an SDK that cannot load or
+initialize stops the relay from starting, so a configured reporter can never be silently absent.
 
 **What leaves the box when it is on.** An event is rebuilt from an allowlist in `beforeSend`,
 never filtered down from what the SDK assembled: the error's type, its message, its stack frames
