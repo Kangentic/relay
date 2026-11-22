@@ -61,7 +61,10 @@ services:
     # Room for CONNECTION_TRACE: one line per connection at roughly 13k
     # connections a day is about 8 MB a day, against the daemon default of
     # 10m x 3 from cloud-init. 20m x 5 keeps about twelve days, longer than
-    # the 7 days of one-minute history a trace is read against.
+    # the 7 days of one-minute history a trace is read against. The dial
+    # correlation lines (one shorter line per dial, once clients send
+    # &dial=) add roughly 60% to that, so with both on it is about a week at
+    # that rate and less as traffic grows. A recreate wipes it either way.
     logging:
       driver: json-file
       options:

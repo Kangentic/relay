@@ -165,6 +165,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // so there is no handler, no client, and no network connection to Sentry.
     sentryDsn: readSentryDsn(env, 'SENTRY_DSN'),
     sentryEnvironment: readSentryEnvironment(env, 'SENTRY_ENVIRONMENT', 'production'),
+    // Gated on the client sending a valid `dial` id, so a prober that sends
+    // none writes nothing; this ceiling bounds the rest. About 20k dials a day
+    // is ~14 lines a minute, ~40 at a diurnal peak, so 600 is over ten times
+    // that peak, and a bucket holding a minute's worth still keeps a few
+    // hundred lines from a mass close. A sustained hostile flood at the
+    // ceiling is about 350 MB a day of log, which turns a 20 MB x 5 rotation
+    // over in hours; lower it if that matters more than a burst. 0 is off.
+    dialLogMaxPerMinute: readInt(env, 'DIAL_LOG_MAX_PER_MIN', 600),
     logLevel: readLogLevel(env, 'LOG_LEVEL', 'info'),
     logSlotHashing: readBoolean(env, 'LOG_SLOT_HASHING', true),
     slotLogSalt: readString(env, 'SLOT_LOG_SALT', randomSalt()),

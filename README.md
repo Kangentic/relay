@@ -15,10 +15,14 @@ decrypt anything.
 
 - The relay routes purely by a `slot` query parameter on the WebSocket URL: it pairs exactly two
   connections that present the same slot id, and forwards every binary message between them
-  byte-for-byte. It does not parse, wrap, or inspect a single byte of frame content. A client may
-  also send an optional `role=desktop|mobile`, which is a hint for one dashboard gauge and nothing
-  else: it is unauthenticated, it never reaches a pairing, routing, cap, or rate-limit decision,
-  and omitting it or getting it wrong is counted as `unknown` rather than rejected.
+  byte-for-byte. It does not parse, wrap, or inspect a single byte of frame content. Two optional
+  parameters may ride alongside the slot, and neither can reject a dial: both are unauthenticated,
+  neither reaches a pairing, routing, cap, or rate-limit decision, and omitting or garbling either
+  changes nothing about the connection. `role=desktop|mobile` is a hint for one dashboard gauge,
+  counted as `unknown` when absent or wrong. `dial=<16 lowercase hex>` is a per-dial-attempt id the
+  client mints at random and records in its own error reports, so its report can be matched to the
+  relay's one log line for that dial (`dial rejected` or `dial closed`). It is not derived from the
+  slot, and it goes into that log line only, never into a metric.
 - `src/**` has zero runtime dependency on `@kangentic/protocol` (the end-to-end crypto layer). That
   package appears only as a `devDependency`, imported by exactly one integration test file, which
   proves both of the real handshakes the product performs complete correctly through this relay,
@@ -156,8 +160,9 @@ All configuration is environment variables, documented fully in `.env.example`. 
 | `METRICS_ENABLED` / `METRICS_TOKEN` / `METRICS_ALLOW_UNAUTHENTICATED` | `true` / unset / `false` | Prometheus-format `/metrics` and its JSON twin `/metricz`. They carry no slot ids or IPs, but do expose live pairing gauges and a per-guard reject breakdown. **They require a token**: with none set both answer 404 (not 401, which would advertise them). Set `METRICS_ALLOW_UNAUTHENTICATED=true` to serve them openly on a genuinely private deployment. |
 | `LOG_SLOT_HASHING` / `SLOT_LOG_SALT` | `true` / random per process | Configure `slotRef()`, the salted hash any future slot logging would go through. **Currently inert**: no log line contains a slot id, so nothing calls it. They exist so that adding one is deliberate and safe by default. |
 | `ADMISSION_WEBHOOK_URL` | unset | The open-core seam, for an embedder calling `createRelay({ admissionPolicy })`. **The shipped binary does not construct it**, so setting this alone gates nothing. See below. |
-| `CONNECTION_TRACE` | `false` | Logs one timing line per connection at close: upgrade received, admission, 101 written, paired, and the arrival time, size and queue-ahead of the first 8 frames, keyed by the `CF-Ray` header when present. For localizing a slow dial to a leg of the path. No slot id, no IP, no content; off installs no listener and leaves the forwarding path untouched. One line per connection, so budget the log volume. |
 | `SENTRY_DSN` / `SENTRY_ENVIRONMENT` | unset / `production` | Crash and error reporting to Sentry. **Unset, the SDK is never imported**: no handler, no client, no network connection. Set, the relay reports a process crash (and still dies exactly as it would without it, after at most 2 s spent sending) plus a fixed handful of operator-actionable errors, each capped at one an hour. Every event is rebuilt from an allowlist (error type, message and stack frames, release, environment), so it never carries a request URL, header, slot id or IP. A malformed DSN, or an SDK that cannot load, fails startup rather than running unreported. |
+| `CONNECTION_TRACE` | `false` | Logs one timing line per connection at close: upgrade received, admission, 101 written, paired, and the arrival time, size and queue-ahead of the first 8 frames, keyed by the `CF-Ray` header when present, plus the client's `dial` id when it sent one. For localizing a slow dial to a leg of the path. No slot id, no IP, no content; off installs no listener and leaves the forwarding path untouched. One line per connection, so budget the log volume. |
+| `DIAL_LOG_MAX_PER_MIN` | `600` | Process-wide ceiling on the dial correlation lines: one `dial rejected` line for a refused upgrade, or one `dial closed` line when an opened connection ends, written only for a client that sent a valid `dial` id, so a prober sending none writes nothing. Each carries the dial id, CF-Ray, the reject reason or the close code plus the relay's own teardown cause (`heartbeat`, `backpressure`, `peer_closed`, ...), and timings; no slot id, no IP. Independent of `CONNECTION_TRACE`. Over the ceiling a line is dropped and counted in `relay_dial_log_suppressed_total`. About one line per real dial, so the default sits over ten times a busy minute; a sustained flood at the ceiling would turn a 100 MB log rotation over in hours, so lower it if that matters more than keeping a mass disconnect whole. `0` turns the lines off. |
 | `ADMIN_ENABLED` / `METRICS_HISTORY_PATH` / `METRICS_HISTORY_INTERVAL_MS` | `false` / unset / `60000` | A private dashboard at `/admin` showing live activity and historical trends, backed by an append-only NDJSON store. **The relay does not authenticate `/admin`** - it stays a blind relay that authenticates nothing, so gate it upstream (Cloudflare Access scoped to `/admin*`, a private network, an SSH tunnel); the relay warns at startup when it is on. Aggregate counters only, never slot ids or IPs. The path must be absolute and on a mounted volume, or the next deploy discards the history. All three default to off, and cost nothing when off: no timer, no file handle, no route. |
 
 See `.env.example` for the complete list.
@@ -314,6 +319,17 @@ horizontal scaling needs no code changes, only slot-sticky routing in front.
   client sent, so this is a bounded three-value dimension rather than a label an attacker can grow.
   Note that a lone parked desktop is the normal resting state of every online desktop, so a non-zero
   desktop count is healthy idle rather than a stalled pairing.
+- **One dial, one log line, joinable to the client's own report.** A client that dials with
+  `&dial=<16 lowercase hex>` gets exactly one structured line: `dial rejected` (the reject reason,
+  the HTTP status or admission close code, timings) or, once its connection ends, `dial closed` (the
+  close code, whether it paired, timings, and `teardownCause`, the relay's own reason for ending it,
+  null when the client or the network ended it). `teardownCause` is what separates a keepalive reap
+  from a client that vanished, since both read as 1006. Search the log for the client's id to find
+  its dial. The two rejects that come before the id is read, a wrong path and a malformed slot,
+  write nothing, since only probers reach them. `/metricz` carries `dialLogSuppressedTotal`
+  (`relay_dial_log_suppressed_total` on `/metrics`), the lines dropped by `DIAL_LOG_MAX_PER_MIN`;
+  the dial id itself is never a metric. The log holds about a week and is wiped by every relay
+  recreate, which every release does, so this only correlates recent dials.
 - **Both metrics surfaces need a token before they will answer.** They are 404 out of the box.
   Either set `METRICS_TOKEN` and pass `Authorization: Bearer <token>`, or set
   `METRICS_ALLOW_UNAUTHENTICATED=true` if the instance is genuinely private:

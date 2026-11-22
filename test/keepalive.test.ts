@@ -55,6 +55,8 @@ function fakeConn(readyState = 1): { conn: Conn; socket: FakeSocket } {
     unpairedReserved: false,
     pairState: null,
     trace: null,
+    dial: null,
+    teardownCause: null,
   };
   return { conn, socket };
 }
@@ -104,6 +106,9 @@ describe('startKeepalive', () => {
 
     expect(socket.terminate).toHaveBeenCalledTimes(1);
     expect(onPongTimeoutSpy).toHaveBeenCalledTimes(1);
+    // terminate() yields a bare 1006, the same code a client that vanished
+    // produces, so the reap names itself for the dial close line.
+    expect(conn.teardownCause).toBe('heartbeat');
     keepalive.stop();
   });
 
@@ -210,6 +215,8 @@ describe('keepalive spares a socket that is alive but slow', () => {
     expect(socket.terminate).not.toHaveBeenCalled();
     expect(metrics.snapshot().pongOverdueDrainingTotal).toBe(1);
     expect(metrics.snapshot().pongTimeoutsTotal).toBe(0);
+    // Spared is not ended, so nothing is recorded against it.
+    expect(conn.teardownCause).toBeNull();
     keepalive.stop();
   });
 

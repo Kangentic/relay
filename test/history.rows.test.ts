@@ -34,6 +34,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     peerClosedTotal: 0,
     pongTimeoutsTotal: 0,
     pongOverdueDrainingTotal: 0,
+    dialLogSuppressedTotal: 0,
     rejectsByReason: {},
     ...overrides,
   };

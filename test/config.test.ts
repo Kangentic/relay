@@ -192,3 +192,21 @@ describe('connection trace configuration', () => {
     expect(() => loadConfig({ CONNECTION_TRACE: 'on' })).toThrow(/CONNECTION_TRACE/);
   });
 });
+
+describe('dial correlation line ceiling', () => {
+  it('defaults to 600 lines a minute, independent of the connection trace', () => {
+    expect(loadConfig({}).dialLogMaxPerMinute).toBe(600);
+    expect(loadConfig({ CONNECTION_TRACE: 'false' }).dialLogMaxPerMinute).toBe(600);
+  });
+
+  it('accepts a custom ceiling, and 0 to turn the lines off', () => {
+    expect(loadConfig({ DIAL_LOG_MAX_PER_MIN: '60' }).dialLogMaxPerMinute).toBe(60);
+    expect(loadConfig({ DIAL_LOG_MAX_PER_MIN: '0' }).dialLogMaxPerMinute).toBe(0);
+  });
+
+  it('refuses a negative or non-integer ceiling', () => {
+    expect(() => loadConfig({ DIAL_LOG_MAX_PER_MIN: '-1' })).toThrow(/DIAL_LOG_MAX_PER_MIN/);
+    expect(() => loadConfig({ DIAL_LOG_MAX_PER_MIN: '1.5' })).toThrow(/DIAL_LOG_MAX_PER_MIN/);
+    expect(() => loadConfig({ DIAL_LOG_MAX_PER_MIN: 'lots' })).toThrow(/DIAL_LOG_MAX_PER_MIN/);
+  });
+});

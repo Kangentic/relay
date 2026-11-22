@@ -1,6 +1,7 @@
 import type { RawData, WebSocket } from 'ws';
-import type { RejectReason } from './closeCodes.js';
+import type { RejectReason, TeardownCause } from './closeCodes.js';
 import type { ConnectionTrace } from './connectionTrace.js';
+import type { DialCorrelation } from './dialCorrelation.js';
 import type { PeerRole } from './guards/peerRole.js';
 import type { OutboundQueueReading } from './keepalive.js';
 
@@ -63,6 +64,13 @@ export interface Config {
   readonly sentryDsn: string | null;
   /** The Sentry `environment` the reports are filed under. Inert while sentryDsn is null. */
   readonly sentryEnvironment: string;
+  /**
+   * Process-wide ceiling on the per-dial correlation lines (one when an upgrade
+   * carrying a valid `dial` id is rejected, one when such a connection closes),
+   * shared by both kinds. Over it a line is dropped and counted in
+   * dialLogSuppressedTotal. 0 turns the lines off entirely.
+   */
+  readonly dialLogMaxPerMinute: number;
   readonly logLevel: LogLevel;
   readonly logSlotHashing: boolean;
   readonly slotLogSalt: string;
@@ -139,6 +147,17 @@ export interface Conn {
   pairState: PairedSlotState | null;
   /** Per-connection timing, present only when CONNECTION_TRACE is on. */
   readonly trace: ConnectionTrace | null;
+  /**
+   * The client's correlation record, present only when it dialed with a valid
+   * `dial` id (and the dial lines are on). Null means no close line is written.
+   */
+  readonly dial: DialCorrelation | null;
+  /**
+   * Why the relay ended this connection, set once by whichever teardown started
+   * first. Null when the relay never decided to: the client or the network
+   * ended it. Read only by the dial close line.
+   */
+  teardownCause: TeardownCause | null;
 }
 
 export interface WaitingSlotState {

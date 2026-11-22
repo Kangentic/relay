@@ -149,6 +149,13 @@ describe('createMetrics', () => {
     expect(metrics.snapshot().pongOverdueDrainingTotal).toBe(2);
     expect(metrics.snapshot().pongTimeoutsTotal).toBe(1);
 
+    // Suppressed dial lines are counted, never labelled: the dial id is unbounded.
+    expect(metrics.render()).toContain('relay_dial_log_suppressed_total 0');
+    metrics.onDialLogSuppressed();
+    expect(metrics.render()).toContain('relay_dial_log_suppressed_total 1');
+    expect(metrics.render()).not.toMatch(/relay_dial_log_suppressed_total\{/);
+    expect(metrics.snapshot().dialLogSuppressedTotal).toBe(1);
+
     metrics.onUnpair();
     metrics.onConnectionClosed();
     expect(metrics.render()).toContain('relay_paired_slots 0');
@@ -374,6 +381,7 @@ describe('GET /metricz over the live server', () => {
     expect(body['gcPauseMaxMs']).toBeNull();
     expect(body['rssPercent']).toBeNull();
     expect(body['pongOverdueDrainingTotal']).toBe(0);
+    expect(body['dialLogSuppressedTotal']).toBe(0);
   });
 
   it('reports sampled process health once a recorder is running', async () => {

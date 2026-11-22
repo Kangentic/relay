@@ -18,6 +18,25 @@ All notable changes to this project are documented in this file. The format is b
   compares the two deaths in real child processes. Unset, `@sentry/node` is never imported.
   `SENTRY_ENVIRONMENT` (default `production`) names the environment. The hosted instance reads its
   DSN from the new `RELAY_SENTRY_DSN` production secret; unset, it stays off.
+- **`&dial=`: a per-dial correlation id, and one relay log line per dial.** A client may add
+  `dial=<16 lowercase hex>`, an id it mints at random per dial attempt and records in its own error
+  reports. The relay then writes exactly one line for that dial: `dial rejected` when its upgrade is
+  refused (reason, HTTP status or admission close code, timings), or `dial closed` when its
+  connection ends (close code, whether it paired, timings, and `teardownCause`, the relay's own
+  reason for ending it). Search the log for the client's id to find its dial. `teardownCause` is
+  what separates a keepalive reap or a probe eviction from a client that vanished, since all three
+  read as 1006. Until now a rejected upgrade wrote nothing at all.
+  - Like `role`, the id is advisory and cannot reject: anything but the exact shape is ignored, and
+    so is an id found inside the dial's own slot. It is not derived from the slot, the two peers of
+    a pair mint different ids, and it never reaches a metric.
+  - The lines are gated on the client's id, not on `CONNECTION_TRACE`, so they outlive the latency
+    investigation and a client that sends no id writes nothing. With the trace on, its line carries
+    the same id as `clientDialId`.
+  - **`DIAL_LOG_MAX_PER_MIN`** (default `600`, `0` is off) caps both lines process-wide. Lines past
+    it are dropped and counted in `dialLogSuppressedTotal` on `/metricz` and
+    `relay_dial_log_suppressed_total` on `/metrics`.
+  - Inert until the desktop and mobile clients send the parameter. The log holds about a week (less
+    with the trace on) and every relay recreate wipes it, so this only correlates recent dials.
 
 ### Changed
 

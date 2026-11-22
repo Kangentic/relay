@@ -102,7 +102,14 @@ export function createSlotTableHarness(
     // handed to the connection, which releases it on pair or on close.
     unpairedCap.tryReserve();
     conn.unpairedReserved = true;
-    attachConnectionHandlers(conn, { slotTable, metrics, logger: silentLogger, config, onClosed: () => {} });
+    attachConnectionHandlers(conn, {
+      slotTable,
+      metrics,
+      logger: silentLogger,
+      config,
+      dialLog: null,
+      onClosed: () => {},
+    });
     slotTable.handleConnection(conn);
     return { conn, socket };
   };

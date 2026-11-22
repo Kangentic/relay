@@ -2,6 +2,9 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { createLogger } from '../src/logging.js';
+import { describeDialClose, describeDialRejection, startDialCorrelation } from '../src/dialCorrelation.js';
+import { describeConnectionTrace, startConnectionTrace } from '../src/connectionTrace.js';
+import { createSlotTableHarness } from './helpers/slotTableHarness.js';
 import { SRC_ROOT, everySourceFile } from './helpers/sourceFiles.js';
 
 /**
@@ -48,5 +51,73 @@ describe('slot ids never reach a log line', () => {
     const slotId = 'c'.repeat(64);
     const logger = createLogger({ logLevel: 'info', logSlotHashing: false, slotLogSalt: 'test-salt' });
     expect(logger.slotRef(slotId)).toBe(slotId);
+  });
+});
+
+/**
+ * The per-connection lines are the only log lines that carry client-supplied
+ * values, so their fields are pinned exactly. A new field has to be added here
+ * on purpose, which is the moment to ask whether it can carry a slot, an IP, or
+ * an unbounded client string. Sorted, so the order fields are built in is free.
+ */
+describe('the per-connection lines carry exactly their allowlisted fields', () => {
+  const slotId = 'd'.repeat(64);
+  const dialId = '0123456789abcdef';
+
+  it('dial rejected', () => {
+    const line = describeDialRejection(startDialCorrelation(dialId, undefined), 'desktop', 'rate_limit_ip', {
+      httpStatus: 429,
+    });
+    expect(Object.keys(line).sort()).toEqual(
+      ['clientDialId', 'cfRay', 'role', 'reason', 'httpStatus', 'closeCode', 'upgradeReceivedAt', 'rejectedAfterMs'].sort(),
+    );
+    expect(JSON.stringify(line)).not.toContain(slotId);
+  });
+
+  it('dial closed', () => {
+    const { conn } = createSlotTableHarness().connect(slotId);
+    const line = describeDialClose(conn, startDialCorrelation(dialId, undefined), 1000);
+    expect(Object.keys(line).sort()).toEqual(
+      [
+        'clientDialId',
+        'connId',
+        'cfRay',
+        'role',
+        'upgradeReceivedAt',
+        'openedAfterMs',
+        'closedAfterMs',
+        'paired',
+        'closeCode',
+        'teardownCause',
+      ].sort(),
+    );
+    const serialized = JSON.stringify(line);
+    expect(serialized).not.toContain(slotId);
+    expect(serialized).not.toContain(conn.ip);
+  });
+
+  it('connection trace', () => {
+    const trace = startConnectionTrace(undefined, undefined);
+    const { conn } = createSlotTableHarness().connectTraced(slotId, trace);
+    const line = describeConnectionTrace(conn, trace, 1000);
+    expect(Object.keys(line).sort()).toEqual(
+      [
+        'connId',
+        'clientDialId',
+        'role',
+        'cfRay',
+        'upgradeReceivedAt',
+        'socketAgeAtUpgradeMs',
+        'admittedAfterMs',
+        'handshakeCompletedAfterMs',
+        'pairedAfterMs',
+        'closedAfterMs',
+        'closeCode',
+        'frames',
+      ].sort(),
+    );
+    const serialized = JSON.stringify(line);
+    expect(serialized).not.toContain(slotId);
+    expect(serialized).not.toContain(conn.ip);
   });
 });
