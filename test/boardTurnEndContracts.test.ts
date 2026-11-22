@@ -314,6 +314,22 @@ describe('board turn-end contracts: Release', () => {
     expectTextIn(outcomeSection, `${skillPath} Outcome line`, 'print no outcome line');
     expect(turnEndRow('Release', 'Finish').targetColumn).toBe('Done');
   });
+
+  /**
+   * "Nothing to cut" is the one state where the commands cannot decide the outcome on their own:
+   * an empty range means work already on `main` has shipped and work that never merged has not.
+   * Step 1 has to send the agent to that decision, because a release that cut nothing otherwise
+   * satisfies every gate below it and would archive a card whose work never landed.
+   */
+  it('makes the empty-range case decide the outcome line rather than assume it', () => {
+    const skill = readRepositoryFile(skillPath);
+    const step1 = sectionOf(skill, skillPath, '## Step 1 - Confirm there is something to release');
+    expectTextIn(step1, `${skillPath} Step 1`, 'does not by itself mean this card is finished');
+    expectTextIn(step1, `${skillPath} Step 1`, 'Print no outcome line');
+    // And the gate list has to carry the same requirement, or the two could drift apart.
+    const outcomeSection = sectionOf(skill, skillPath, '## Outcome line');
+    expectTextIn(outcomeSection, `${skillPath} Outcome line`, 'actually inside that tag');
+  });
 });
 
 describe('board turn-end contracts: row shape', () => {

@@ -45,7 +45,24 @@ All git commands run from the **current working directory** - never `cd <path> &
 1. Compare against the last release: `git -C <root> describe --tags --abbrev=0` for the previous
    tag (absent on a first release), then
    `git -C <root> log --oneline <previousTag>..HEAD` to list what would ship.
-2. If that range is empty, stop: `main` is already released, nothing to cut.
+2. If that range is empty, cut nothing: `main` is already released. **Then decide the outcome
+   line, because an empty range does not by itself mean this card is finished.** An empty range
+   says every commit on `main` is inside the latest tag, so work that *is* on `main` has already
+   shipped, and work that never landed has not. Tell those apart before printing anything:
+   - **The work this card is meant to ship is in the released tag** (confirm it, with
+     `git -C <root> log --oneline <tag> --` over the paths or the commits the card is about, or
+     its merged PR). Then it shipped, and "Outcome line" below governs as usual against that tag.
+     Say plainly that this session cut nothing and name the version the work went out under, so
+     "nothing to release" is not read as a failed release.
+   - **It is not** (the card's work never merged, or a sibling release swept a partial set).
+     Print no outcome line and report, so the card stays in Release. There is nothing to roll
+     back, but something upstream did not land and moving the card to Done would bury it.
+
+   This is the one state in the skill where the right answer depends on how the card got here
+   rather than on what the commands return: on 2026-11-22 a release ran, shipped v0.5.0, and a
+   second `/release` in the same session correctly reported "Nothing new to release" and still,
+   correctly, printed `Release: shipped`, because its own work had gone out minutes earlier. The
+   same output with the work still unmerged would have meant the opposite.
 3. Read `CHANGELOG.md`. The `## [Unreleased]` section is what becomes the release notes. If it is
    missing or empty while commits exist, the changelog is behind - write the missing entries from
    the commit range before continuing, in the existing Keep a Changelog style (`### Added`,
@@ -147,13 +164,17 @@ removes the worktree, so the line is a contract: `test/boardTurnEndContracts.tes
 this section and that row drift.
 
 This is the only outcome line in the chain that is printed **after** real users are already
-served, so it reports what happened rather than authorizing it. Print it only when all of these
-hold:
+served, so it reports what happened rather than authorizing it. It says the card's work is in
+production under a verified release, which is not the same as "this session cut a tag": Step 1's
+empty-range case prints it for a release an earlier turn cut. Print it only when all of these
+hold, read against whichever tag carries the work:
 
-- The tag exists and the Release workflow run is green.
-- Step 5's `/healthz` reports the version you just cut, **or** you established and said plainly
-  that the deploy correctly skipped the restart for a docs-only release.
+- The tag exists and its Release workflow run is green.
+- Step 5's `/healthz` reports that tag's version, **or** you established and said plainly that
+  the deploy correctly skipped the restart for a docs-only release.
 - The synthetic pairing probe passed.
+- The work this card is meant to ship is actually inside that tag. Cutting a version is the usual
+  proof; when this session cut nothing, Step 1 says how to establish it instead.
 
 If the deploy rolled back, the health gate tripped, or the probe failed, print no outcome line.
 Report what happened and leave the card in Release: production is in a state a person needs to
