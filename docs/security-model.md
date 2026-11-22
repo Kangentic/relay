@@ -272,9 +272,9 @@ guarantee and the masking covers the one free-text field it keeps, mirroring how
 handler's own log line carries `error.message` and nothing else.
 `test/crashReporting.process.test.ts` drives a captured error and a fatal one, both carrying the
 slot id and the client IP in the message, in the error's own properties and cause, and on the
-scope's user, tags, extras, context and breadcrumbs, through the real SDK and its real HTTP transport into a stub ingest. It then asserts
-that neither string appears in any byte received. That is the test that keeps this true through SDK
-upgrades that change what the defaults attach.
+scope's user, tags, extras, context and breadcrumbs, through the real SDK and its real HTTP
+transport into a stub ingest. It then asserts that neither string appears in any byte received.
+That is the test that keeps this true through SDK upgrades that change what the defaults attach.
 
 **The SDK runs with almost nothing turned on.** `defaultIntegrations: false`, because the defaults
 include HTTP and OpenTelemetry instrumentation that would sit on the upgrade path and read

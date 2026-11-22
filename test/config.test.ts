@@ -74,6 +74,7 @@ describe('crash reporting configuration', () => {
     ['a non-http scheme', 'ftp://key@example.com/1'],
     ['no public key', 'https://o123456.ingest.us.sentry.io/4510000000000000'],
     ['no project id', 'https://key@o123456.ingest.us.sentry.io/'],
+    ['a project id that is not numeric', 'https://key@o123456.ingest.us.sentry.io/relay'],
   ])('refuses a DSN with %s, without echoing it', (_label, raw) => {
     // The SDK would treat any of these as "disabled" and say so only at debug level.
     expect(() => loadConfig({ SENTRY_DSN: raw })).toThrow(/SENTRY_DSN/);
@@ -90,6 +91,12 @@ describe('crash reporting configuration', () => {
     expect(() => loadConfig({ SENTRY_ENVIRONMENT: 'has space' })).toThrow(/SENTRY_ENVIRONMENT/);
     expect(() => loadConfig({ SENTRY_ENVIRONMENT: 'a/b' })).toThrow(/SENTRY_ENVIRONMENT/);
     expect(() => loadConfig({ SENTRY_ENVIRONMENT: 'x'.repeat(65) })).toThrow(/SENTRY_ENVIRONMENT/);
+  });
+
+  it('accepts an environment at the 64-character limit, and reads an empty one as the default', () => {
+    expect(loadConfig({ SENTRY_ENVIRONMENT: 'x'.repeat(64) }).sentryEnvironment).toBe('x'.repeat(64));
+    // An env file line with no value (`SENTRY_ENVIRONMENT=`) is unset, not an invalid name.
+    expect(loadConfig({ SENTRY_ENVIRONMENT: '' }).sentryEnvironment).toBe('production');
   });
 });
 

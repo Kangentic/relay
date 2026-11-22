@@ -60,8 +60,35 @@ export interface CrashReportingOptions {
 }
 
 const HEX_RUN = /[0-9a-f]{32,}/gi;
-const IPV4_ADDRESS = /\d{1,3}(?:\.\d{1,3}){3}/g;
+// An IPv4-mapped IPv6 address (`::ffff:203.0.113.7`) is one address, so its prefix is masked with it.
+const IPV4_ADDRESS = /(?:::ffff:)?\d{1,3}(?:\.\d{1,3}){3}/gi;
 const COLON_RUN = /[0-9a-f]*(?::[0-9a-f]*){2,}/gi;
+const REDACTED_IP = '[redacted-ip]';
+
+/**
+ * Masks the IPv6 address in one colon run. A run that is not an address as a whole can still hold
+ * one, with a group of something else on either side: a label glued on with a colon
+ * (`ip:2001:db8::1`), a port, or the colon of a separator (`2001:db8::1: refused`). So one group is
+ * trimmed from each end, and the address found is masked with the trimmed text kept. When trimming
+ * either end alone finds an address, it is ambiguous which end belongs to it, so the whole run is
+ * masked rather than leave a group of the address behind.
+ */
+function maskColonRun(run: string): string {
+  if (isIP(run) === 6) return REDACTED_IP;
+  const groups = run.split(':');
+  const groupCount = groups.length;
+  const isAddress = (fromGroup: number, toGroup: number): boolean =>
+    isIP(groups.slice(fromGroup, toGroup).join(':')) === 6;
+  const leadingGroup = groups[0] ?? '';
+  const trailingGroup = groups[groupCount - 1] ?? '';
+  const addressAfterLeading = isAddress(1, groupCount);
+  const addressBeforeTrailing = isAddress(0, groupCount - 1);
+  if (addressAfterLeading && addressBeforeTrailing) return REDACTED_IP;
+  if (addressAfterLeading) return `${leadingGroup}:${REDACTED_IP}`;
+  if (addressBeforeTrailing) return `${REDACTED_IP}:${trailingGroup}`;
+  if (isAddress(1, groupCount - 1)) return `${leadingGroup}:${REDACTED_IP}:${trailingGroup}`;
+  return run;
+}
 
 /**
  * Masks anything shaped like a slot id (a long hex run) or an IP address in free text. The event
@@ -72,8 +99,8 @@ const COLON_RUN = /[0-9a-f]*(?::[0-9a-f]*){2,}/gi;
 export function redactIdentifiers(text: string): string {
   return text
     .replace(HEX_RUN, '[redacted-hex]')
-    .replace(IPV4_ADDRESS, '[redacted-ip]')
-    .replace(COLON_RUN, (token) => (isIP(token) === 6 ? '[redacted-ip]' : token));
+    .replace(IPV4_ADDRESS, REDACTED_IP)
+    .replace(COLON_RUN, maskColonRun);
 }
 
 function scrubFrame(frame: StackFrame): StackFrame {
