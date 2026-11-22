@@ -3,13 +3,15 @@
 //
 // Runs as a SEPARATE process inside the serving relay container, so it shares the image, the env (and
 // with it the DSN), the network namespace and the egress path, while the relay process itself is never
-// touched. Piped in, since the image ships no scripts:
+// touched. Piped in, since the image ships no scripts. `<box>` is the server's own address, since
+// both public hostnames are proxied by Cloudflare and refuse SSH:
 //
-//   Get-Content -Raw scripts/deploy/sentry-verify.mjs | ssh relay-prod "docker exec -i -e SENTRY_ENVIRONMENT=verification compose-relay-1 node --input-type=module -"
+//   ssh deploy@<box> "docker exec -i -e SENTRY_ENVIRONMENT=verification compose-relay-1 node --input-type=module -" < scripts/deploy/sentry-verify.mjs
 //
-// (from bash: ssh ... < scripts/deploy/sentry-verify.mjs). It plants canaries, a slot-shaped hex run
-// and TEST-NET addresses, in the message, on the error, and on every scope surface, then dies of an
-// uncaught exception. That is the real fatal path: the SDK's onUncaughtException handler captures,
+// (From PowerShell, which has no `<`: Get-Content -Raw scripts/deploy/sentry-verify.mjs | ssh ...)
+//
+// It plants canaries, a slot-shaped hex run and TEST-NET addresses, in the message, on the error,
+// and on every scope surface, then dies of an uncaught exception. That is the real fatal path: the SDK's onUncaughtException handler captures,
 // flushes for at most 2 s, and exits 1. The delivered event must carry none of the canaries.
 //
 // What it does not prove: a crash in the relay process itself (test/crashReporting.process.test.ts

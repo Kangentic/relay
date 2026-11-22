@@ -409,7 +409,7 @@ deploy has rolled:
 2. **One real event.** From a checkout, pipe
    [`scripts/deploy/sentry-verify.mjs`](../scripts/deploy/sentry-verify.mjs) into a second process
    inside the serving container:
-   `ssh <box> "docker exec -i -e SENTRY_ENVIRONMENT=verification compose-relay-1 node --input-type=module -" < scripts/deploy/sentry-verify.mjs`.
+   `ssh deploy@<box> "docker exec -i -e SENTRY_ENVIRONMENT=verification compose-relay-1 node --input-type=module -" < scripts/deploy/sentry-verify.mjs`.
    It shares the relay's image, environment, network namespace and egress, plants a slot-shaped hex
    run and TEST-NET addresses in the message and on every scope surface, and then dies of an
    uncaught exception. That is the real fatal path, ending in exit 1 within about 2 s. The relay
