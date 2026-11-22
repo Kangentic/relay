@@ -127,6 +127,10 @@ net.
 | `RELAY_PUBLIC_HOSTNAME` | `relay.kangentic.com` (the CNAME, so this also validates the CNAME independently of the region record) |
 | `RELAY_MAX_CONNECTIONS` | `4000` (must track the production `.env` value below) |
 
+The restart check needs no secret of its own. It reads the `production` environment's deployments
+and the workflow's own earlier runs with the run's `GITHUB_TOKEN`, which is why `monitor.yml`
+grants `deployments: read` and `actions: read`.
+
 ## Production `.env`
 
 Delivered to `/opt/relay/.env` by every deploy (see "How secrets reach the box"). Only the values
@@ -150,7 +154,7 @@ workflow.
 | `MAX_SESSION_MS` | `0` (default, unchanged) | Deliberately left disabled. A wall-clock cap tears down healthy long-lived pairings mid-use; the byte cap (`MAX_SESSION_BYTES`, unchanged) is the actual runaway-bill bound, and keepalive already reaps dead sockets. |
 | `ADMIN_ENABLED` | `true` | Serves the private dashboard at `/admin`. **The relay does not authenticate it** - Cloudflare Access, scoped to the `/admin*` path on the public hostname, is the gate. See "The `/admin` dashboard and its volume" below before turning this on. |
 | `METRICS_HISTORY_PATH` | `/var/lib/relay/history.ndjson` | The `relay_history` named volume's mount point. Must be absolute. Anywhere outside the volume is discarded by the next deploy. |
-| `SENTRY_DSN` | The `RELAY_SENTRY_DSN` secret | Crash and error reports to the `relay` project in the kangentic Sentry org, alongside `desktop` and `mobile`. Closes the gap where a crash-restart loop passed the monitor silently: `restart: unless-stopped` brings a crashed relay back and `/metricz` only asserts `uptimeSeconds > 0`. The relay still dies exactly as it would without it, after at most 2 s spent sending. Empty (the secret unset) is off. `SENTRY_ENVIRONMENT` stays at its default, `production`. See `docs/security-model.md`, "Crash reporting", for what an event carries. |
+| `SENTRY_DSN` | The `RELAY_SENTRY_DSN` secret | Crash and error reports to the `relay` project in the kangentic Sentry org, alongside `desktop` and `mobile`. This says *what* crashed. That a restart happened at all is the monitor's restart check, which does not depend on this being set: an OOM kill is a SIGKILL and never reaches Sentry (see "Relay restarted outside a deploy" below). The relay still dies exactly as it would without it, after at most 2 s spent sending. Empty (the secret unset) is off. `SENTRY_ENVIRONMENT` stays at its default, `production`. See `docs/security-model.md`, "Crash reporting", for what an event carries, and "Verifying crash reporting" below for the check to run after setting or rotating the secret. |
 | `CONNECTION_TRACE` | `true` | One timing line per connection at close, keyed by CF-Ray, for the edge-to-origin latency investigation in [`docs/latency.md`](../docs/latency.md). No slot id, no IP. About 20k lines a day in November 2026, so the relay service's log rotation in the compose file (20 MB x 5) holds about a week, and a relay recreate wipes it: export before a release (`docs/latency.md`, "Taking the after measurements") and read the export with `scripts/originLegStalls.mjs`. Remove the line from `deploy.yml` to stop. The dial correlation lines are separate and stay on when this goes off: once clients send `&dial=`, each dial adds one shorter line (`dial rejected` or `dial closed`, roughly 400 bytes against the trace's 600). With both on, that is about 20 MB a day at 20k dials, so the same rotation holds about five days rather than a week; with the trace off, the dial lines alone hold about twelve. `DIAL_LOG_MAX_PER_MIN` is left at its default of 600 here. Either way a relay recreate (every release) wipes the log, so correlating a client report only ever works for recent dials. |
 
 **The single most important non-`.env` value is `mem_limit: 1200m`** in
@@ -359,6 +363,68 @@ volume, rolled at 25 MiB and kept about two weeks:
 `docker compose -f infra/compose/docker-compose.prod.yml exec caddy cat /data/logs/access.log`.
 Both are filtered: no slot id, no request headers, no client IP.
 
+### Relay restarted outside a deploy
+
+`monitor.yml`'s restart check files an issue with this title when the relay process it reads
+started outside every `production` deployment. It cannot ask the box, so it asks the start time
+instead (`scripts/deploy/restart-check.mjs`):
+
+- A start inside a deployment's window, from its creation to its last status, is a deploy. A
+  rollback counts, since it recreates the container too.
+- A start an earlier run already judged passes, so each restart produces one issue, or one comment
+  on the open one, rather than a red run on every schedule until the next deploy.
+- Anything else is a crash, an OOM kill, a host reboot, or someone restarting the container by
+  hand. Docker runs with `live-restore`, so a daemon upgrade is not one of them.
+
+To tell which, on the box:
+
+```
+docker inspect compose-relay-1 --format '{{.Created}} {{.State.StartedAt}} {{.RestartCount}}'
+docker logs --timestamps compose-relay-1 2>&1 | tail -50
+sudo journalctl -k --since "-2 days" | grep -i -E 'oom|killed process'
+uptime -s
+```
+
+- **`RestartCount` above 0** means Docker's restart policy brought this container back: a deploy
+  creates a new container at 0.
+- **The container log** keeps the previous process's output across a policy restart (the
+  `json-file` driver writes one log per container, not per process). A crash leaves its stack as
+  the last lines before the restart. A Sentry `RELAY-*` issue carries the same crash.
+- **An OOM kill** leaves nothing in the relay's log and nothing in Sentry, because SIGKILL runs no
+  handler. The kernel log names it. This is the case the check exists for most.
+- **A host reboot** shows as `uptime -s` at about the relay's start.
+
+Close the issue once it is explained. A later restart comments on it while it is open and opens a
+new one once it is closed.
+
+## Verifying crash reporting
+
+A green deploy after setting `RELAY_SENTRY_DSN` proves only that the relay started. To prove that an
+event leaves the box, reaches the `relay` project, and carries nothing it should not, after the
+deploy has rolled:
+
+1. **The relay process initialized the SDK.** Its startup line says so:
+   `docker logs compose-relay-1 2>&1 | grep -m1 'crash reporting enabled'` on the box must print
+   `"environment":"production"`.
+2. **One real event.** From a checkout, pipe
+   [`scripts/deploy/sentry-verify.mjs`](../scripts/deploy/sentry-verify.mjs) into a second process
+   inside the serving container:
+   `ssh <box> "docker exec -i -e SENTRY_ENVIRONMENT=verification compose-relay-1 node --input-type=module -" < scripts/deploy/sentry-verify.mjs`.
+   It shares the relay's image, environment, network namespace and egress, plants a slot-shaped hex
+   run and TEST-NET addresses in the message and on every scope surface, and then dies of an
+   uncaught exception. That is the real fatal path, ending in exit 1 within about 2 s. The relay
+   process is never touched, and `verification` keeps the event out of the production environment.
+3. **The event, as Sentry stored it.** Find the issue by the nonce the script printed and read its
+   latest event's JSON in Sentry. It must carry no `request`, `user`, `contexts`, `extra`,
+   `breadcrumbs` or `server_name`, none of the canaries, and no IP address, **including the box's
+   own**, which Sentry's ingest sees on the connection. If Sentry recorded the box's address, turn
+   on the project's "Prevent Storing of IP Addresses" setting. Never widen the allowlist in
+   `src/crashReporting.ts` to make an event more useful. Then resolve the issue.
+
+What this does not prove: a crash inside the relay process itself. That path is the one
+`test/crashReporting.process.test.ts` drives in real child processes, and step 1 shows the relay
+process runs it with this DSN.
+
 ## Localizing a slow patch
 
 When clients report multi-second stalls, find the leg first. The full method, and what it found on
@@ -441,10 +507,11 @@ self-hosted application is the gate, scoped to the admin paths and never to the 
 
 **Scoping this wrong is an immediate outage.** The relay serves the WebSocket upgrade on `/` on
 that same hostname, so an Access application covering the bare host would put a login page in
-front of every client. `monitor.yml` runs `scripts/deploy/synthetic-pair.mjs` every 30 minutes,
-which opens two real sockets to one slot and asserts a byte-identical round trip through Caddy and
-Cloudflare, so it catches exactly this failure. Watch that run after any Access change. To check
-by hand:
+front of every client. `monitor.yml` runs `scripts/deploy/synthetic-pair.mjs`, which opens two
+real sockets to one slot and asserts a byte-identical round trip through Caddy and Cloudflare, so
+it catches exactly this failure. It is scheduled every 30 minutes, but GitHub ran it every 4 to 9
+hours in November 2026, so after any Access change run it yourself (`gh workflow run monitor.yml`)
+rather than waiting for the schedule. To check by hand:
 
 ```
 RELAY_URL=wss://relay.kangentic.com node scripts/deploy/synthetic-pair.mjs

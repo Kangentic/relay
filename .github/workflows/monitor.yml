@@ -13,9 +13,17 @@ name: Monitor
 # separate, unprotected `monitoring` environment.
 #
 # Honest limitation: scheduled workflows are best-effort and can run late,
-# and are auto-disabled after 60 days of repository inactivity. The
-# dead-man ping at the end covers the case where GitHub itself is down and
-# this workflow silently never runs at all.
+# and are auto-disabled after 60 days of repository inactivity. Late is
+# the norm, not the exception: in November 2026 this "every 30 minutes"
+# schedule ran every 4 to 9 hours. Nothing below may assume the interval.
+# The dead-man ping covers the case where GitHub itself is down and this
+# workflow silently never runs at all.
+#
+# The restart check exists because /metricz alone cannot see a crash:
+# `restart: unless-stopped` brings a crashed relay back, and a process up for
+# 30 seconds reads as healthy. It reports a process start that no production
+# deployment explains, once per restart, whatever the cadence. See
+# scripts/deploy/restart-check.mjs.
 on:
   schedule:
     - cron: '*/30 * * * *'
@@ -23,10 +31,13 @@ on:
 
 # Naming any scope zeroes every unnamed one, so `contents: read` has to be
 # explicit here for the checkout below - it currently succeeds only because
-# this repo is public.
+# this repo is public. The restart check reads the production deployments
+# (`deployments`) and this workflow's own earlier runs (`actions`).
 permissions:
   contents: read
   issues: write
+  actions: read
+  deployments: read
 
 jobs:
   monitor:
@@ -37,6 +48,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Check /metricz
+        id: metricz
         env:
           HOSTNAME: ${{ vars.RELAY_PUBLIC_HOSTNAME }}
           TOKEN: ${{ secrets.RELAY_METRICS_TOKEN }}
@@ -47,6 +59,23 @@ jobs:
           uptime="$(echo "$body" | jq '.uptimeSeconds')"
           active="$(echo "$body" | jq '.activeConnections')"
           rss="$(echo "$body" | jq '.rssBytes')"
+          # A missing field reads as "null", which a numeric `[` test errors
+          # on inside an `if`. That counts as false, so it passed silently.
+          require_whole_number() {
+            case "$2" in
+              '' | *[!0-9]*)
+                echo "$1 is not a whole number" >&2
+                exit 1
+                ;;
+            esac
+          }
+          require_whole_number uptimeSeconds "$uptime"
+          # The process start, for the restart check. Taken here, at the read,
+          # because that step runs a minute or two later; and before the
+          # assertions below, so a tripped RSS check still gets it judged.
+          echo "started_at=$(( $(date +%s) - uptime ))" >> "$GITHUB_OUTPUT"
+          require_whole_number activeConnections "$active"
+          require_whole_number rssBytes "$rss"
           if [ "$uptime" -le 0 ]; then
             echo "uptimeSeconds is not positive" >&2
             exit 1
@@ -83,11 +112,13 @@ jobs:
       # without failing the run (slow dials are the symptom docs/latency.md
       # chases, but a single one is noise, not an outage).
       - name: Synthetic pairing probe
+        id: probe
         env:
           RELAY_URL: wss://${{ vars.RELAY_PUBLIC_HOSTNAME }}
         run: node scripts/deploy/synthetic-pair.mjs
 
       - name: Ping dead-man URL
+        id: ping
         if: success()
         env:
           PING_URL: ${{ secrets.HEALTHCHECKS_PING_URL }}
@@ -98,24 +129,80 @@ jobs:
           fi
           curl -sf "$PING_URL" > /dev/null
 
+      # After the ping on purpose: the ping means "the monitor ran and the
+      # product works now", and a restart the relay has already recovered from
+      # is alerted by its own issue below, not by a missing ping. It runs even
+      # when the probe failed, as long as /metricz gave an uptime. The step
+      # name is a contract: a later run finds this run's verdict by it
+      # (RESTART_CHECK_STEP_NAME in the script; test/restartCheck.test.ts).
+      - name: Restart check
+        id: restart
+        if: ${{ !cancelled() && steps.metricz.outputs.started_at != '' }}
+        env:
+          STARTED_AT: ${{ steps.metricz.outputs.started_at }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/deploy/restart-check.mjs
+
+      # An unexplained restart gets its own issue, and a comment on it when one
+      # is already open, since each restart is a separate event. Every other
+      # failure, including a restart check that could not decide, files the
+      # generic issue once while it stays open. A probe that did not succeed
+      # covers every step before it, each of which would have skipped it.
       - name: File an issue on failure
         if: failure()
         uses: actions/github-script@v7
+        env:
+          UNEXPLAINED_RESTART: ${{ steps.restart.outputs.unexplained_restart }}
+          RESTART_VERDICT: ${{ steps.restart.outputs.verdict }}
+          METRICZ_OUTCOME: ${{ steps.metricz.outcome }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+          PING_OUTCOME: ${{ steps.ping.outcome }}
         with:
           script: |
-            const title = 'Relay monitoring check failed';
-            const body = `The scheduled monitor workflow failed at ${new Date().toISOString()}. See the run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const existing = await github.rest.issues.listForRepo({
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const unexplainedRestart = process.env.UNEXPLAINED_RESTART === 'true';
+            const otherFailure =
+              !unexplainedRestart ||
+              process.env.METRICZ_OUTCOME !== 'success' ||
+              process.env.PROBE_OUTCOME !== 'success' ||
+              process.env.PING_OUTCOME === 'failure';
+            const openIssues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
               labels: 'monitoring',
+              per_page: 100,
             });
-            if (existing.data.some((issue) => issue.title === title)) return;
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title,
-              body,
-              labels: ['monitoring'],
-            });
+            async function report(title, body, commentWhenOpen) {
+              const existing = openIssues.data.find((issue) => issue.title === title);
+              if (existing === undefined) {
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title,
+                  body,
+                  labels: ['monitoring'],
+                });
+              } else if (commentWhenOpen) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existing.number,
+                  body,
+                });
+              }
+            }
+            if (unexplainedRestart) {
+              await report(
+                'Relay restarted outside a deploy',
+                `The monitor found a relay ${process.env.RESTART_VERDICT}. See the run: ${runUrl}`,
+                true,
+              );
+            }
+            if (otherFailure) {
+              await report(
+                'Relay monitoring check failed',
+                `The scheduled monitor workflow failed at ${new Date().toISOString()}. See the run: ${runUrl}`,
+                false,
+              );
+            }

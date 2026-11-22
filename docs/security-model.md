@@ -334,7 +334,8 @@ in the log only. A request target that does not parse is answered with 400 befor
 upgrade handler's catch. Only the fatal handler is uncapped, because a process can only die once.
 
 **It does not change how the relay dies.** Docker's `restart: unless-stopped` and the monitor's
-uptime check both depend on a crashed relay actually exiting. The SDK's uncaught-exception handler
+restart check both depend on a crashed relay actually exiting: the check sees a crash only as a
+process that started outside a deploy. The SDK's uncaught-exception handler
 reports, waits at most 2 seconds for the report to send, and exits 1, which is the code Node's own
 handler uses. The SDK's unhandled-rejection integration is deliberately not installed: in its
 default mode it kept a relay alive after a rejection that kills one without a DSN, and in strict
