@@ -18,6 +18,7 @@
  * 5. An API failure fails closed without the restart output, and the token never reaches the log.
  * 6. The workflow wiring: the token scopes, the step name a later run looks the verdict up by, the
  *    step order, and the outputs the issue step reads. Drift there disables the check silently.
+ *    The issue step's own script is run against a stub client too, since it only runs on a failure.
  *
  * Driven through its CLI against a stub GitHub API, like test/originLegStalls.test.ts and for the
  * same reason (`scripts/` is outside the tsconfig `include`). The child is spawned asynchronously,
@@ -365,6 +366,78 @@ describe('monitor.yml wiring', () => {
     const recordIndex = metriczStep.indexOf('echo "started_at=');
     expect(recordIndex).toBeGreaterThan(-1);
     expect(recordIndex).toBeLessThan(metriczStep.indexOf('if [ "$uptime" -le 0 ]'));
+  });
+
+  it('files the restart issue apart from the generic one, and comments when it is already open', async () => {
+    // The step's own script, run against a stub client: it only ever runs on a failure, so a broken
+    // branch in it would otherwise surface only during the incident it exists to report.
+    const issueStep = steps[stepIndex('- name: File an issue on failure')] ?? '';
+    const scriptLines = issueStep.split('\n');
+    const scriptStart = scriptLines.findIndex((line) => line === '          script: |');
+    expect(scriptStart).toBeGreaterThan(-1);
+    const body = scriptLines
+      .slice(scriptStart + 1)
+      .filter((line) => line.startsWith(' '.repeat(12)) || line.trim() === '')
+      .map((line) => line.slice(12))
+      .join('\n');
+    type IssueCall = { readonly method: string; readonly title?: string; readonly issueNumber?: number; readonly body: string };
+    type StepScript = (github: unknown, context: unknown, process: unknown) => Promise<void>;
+    const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (
+      ...parameters: string[]
+    ) => StepScript;
+    const stepScript = new AsyncFunction('github', 'context', 'process', body);
+    const runStep = async (
+      environment: Readonly<Record<string, string>>,
+      openIssues: ReadonlyArray<{ readonly number: number; readonly title: string }>,
+    ): Promise<IssueCall[]> => {
+      const calls: IssueCall[] = [];
+      const github = {
+        rest: {
+          issues: {
+            listForRepo: async (parameters: { readonly labels: string; readonly state: string }) => {
+              expect(parameters).toMatchObject({ labels: 'monitoring', state: 'open' });
+              return { data: openIssues };
+            },
+            create: async (parameters: { readonly title: string; readonly body: string }) => {
+              calls.push({ method: 'create', title: parameters.title, body: parameters.body });
+            },
+            createComment: async (parameters: { readonly issue_number: number; readonly body: string }) => {
+              calls.push({ method: 'comment', issueNumber: parameters.issue_number, body: parameters.body });
+            },
+          },
+        },
+      };
+      const context = { serverUrl: 'https://github.example', repo: { owner: 'example', repo: 'relay' }, runId: 42 };
+      await stepScript(github, context, { env: environment });
+      return calls;
+    };
+    const healthyOtherwise = { METRICZ_OUTCOME: 'success', PROBE_OUTCOME: 'success', PING_OUTCOME: 'success' };
+    const restartOutputs = { UNEXPLAINED_RESTART: 'true', RESTART_VERDICT: 'process started 2026-11-10T05:00:00Z, outside' };
+
+    const restartOnly = await runStep({ ...healthyOtherwise, ...restartOutputs }, []);
+    expect(restartOnly).toEqual([
+      expect.objectContaining({ method: 'create', title: 'Relay restarted outside a deploy' }),
+    ]);
+    expect(restartOnly[0]?.body).toContain('process started 2026-11-10T05:00:00Z');
+    expect(restartOnly[0]?.body).toContain('https://github.example/example/relay/actions/runs/42');
+
+    const restartWhileOpen = await runStep({ ...healthyOtherwise, ...restartOutputs }, [
+      { number: 7, title: 'Relay restarted outside a deploy' },
+    ]);
+    expect(restartWhileOpen).toEqual([expect.objectContaining({ method: 'comment', issueNumber: 7 })]);
+
+    const probeFailed = await runStep({ ...healthyOtherwise, PROBE_OUTCOME: 'failure' }, []);
+    expect(probeFailed).toEqual([expect.objectContaining({ method: 'create', title: 'Relay monitoring check failed' })]);
+
+    const both = await runStep({ ...healthyOtherwise, ...restartOutputs, PROBE_OUTCOME: 'failure' }, [
+      { number: 8, title: 'Relay monitoring check failed' },
+    ]);
+    // The generic issue is filed once while open; the restart is its own issue.
+    expect(both).toEqual([expect.objectContaining({ method: 'create', title: 'Relay restarted outside a deploy' })]);
+
+    // A check that could not decide writes no restart output, so it is an ordinary monitor failure.
+    const undecided = await runStep(healthyOtherwise, []);
+    expect(undecided).toEqual([expect.objectContaining({ method: 'create', title: 'Relay monitoring check failed' })]);
   });
 
   it('runs after the dead-man ping and before the issue step, which reads its outputs', () => {
