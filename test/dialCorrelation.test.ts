@@ -1,4 +1,4 @@
-import { connect as connectTcp } from 'node:net';
+import { connect as connectTcp, type Socket } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket as NodeWebSocket } from 'ws';
 import type { AdmissionDecision, AdmissionPolicy } from '../src/admission.js';
@@ -98,6 +98,51 @@ function attemptAbortedUpgrade(port: number, query: string): Promise<void> {
     socket.once('error', reject);
     socket.once('close', () => resolve());
     socket.once('data', () => socket.destroy());
+  });
+}
+
+/** The relay's unmasked echo of a client's 1000 close frame. */
+const ECHOED_NORMAL_CLOSE = Buffer.from([0x88, 0x02, 0x03, 0xe8]);
+
+/**
+ * Opens a raw WebSocket, sends its own close frame (1000), and then stalls:
+ * it never sends FIN, so once the relay echoes the close it holds a CLOSING
+ * socket whose client started the close and never finishes it. Resolves when
+ * the echo arrives, which is the moment the relay's half is CLOSING.
+ */
+function openThenStallMidClose(port: number, query: string): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    let received = Buffer.alloc(0);
+    let closeFrameSent = false;
+    // allowHalfOpen stops Node answering the relay's FIN with one of its own.
+    const socket = connectTcp({ port, host: '127.0.0.1', allowHalfOpen: true }, () => {
+      socket.write(
+        `GET ${query} HTTP/1.1\r\n` +
+          `Host: 127.0.0.1:${port}\r\n` +
+          'Upgrade: websocket\r\n' +
+          'Connection: Upgrade\r\n' +
+          'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
+          'Sec-WebSocket-Version: 13\r\n' +
+          '\r\n',
+      );
+    });
+    socket.once('error', reject);
+    socket.on('data', (chunk: Buffer) => {
+      received = Buffer.concat([received, chunk]);
+      if (!closeFrameSent) {
+        const headerEnd = received.indexOf('\r\n\r\n');
+        if (headerEnd === -1) return;
+        if (!received.toString('latin1', 0, headerEnd).startsWith('HTTP/1.1 101')) {
+          reject(new Error('upgrade refused'));
+          return;
+        }
+        received = received.subarray(headerEnd + 4);
+        closeFrameSent = true;
+        // A client frame must be masked; an all-zero mask leaves the 1000 payload as is.
+        socket.write(Buffer.from([0x88, 0x82, 0x00, 0x00, 0x00, 0x00, 0x03, 0xe8]));
+      }
+      if (received.includes(ECHOED_NORMAL_CLOSE)) resolve(socket);
+    });
   });
 }
 
@@ -278,6 +323,28 @@ describe('the relay-side teardown cause', () => {
     expect(second.conn.teardownCause).toBe('peer_closed');
   });
 
+  it('names nothing on a survivor whose own client was already closing when its partner left', () => {
+    const harness = createSlotTableHarness();
+    const first = harness.connect(SLOT);
+    const second = harness.connect(SLOT);
+    // The survivor's client sent its own close frame first, and ws holds the
+    // socket CLOSING until its 'close' event: the relay ends nothing here.
+    second.socket.readyState = READY_STATE.CLOSING;
+    first.socket.readyState = READY_STATE.CLOSED;
+    first.socket.emit('close', 1000);
+    expect(second.socket.close).not.toHaveBeenCalled();
+    expect(second.conn.teardownCause).toBeNull();
+  });
+
+  it('names nothing on a parked peer whose own client was already closing when its park timer fired', () => {
+    vi.useFakeTimers();
+    const parked = createSlotTableHarness({}, 2, 1_000).connect(SLOT);
+    parked.socket.readyState = READY_STATE.CLOSING;
+    vi.advanceTimersByTime(1_000);
+    expect(parked.socket.close).not.toHaveBeenCalled();
+    expect(parked.conn.teardownCause).toBeNull();
+  });
+
   it('names socket_error on a socket the relay terminated after an error', () => {
     const parked = createSlotTableHarness().connect(SLOT);
     parked.socket.emit('error', new Error('read ECONNRESET'));
@@ -380,6 +447,40 @@ describe('dial lines over a live relay', () => {
 
     await waitFor(() => linesWithMessage(lines, 'dial closed').length === 1);
     expect(onlyLine(lines, 'dial closed')).toMatchObject({ teardownCause: 'shutting_down', paired: false });
+  });
+
+  it('names shutting_down on both halves of a pair the relay closed on its way out', async () => {
+    const lines: CapturedLine[] = [];
+    relay = await startTestRelay({}, { logger: capturingLogger(lines) });
+    await openClient(relay.url, dialQuery(SLOT, DESKTOP_DIAL_ID));
+    await openClient(relay.url, dialQuery(SLOT, PHONE_DIAL_ID));
+    await waitFor(() => relay?.metrics.snapshot().pairedSlots === 1);
+
+    await relay.close();
+    relay = undefined;
+
+    await waitFor(() => linesWithMessage(lines, 'dial closed').length === 2);
+    // Unless every half is marked before the first close event fires, the
+    // second half reads its partner's peer_closed instead.
+    for (const line of linesWithMessage(lines, 'dial closed')) {
+      expect(line.fields).toMatchObject({ paired: true, teardownCause: 'shutting_down' });
+    }
+  });
+
+  it('names nothing on a connection whose own client was mid-close when shutdown force-ended it', async () => {
+    const lines: CapturedLine[] = [];
+    relay = await startTestRelay({ shutdownGraceMs: 50 }, { logger: capturingLogger(lines) });
+    const stalled = await openThenStallMidClose(Number(new URL(relay.url).port), dialQuery(SLOT, DESKTOP_DIAL_ID));
+
+    // The shutdown sweep skips it, since it is CLOSING rather than OPEN, and
+    // the grace timer's terminate() is what finally ends it. Its client chose
+    // to close, so the relay records no cause of its own.
+    await relay.close();
+    relay = undefined;
+    stalled.destroy();
+
+    await waitFor(() => linesWithMessage(lines, 'dial closed').length === 1);
+    expect(onlyLine(lines, 'dial closed')).toMatchObject({ closeCode: 1000, teardownCause: null });
   });
 
   it('logs a rate-limited dial, and the dial id itself spends no budget and cannot reject', async () => {

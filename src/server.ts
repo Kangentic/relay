@@ -507,11 +507,13 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
           conn.socket.close(1001, 'shutting_down');
         }
 
+        // Records no cause, on purpose. The sweep above named every half the
+        // relay closed, and no Conn can join after it (draining refuses every
+        // upgrade still in flight). So a half that reaches this unnamed was
+        // already CLOSING when shutdown began, which means its own client
+        // started the close, and its cause stays null like any client close.
         const forceTimer = setTimeout(() => {
-          for (const conn of liveConnections) {
-            recordTeardownCause(conn, 'shutting_down');
-            conn.socket.terminate();
-          }
+          for (const conn of liveConnections) conn.socket.terminate();
         }, config.shutdownGraceMs);
         forceTimer.unref?.();
 
