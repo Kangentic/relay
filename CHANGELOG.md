@@ -35,9 +35,12 @@ All notable changes to this project are documented in this file. The format is b
   such as the absolute form `GET http://localhost:99999/ HTTP/1.1` or an unclosed IPv6 bracket,
   threw inside the synchronous HTTP request listener, which is an uncaught exception, so any client
   that reached the relay directly could end the process (Docker restarted it). On the upgrade path
-  the same target reached the "upgrade handler failed" catch. Both now answer 400. A proxy that
-  forwards requests in origin form, as Caddy does, most likely kept the hosted instance out of
-  reach; that was not verified.
+  the same target reached the "upgrade handler failed" catch. Both now answer 400. Measured
+  against the 0.4.2 image: one direct request ended the process, while behind a plain Caddy 2.8.4
+  `reverse_proxy` the relay survived, because Caddy forwards the target in origin form and rejects
+  the unclosed bracket itself. The hosted origin accepts only Cloudflare's ranges and routes by
+  hostname, so it was most likely never reachable this way; a self-hosted relay exposed directly
+  was.
 
 ## [0.4.2] - 2026-11-12
 

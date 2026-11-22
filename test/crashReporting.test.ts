@@ -236,7 +236,7 @@ describe('the SDK stays behind the DSN check, mechanically', () => {
       /^import type \{[^}]*\} from '@sentry\/node';$/,
       /^type SentryModule = typeof import\('@sentry\/node'\);$/,
       // The one runtime load, inside startCrashReporting after the DSN check.
-      /^\s+sentry = await import\('@sentry\/node'\);$/,
+      /^\s+const sentry: SentryModule = await import\('@sentry\/node'\);$/,
     ];
     for (const line of lines) {
       expect(allowed.some((pattern) => pattern.test(line)), `unexpected SDK reference: ${line}`).toBe(true);

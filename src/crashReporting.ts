@@ -216,8 +216,11 @@ export function buildSentryOptions(
  * imported (importing it has side effects of its own), so there is no handler, no client and no
  * network connection, rather than an initialized client told to stay quiet.
  *
- * A failure to load or initialize the SDK is logged and the relay runs on without it: the relay's
- * job is forwarding bytes, and an optional reporter must not be what stops it serving.
+ * With a DSN configured, an SDK that fails to load or initialize rejects, and the relay does not
+ * start, the same way a malformed DSN fails `loadConfig`. Running on without it would leave one log
+ * line as the only trace of a relay that silently reports nothing, which is the failure this module
+ * exists to remove; failing startup instead fails the deploy's health gate, which rolls back. Init
+ * does no network I/O, so this can only be a broken install, never a Sentry outage.
  */
 export async function startCrashReporting(
   config: Pick<Config, 'sentryDsn' | 'sentryEnvironment'>,
@@ -225,16 +228,8 @@ export async function startCrashReporting(
 ): Promise<CrashReporter | null> {
   if (config.sentryDsn === null) return null;
 
-  let sentry: SentryModule;
-  try {
-    sentry = await import('@sentry/node');
-    sentry.init(buildSentryOptions(sentry, config.sentryDsn, config.sentryEnvironment, options.transport));
-  } catch (error: unknown) {
-    options.logger.error('crash reporting failed to start, continuing without it', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
+  const sentry: SentryModule = await import('@sentry/node');
+  sentry.init(buildSentryOptions(sentry, config.sentryDsn, config.sentryEnvironment, options.transport));
 
   const shouldCapture = createCaptureLimiter(options.now ?? Date.now);
   options.logger.info('crash reporting enabled', { environment: config.sentryEnvironment });
