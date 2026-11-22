@@ -12,7 +12,12 @@ project with its own board, worktrees, and skills - not a subdirectory of the de
 ## Tech Stack
 
 - **Language:** TypeScript, strict mode, ESM (`"type": "module"`)
-- **Runtime dependency:** `ws` only (production)
+- **Runtime dependencies:** `ws`, and `@sentry/node` for crash reporting (production). The SDK
+  was added deliberately on 2026-11-21, by the owner's decision, over a hand-rolled envelope POST:
+  for supportability, and so the reporting path tracks upstream fixes rather than depending on a
+  hand-written stack parser for grouping quality. It is loaded only when `SENTRY_DSN` is set (see
+  "Crash reporting" under Architecture). Any further runtime dependency is a decision to escalate,
+  not a convenience.
 - **Dev dependency:** `@kangentic/protocol` (used ONLY by the integration test, never at
   runtime by `src/**` - see "The blindness guarantee" below). It is pinned to a published
   `^x.y.z`; because the relay is blind, it almost never needs to track protocol changes (only
@@ -25,14 +30,18 @@ project with its own board, worktrees, and skills - not a subdirectory of the de
 - **Build:** `tsc` (no bundler)
 - **Tests:** Vitest, two workspace projects (`unit`, `integration`)
 - **Deploy:** Docker (multi-stage, non-root runtime), docker-compose, GitHub Actions CI
-- **Node:** pinned 22 (`.node-version`, `.nvmrc`); `engines.node >=20 <23`, made a hard install
-  failure by `.npmrc`'s `engine-strict=true` (see "Node 22 is required" under Testing)
+- **Node:** pinned 22 (`.node-version`, `.nvmrc`); `engines.node ^20.19.0 || ^22.13.0`, made a
+  hard install failure by `.npmrc`'s `engine-strict=true` (see "Node 22 is required" under
+  Testing). The range is derived, not chosen: it is the intersection of every installed package's
+  own range, and `test/engines.test.ts` fails when a dependency bump narrows it further
 
 ## Project Structure
 
 ```
 src/
-  index.ts            # entry: load config, build relay, install SIGTERM/SIGINT, listen
+  index.ts            # entry: calls main() and turns a startup failure into exit 1
+  main.ts             # startup order: config, crash reporting, relay, SIGTERM/SIGINT, listen
+  crashReporting.ts   # DSN-gated Sentry: dynamic import, pinned options, allowlist scrub, per-site cap
   config.ts           # env-var parsing into a frozen Config; fails fast on bad values
   types.ts            # Conn, SlotState, Config, decision types
   closeCodes.ts        # app-level WS close codes (4000-4999) + RejectReason union
@@ -54,6 +63,8 @@ test/
   helpers/            # relayHarness.ts (real relay on an ephemeral port), wsClient.ts
   integration.protocol-handshake.test.ts   # real @kangentic/protocol handshake through the relay
   blindness.test.ts   # asserts src/** never imports @kangentic/protocol at runtime
+  fixtures/           # child processes for crashReporting.process.test.ts (crash, scrub-over-the-wire)
+  engines.test.ts     # engines.node stays inside every installed package's own Node range
   *.test.ts           # one file per module, matching src/ 1:1
 scripts/
   loadTest.mjs        # load-test harness: N slot pairs x M frames x S bytes against a dedicated instance
@@ -162,6 +173,34 @@ socket's internal handle, which is not public API; `test/keepalive.test.ts` read
 socket so a Node or ws upgrade that moves it fails the build. Do not drop that test or "simplify"
 the check to `bufferedAmount` alone: measured on Linux, `bufferedAmount` stays flat under Node's
 batched `writev` and the check then spares nothing (`docs/latency.md`).
+
+### Crash reporting (DSN-gated, structurally off)
+
+`SENTRY_DSN` reports process crashes and a closed list of operator-actionable errors to Sentry
+(`src/crashReporting.ts`). Every invariant here was measured against `@sentry/node` 11.16.0, and
+each has a test that fails when it breaks:
+
+- **Off is structural.** No DSN, no `import('@sentry/node')`: no handler, no client, no
+  connection. Only `src/crashReporting.ts` may name the SDK, as `import type` plus the one dynamic
+  import below the DSN check (`test/crashReporting.test.ts`, `crashReporting.offByDefault.test.ts`).
+- **The relay dies the same way with or without it.** Docker's restart and the monitor's uptime
+  check depend on a crashed process exiting. Only `onUncaughtExceptionIntegration`, at its default
+  options (which flush for at most `shutdownTimeout`, 2 s, then exit 1). **Never add
+  `onUnhandledRejectionIntegration`**: in its default `warn` mode a relay with a DSN survived an
+  unhandled rejection, and in `strict` mode it still swallowed an `AbortError`. Without it, Node's
+  own `throw` mode routes every rejection into the uncaught handler. **Nothing in `src/` may
+  register a process-level `uncaughtException` / `unhandledRejection` listener**: the SDK's
+  `exitEvenIfOtherHandlersAreRegistered` defaults to false, so it exits only while it is the sole
+  listener. `test/crashReporting.process.test.ts` compares real deaths in child processes.
+- **The SDK runs with almost nothing on.** `defaultIntegrations: false` (the defaults instrument
+  HTTP, which would read `?slot=` and the client IP off the upgrade path),
+  `enableRuntimeChannelInjection: false` (else the client installs a module loader hook that
+  rewrites dependency source), and `dataCollection` with every category off (SDK 11 removed
+  `sendDefaultPii`). No `--import` instrument hook in the Dockerfile or start script.
+- **`beforeSend` builds a new event from an allowlist**, never a filtered copy, and masks
+  slot-shaped hex and IPs in the message. The process test checks every byte the ingest receives.
+- **Capture sites are a closed list, each capped at once an hour.** Never capture anything a
+  client can trigger per connection (socket errors stay at `debug`, webhook failures at `warn`).
 
 ### Open-core admission seam
 

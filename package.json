@@ -6,7 +6,7 @@
   "license": "AGPL-3.0-only",
   "private": true,
   "engines": {
-    "node": ">=20 <23"
+    "node": "^20.19.0 || ^22.13.0"
   },
   "repository": {
     "type": "git",
@@ -35,15 +35,18 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@sentry/node": "^11.16.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@kangentic/protocol": "^0.1.1",
     "@types/node": "^22.10.0",
+    "@types/semver": "^7.8.0",
     "@types/ws": "^8.5.13",
     "@typescript-eslint/eslint-plugin": "^8.18.0",
     "@typescript-eslint/parser": "^8.18.0",
     "eslint": "^9.17.0",
+    "semver": "^7.8.6",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

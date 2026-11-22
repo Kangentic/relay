@@ -5,6 +5,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { Config, Conn } from './types.js';
 import { millisecondsSinceUpgrade, startConnectionTrace, type ConnectionTrace } from './connectionTrace.js';
 import { createLogger, type Logger } from './logging.js';
+import type { CrashReporter } from './crashReporting.js';
 import {
   createMetrics,
   handleMetricsRequest,
@@ -32,6 +33,8 @@ export interface RelayDeps {
   readonly logger?: Logger;
   readonly metrics?: Metrics;
   readonly historyRecorder?: HistoryRecorder;
+  /** Null or absent when SENTRY_DSN is unset, which is the default: nothing is reported. */
+  readonly crashReporter?: CrashReporter | null;
 }
 
 export interface Relay {
@@ -57,6 +60,21 @@ function destroySocket(socket: Socket, statusCode: number): void {
 }
 
 /**
+ * The request target as a URL, or null when it does not parse. The target is the client's to
+ * choose, including absolute form (`GET http://localhost:99999/ HTTP/1.1`), and `new URL` throws on
+ * a bad one. Unguarded, that throw inside the synchronous request listener was an uncaught
+ * exception, so a single request from anyone stopped the process; on the upgrade path it reached
+ * the "upgrade handler failed" catch, a stranger-triggerable error report.
+ */
+function parseRequestTarget(rawTarget: string | undefined): URL | null {
+  try {
+    return new URL(rawTarget ?? '/', 'http://localhost');
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Builds the relay: one HTTP server handles /healthz, /readyz, /metrics,
  * /metricz, a static splash page at /, and the WebSocket upgrade. All
  * admission work (slot format, rate limits, connection caps, the pluggable
@@ -68,6 +86,7 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
   const logger = deps.logger ?? createLogger(config);
   const metrics = deps.metrics ?? createMetrics();
   const admissionPolicy = deps.admissionPolicy ?? allowAllPolicy;
+  const crashReporter = deps.crashReporter ?? null;
 
   const connectionCaps = new ConnectionCaps(config.maxConnections, config.maxConnectionsPerIp);
   const slotConnectionCaps = new SlotConnectionCaps(config.maxConnectionsPerSlot);
@@ -134,6 +153,7 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
           historyFilePath: config.metricsHistoryPath,
           intervalMs: config.metricsHistoryIntervalMs,
           sampleConnections,
+          crashReporter,
         })
       : null);
 
@@ -166,7 +186,11 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
   }
 
   function handleHttpRequest(request: IncomingMessage, response: ServerResponse): void {
-    const url = new URL(request.url ?? '/', 'http://localhost');
+    const url = parseRequestTarget(request.url);
+    if (url === null) {
+      response.writeHead(400).end();
+      return;
+    }
     if (url.pathname === '/healthz') {
       handleHealthzRequest(request, response);
       return;
@@ -205,6 +229,7 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
           logger.error('admin data request failed', {
             error: error instanceof Error ? error.message : String(error),
           });
+          crashReporter?.capture('admin_data_request', error);
           if (!response.headersSent) response.writeHead(500).end();
         },
       );
@@ -269,7 +294,11 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
     // the guards. A rejected upgrade simply drops its trace unlogged.
     const trace =
       socketAcceptedAt === null ? null : startConnectionTrace(request.headers['cf-ray'], socketAcceptedAt.get(socket));
-    const url = new URL(request.url ?? '/', 'http://localhost');
+    const url = parseRequestTarget(request.url);
+    if (url === null) {
+      destroySocket(socket, 400);
+      return;
+    }
     if (url.pathname !== config.wsPath) {
       destroySocket(socket, 404);
       return;
@@ -391,6 +420,8 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
   httpServer.on('upgrade', (request, socket, head) => {
     handleUpgrade(request, socket as Socket, head).catch((error: unknown) => {
       logger.error('upgrade handler failed', { error: error instanceof Error ? error.message : String(error) });
+      // Capped per site: a custom admission policy that throws reaches this once per connection.
+      crashReporter?.capture('upgrade_handler', error);
       destroySocket(socket as Socket, 503);
     });
   });

@@ -1,6 +1,7 @@
 import { connect as connectTcp } from 'node:net';
 import { describe, it, expect } from 'vitest';
 import { WebSocket as NodeWebSocket } from 'ws';
+import { recordingCrashReporter, type RecordedCapture } from './helpers/recordingCrashReporter.js';
 import { startTestRelay } from './helpers/relayHarness.js';
 import { connectTestClient } from './helpers/wsClient.js';
 import { CLOSE_CODE } from '../src/closeCodes.js';
@@ -81,6 +82,31 @@ function upgradeAndAwaitClose(relayUrl: string, slotId: string): Promise<number>
     socket.once('error', () => undefined);
   });
 }
+
+/**
+ * Writes one raw request and resolves with the status line the server answered, or an empty
+ * string if it closed without answering. Raw because the targets under test are ones no HTTP
+ * client library will send.
+ */
+function sendRawRequest(port: number, rawRequest: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connectTcp(port, '127.0.0.1', () => socket.write(rawRequest));
+    let received = '';
+    socket.on('data', (chunk: Buffer) => {
+      received += chunk.toString('latin1');
+      if (received.includes('\r\n')) socket.destroy();
+    });
+    socket.once('error', reject);
+    socket.once('close', () => resolve(received.split('\r\n')[0] ?? ''));
+  });
+}
+
+const UPGRADE_HEADERS =
+  'Host: 127.0.0.1\r\n' +
+  'Connection: Upgrade\r\n' +
+  'Upgrade: websocket\r\n' +
+  'Sec-WebSocket-Version: 13\r\n' +
+  'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n';
 
 /** A logger that captures error-level messages so a test can assert none were emitted. */
 function recordingLogger(errorMessages: string[]): Logger {
@@ -293,6 +319,72 @@ describe('reservations survive an upgrade that never becomes a connection', () =
       // The load-bearing half: a deny the wire cannot express is still a
       // deny, never an escaped exception from the upgrade handler.
       expect(loggedErrors).toEqual([]);
+    } finally {
+      await relay.close();
+    }
+  });
+});
+
+describe('request targets that do not parse', () => {
+  // Absolute form is the client's to send, and `new URL` throws on a port out of range or an
+  // unclosed IPv6 bracket. Before the guard, the plain-HTTP throw happened inside the synchronous
+  // request listener: an uncaught exception, so one request from anyone ended the relay process
+  // (in this suite, an unhandled error in the Vitest worker). On the upgrade path the same throw
+  // reached the "upgrade handler failed" catch, which would have been a stranger-triggerable report.
+  const UNPARSEABLE_TARGETS = ['http://localhost:99999/', 'http://[::1/'];
+
+  it.each(UNPARSEABLE_TARGETS)('answers %s with 400 on both paths and keeps serving', async (target) => {
+    const loggedErrors: string[] = [];
+    const captures: RecordedCapture[] = [];
+    const relay = await startTestRelay(
+      {},
+      { logger: recordingLogger(loggedErrors), crashReporter: recordingCrashReporter(captures) },
+    );
+    try {
+      const port = Number(new URL(relay.url).port);
+      expect(await sendRawRequest(port, `GET ${target} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n`)).toBe(
+        'HTTP/1.1 400 Bad Request',
+      );
+      expect(await sendRawRequest(port, `GET ${target} HTTP/1.1\r\n${UPGRADE_HEADERS}\r\n`)).toBe(
+        'HTTP/1.1 400 Bad Request',
+      );
+
+      expect((await fetch(`http://127.0.0.1:${port}/healthz`)).status).toBe(200);
+      // A client's malformed request is not a relay error: nothing logged, nothing reported.
+      expect(loggedErrors).toEqual([]);
+      expect(captures).toEqual([]);
+    } finally {
+      await relay.close();
+    }
+  });
+});
+
+describe('the upgrade handler crash report', () => {
+  it('hands the thrown error to the crash reporter under its own site', async () => {
+    // The real reporter caps this site to one report an hour (test/crashReporting.test.ts); this
+    // proves the wiring, and that it is the error object that travels, not the request around it.
+    const throwingPolicy: AdmissionPolicy = {
+      admit: () => {
+        throw new Error('policy exploded');
+      },
+    };
+    const loggedErrors: string[] = [];
+    const captures: RecordedCapture[] = [];
+    const relay = await startTestRelay(
+      {},
+      {
+        admissionPolicy: throwingPolicy,
+        logger: recordingLogger(loggedErrors),
+        crashReporter: recordingCrashReporter(captures),
+      },
+    );
+    try {
+      expect(await attemptUpgrade(relay.url, `/?slot=${SLOT_A}`)).toEqual({ opened: false, status: 503 });
+      expect(loggedErrors).toEqual(['upgrade handler failed']);
+      expect(captures).toHaveLength(1);
+      expect(captures[0]?.site).toBe('upgrade_handler');
+      expect(captures[0]?.error).toBeInstanceOf(Error);
+      expect((captures[0]?.error as Error).message).toBe('policy exploded');
     } finally {
       await relay.close();
     }

@@ -5,6 +5,40 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- **Crash reporting to Sentry, off unless `SENTRY_DSN` is set.** Until now a crash printed a stack
+  into a rotating container log, `restart: unless-stopped` brought the relay back, and the monitor
+  (which only asserts `uptimeSeconds > 0`) passed a crash-restart loop silently. With a DSN the
+  relay reports an uncaught exception or unhandled rejection, plus five operator-actionable errors
+  (the `/admin` data route failing, the history store disabling itself, runaway history
+  compaction, a failed shutdown, a crashed upgrade handler), each capped at one an hour. Every
+  event is rebuilt from an allowlist and never carries a request URL, header, slot id or IP. The
+  relay still dies exactly as it would without a DSN, after at most 2 s spent sending; a test
+  compares the two deaths in real child processes. Unset, `@sentry/node` is never imported.
+  `SENTRY_ENVIRONMENT` (default `production`) names the environment. The hosted instance reads its
+  DSN from the new `RELAY_SENTRY_DSN` production secret; unset, it stays off.
+
+### Changed
+
+- **`@sentry/node` is the relay's second runtime dependency**, alongside `ws`, chosen over a
+  hand-rolled envelope client so reporting tracks upstream fixes. It is loaded only with a DSN.
+- **Supported Node narrowed to `^20.19.0 || ^22.13.0`**, from `>=20 <23`. `.npmrc` makes the
+  range a hard install failure, and `@sentry/node` refuses Node below 20.19, Node 21, and 22.0 to
+  22.11, so the old range let an install start and then fail on the dependency. A dev dependency
+  already refused 22.12. CI (20.20.2 and current 22) and the image (`node:22-bookworm-slim`) are
+  inside the new range. `test/engines.test.ts` now fails when a dependency narrows it again.
+
+### Security
+
+- **One request could stop the relay process.** A request target that `new URL` cannot parse,
+  such as the absolute form `GET http://localhost:99999/ HTTP/1.1` or an unclosed IPv6 bracket,
+  threw inside the synchronous HTTP request listener, which is an uncaught exception, so any client
+  that reached the relay directly could end the process (Docker restarted it). On the upgrade path
+  the same target reached the "upgrade handler failed" catch. Both now answer 400. A proxy that
+  forwards requests in origin form, as Caddy does, most likely kept the hosted instance out of
+  reach; that was not verified.
+
 ## [0.4.2] - 2026-11-12
 
 **Deploy note:** the deploy writes one host file through `deploy.sh` (`sudo -n`),

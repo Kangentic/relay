@@ -104,6 +104,7 @@ net.
 | `HCLOUD_TOKEN` | Read scope is enough; used only to resolve the server's IP by label |
 | `RELAY_METRICS_TOKEN` | Bearer token for `/metricz`; also delivered into the box's `.env` |
 | `RELAY_SLOT_LOG_SALT` | Pinned 32-byte hex; delivered into `.env` |
+| `RELAY_SENTRY_DSN` | The DSN of the `relay` project in the kangentic Sentry org; delivered into `.env` as `SENTRY_DSN`. **Optional**: while it is unset the deploy writes an empty value, which the relay reads as off (the SDK is never imported), so merging and deploying before the secret exists is safe. |
 | `CF_ORIGIN_CERT_PEM` / `CF_ORIGIN_KEY_PEM` | Origin CA certificate and key; delivered to `/opt/relay/secrets/` on every deploy |
 
 | Variable | Value | Purpose |
@@ -149,6 +150,7 @@ workflow.
 | `MAX_SESSION_MS` | `0` (default, unchanged) | Deliberately left disabled. A wall-clock cap tears down healthy long-lived pairings mid-use; the byte cap (`MAX_SESSION_BYTES`, unchanged) is the actual runaway-bill bound, and keepalive already reaps dead sockets. |
 | `ADMIN_ENABLED` | `true` | Serves the private dashboard at `/admin`. **The relay does not authenticate it** - Cloudflare Access, scoped to the `/admin*` path on the public hostname, is the gate. See "The `/admin` dashboard and its volume" below before turning this on. |
 | `METRICS_HISTORY_PATH` | `/var/lib/relay/history.ndjson` | The `relay_history` named volume's mount point. Must be absolute. Anywhere outside the volume is discarded by the next deploy. |
+| `SENTRY_DSN` | The `RELAY_SENTRY_DSN` secret | Crash and error reports to the `relay` project in the kangentic Sentry org, alongside `desktop` and `mobile`. Closes the gap where a crash-restart loop passed the monitor silently: `restart: unless-stopped` brings a crashed relay back and `/metricz` only asserts `uptimeSeconds > 0`. The relay still dies exactly as it would without it, after at most 2 s spent sending. Empty (the secret unset) is off. `SENTRY_ENVIRONMENT` stays at its default, `production`. See `docs/security-model.md`, "Crash reporting", for what an event carries. |
 | `CONNECTION_TRACE` | `true` | One timing line per connection at close, keyed by CF-Ray, for the edge-to-origin latency investigation in [`docs/latency.md`](../docs/latency.md). No slot id, no IP. About 20k lines a day in November 2026, so the relay service's log rotation in the compose file (20 MB x 5) holds about a week, and a relay recreate wipes it: export before a release (`docs/latency.md`, "Taking the after measurements") and read the export with `scripts/originLegStalls.mjs`. Remove the line from `deploy.yml` to stop. |
 
 **The single most important non-`.env` value is `mem_limit: 1200m`** in

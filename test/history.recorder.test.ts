@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMetrics } from '../src/http/metrics.js';
 import { createLogger, type Logger } from '../src/logging.js';
+import { recordingCrashReporter, type RecordedCapture } from './helpers/recordingCrashReporter.js';
 import { createHistoryRecorder, type HistoryRecorder } from '../src/history/recorder.js';
 import type { ProcessSample, ProcessSampler } from '../src/history/processSampler.js';
 import {
@@ -382,6 +383,20 @@ describe('history recorder', () => {
     expect(result.rows).toHaveLength(2);
   });
 
+  it('reports the file half disabling to the crash reporter, once', async () => {
+    // The disable is the moment the history stops being durable, which nobody reads a warn
+    // line for. It happens once by construction: a disabled file half makes no further appends.
+    const captures: RecordedCapture[] = [];
+    recorder = build({
+      historyFilePath: join(directory, 'absent', 'history.ndjson'),
+      crashReporter: recordingCrashReporter(captures),
+    });
+    await tick(3);
+
+    expect(captures.map((capture) => capture.site)).toEqual(['history_write_disabled']);
+    expect((captures[0]?.error as NodeJS.ErrnoException).code).toBe('ENOENT');
+  });
+
   it('escalates to an error once compaction has failed repeatedly', async () => {
     // Appends keep succeeding while renames fail, and the row ceiling is only
     // enforced inside a SUCCESSFUL compaction, so a stuck rename grows the file
@@ -397,12 +412,15 @@ describe('history recorder', () => {
     };
     await mkdir(`${historyFilePath}.tmp`, { recursive: true });
 
-    recorder = build({ compactionIntervalMs: 1, logger: recordingLogger });
+    const captures: RecordedCapture[] = [];
+    recorder = build({ compactionIntervalMs: 1, logger: recordingLogger, crashReporter: recordingCrashReporter(captures) });
     await tick(3);
 
     expect(lines.filter((line) => line.level === 'warn').length).toBeGreaterThan(0);
     const escalated = lines.find((line) => line.level === 'error' && line.message.includes('unbounded'));
     expect(escalated).toBeDefined();
+    // Reported at the escalation only, not on the transient warns before it.
+    expect(captures.map((capture) => capture.site)).toEqual(['history_compaction']);
   });
 
   it('does not poison the queue: appends keep landing after a compaction failure', async () => {

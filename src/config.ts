@@ -65,6 +65,42 @@ function readCidrList(env: NodeJS.ProcessEnv, name: string): readonly string[] {
     .filter((entry) => entry.length > 0);
 }
 
+/**
+ * A Sentry DSN, checked for its shape (`https://<public key>@<host>/<project id>`) at startup. The SDK
+ * itself treats a malformed DSN as "disabled" and says so only at debug level, so without this check
+ * a typo would ship a relay that silently reports nothing. The value is never echoed in the error: a
+ * DSN is not a strong secret, but it is not something to print into a log either.
+ */
+function readSentryDsn(env: NodeJS.ProcessEnv, name: string): string | null {
+  const raw = readOptionalString(env, name);
+  if (raw === null) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new ConfigError(name, 'not a valid URL (expected https://<public key>@<host>/<project id>)');
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new ConfigError(name, 'must be an http or https URL (expected https://<public key>@<host>/<project id>)');
+  }
+  if (parsed.username === '' || !/\/\d+$/.test(parsed.pathname)) {
+    throw new ConfigError(name, 'must carry a public key and end in a numeric project id (https://<public key>@<host>/<project id>)');
+  }
+  return raw;
+}
+
+/**
+ * Sentry rejects an environment name containing whitespace or a slash, or longer than 64
+ * characters, and drops the event rather than the field, so a bad value would lose every report.
+ */
+function readSentryEnvironment(env: NodeJS.ProcessEnv, name: string, defaultValue: string): string {
+  const raw = readString(env, name, defaultValue);
+  if (!/^[^\s/]{1,64}$/.test(raw)) {
+    throw new ConfigError(name, `expected 1 to 64 characters with no whitespace or "/", got "${raw}"`);
+  }
+  return raw;
+}
+
 function randomSalt(): string {
   return Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
 }
@@ -125,6 +161,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // would otherwise multiply its log volume for an investigation nobody
     // asked for. Off installs no listener and touches no hot path.
     connectionTrace: readBoolean(env, 'CONNECTION_TRACE', false),
+    // Unset is structurally off: src/crashReporting.ts never imports the SDK,
+    // so there is no handler, no client, and no network connection to Sentry.
+    sentryDsn: readSentryDsn(env, 'SENTRY_DSN'),
+    sentryEnvironment: readSentryEnvironment(env, 'SENTRY_ENVIRONMENT', 'production'),
     logLevel: readLogLevel(env, 'LOG_LEVEL', 'info'),
     logSlotHashing: readBoolean(env, 'LOG_SLOT_HASHING', true),
     slotLogSalt: readString(env, 'SLOT_LOG_SALT', randomSalt()),

@@ -3,10 +3,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { recordingCrashReporter, type RecordedCapture } from './helpers/recordingCrashReporter.js';
 import { startTestRelay, type RelayHarness } from './helpers/relayHarness.js';
 import { connectTestClient } from './helpers/wsClient.js';
 import type { RejectReason } from '../src/closeCodes.js';
 import { PEER_ROLES } from '../src/guards/peerRole.js';
+import { createHistoryRecorder, type HistoryRecorder } from '../src/history/recorder.js';
+import { createMetrics } from '../src/http/metrics.js';
 import { ADMIN_PAGE_HTML } from '../src/http/adminPage.js';
 import type { Logger } from '../src/logging.js';
 
@@ -629,6 +632,30 @@ describe('/admin when enabled', () => {
 
     const warning = lines.find((line) => line.level === 'warn' && line.message.includes('NOT authenticated'));
     expect(warning).toBeDefined();
+  });
+
+  it('reports a failed /admin/data read to the crash reporter and answers 500', async () => {
+    const lines: { level: string; message: string }[] = [];
+    const captures: RecordedCapture[] = [];
+    const workingRecorder = createHistoryRecorder({
+      metrics: createMetrics(),
+      logger: collectingLogger([]),
+      historyFilePath: null,
+      intervalMs: 60_000,
+    });
+    const failingRecorder: HistoryRecorder = {
+      ...workingRecorder,
+      readRange: () => Promise.reject(new Error('history read exploded')),
+    };
+    relay = await startTestRelay(
+      { adminEnabled: true },
+      { historyRecorder: failingRecorder, logger: collectingLogger(lines), crashReporter: recordingCrashReporter(captures) },
+    );
+
+    expect((await fetch(`${httpBase(relay)}/admin/data`)).status).toBe(500);
+    expect(lines.some((line) => line.level === 'error' && line.message === 'admin data request failed')).toBe(true);
+    expect(captures.map((capture) => capture.site)).toEqual(['admin_data_request']);
+    expect((captures[0]?.error as Error).message).toBe('history read exploded');
   });
 
   it('answers /admin/data with live counters and a cursor', async () => {

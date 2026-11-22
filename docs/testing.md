@@ -13,7 +13,7 @@ Node 22.
 
 ## Node 22 is required, and the reason is load-bearing
 
-`.node-version` and `.nvmrc` pin Node 22 and `engines` enforces `>=20 <23`. On **Node 24 the
+`.node-version` and `.nvmrc` pin Node 22 and `engines` enforces `^20.19.0 || ^22.13.0`. On **Node 24 the
 Vitest worker dies on roughly 1 run in 10.** No test fails: a worker process is killed, the test
 file it was running never reports, and the summary reads something like
 `Test Files 22 passed (23)` with a red run. Re-running usually goes green, which is exactly the
@@ -23,6 +23,15 @@ habit that hides a real failure later.
 out-of-range Node. That makes the bound real, but it only fires at install time. Use a version
 manager that reads `.node-version` (for example [fnm](https://github.com/Schniz/fnm)) so the
 right runtime is selected automatically rather than caught after the fact.
+
+The range is not chosen, it is derived: it is the intersection of every non-optional package's own
+`engines.node` in the lockfile, dev dependencies included, because the Dockerfile's build stage,
+CI and a contributor's `npm install` all run a full install under `engine-strict`. Today
+`@sentry/node` sets the 20.19 floor and excludes 21 and 22.0 to 22.11, and a dev-only ESLint
+dependency (`eslint-visitor-keys`) moves the 22 floor to 22.13. A root range looser than that
+intersection passes this repo's own check and then fails the install on the dependency, which is
+why `test/engines.test.ts` asserts `semver.subset` against every lockfile entry. When a dependency
+bump fails that test, narrow `engines.node` (and the lockfile root's copy) rather than the test.
 
 ### What was measured
 
@@ -198,6 +207,23 @@ Both measure the deployed path rather than the code, and both are described with
   10 s idle, against a 16-byte frame after the same idle. It is the before/after for
   `tcp_slow_start_after_idle=0` on the Caddy service. Against the hosted relay it is one short
   pairing on a random slot, the same footprint as the monitor's synthetic pair.
+
+## The crash-reporting process test
+
+`test/crashReporting.process.test.ts` is the one unit-tier file that spawns child processes, each
+running a fixture under `test/fixtures/` through `node --import tsx`. It crashes the relay's real
+startup (`src/main.ts`) four ways, with and without `SENTRY_DSN` pointed at a stub ingest, and
+compares the deaths: exit code, the error on stderr, and listener state. "The same error on
+stderr" excludes exactly one measured difference: without a DSN, Node's fatal handler wraps the
+error in a source excerpt and a `Node.js vX.Y.Z` footer, and with one the SDK prints the error
+itself. A black-hole ingest proves the 2-second flush bound, and a second fixture checks every byte
+the stub receives for the slot id and client IP. The children run outside the Vitest worker on
+purpose: a Sentry `uncaughtException` handler inside it would turn a stray error into a worker
+that never reports.
+
+The three rejection cases are the ones that fail if `onUnhandledRejectionIntegration` is ever
+added back, so do not "fix" a red one by adding it: measured on SDK 11.16.0, the child with a DSN
+then outlives every rejection until the test's 20-second kill.
 
 ## Known test hygiene issues
 

@@ -253,6 +253,54 @@ inert by construction rather than by escaping correctly. It is length-bounded be
 since anything that reaches the origin directly controls it. Sign-out links to Cloudflare's own
 `/cdn-cgi/access/logout`; the relay has no session to end.
 
+## Crash reporting
+
+**Off is structural.** With `SENTRY_DSN` unset, which is the default, `@sentry/node` is never
+imported: `src/crashReporting.ts` loads it with a dynamic `import()` inside the DSN check, so there
+is no handler, no client, and no connection to anywhere. `test/crashReporting.offByDefault.test.ts`
+proves the module is never loaded, and a static check keeps every other file in `src/` from
+referencing the SDK at all.
+
+**What leaves the box when it is on.** An event is rebuilt from an allowlist in `beforeSend`,
+never filtered down from what the SDK assembled: the error's type, its message, its stack frames
+(file, module, function, line, column), the level, the release, the environment, and the one tag
+naming which fixed site reported it. Request data, headers, user, contexts, breadcrumbs, extra
+data, local variables, source lines, and the server name are all dropped whatever the SDK attached,
+and slot-shaped hex runs and IP addresses in the message are masked. The allowlist is the real
+guarantee and the masking covers the one free-text field it keeps, mirroring how the upgrade
+handler's own log line carries `error.message` and nothing else.
+`test/crashReporting.process.test.ts` drives a captured error and a fatal one, both carrying the
+slot id and the client IP in the message, in the error's own properties and cause, and on the
+scope's user, tags, extras, context and breadcrumbs, through the real SDK and its real HTTP transport into a stub ingest. It then asserts
+that neither string appears in any byte received. That is the test that keeps this true through SDK
+upgrades that change what the defaults attach.
+
+**The SDK runs with almost nothing turned on.** `defaultIntegrations: false`, because the defaults
+include HTTP and OpenTelemetry instrumentation that would sit on the upgrade path and read
+`request.url` (carrying `?slot=`) and the request headers (`CF-Connecting-IP`, and on `/admin` the
+Access JWT). `enableRuntimeChannelInjection: false`, because otherwise the client installs a module
+loader hook and rewrites matching dependencies' source as they load. `dataCollection` names every
+category and switches it off, since SDK 11 replaced `sendDefaultPii` with it and its defaults
+collect user info, headers and query parameters. Spotlight and debug output are pinned off so the
+SDK's own environment variables cannot add a destination behind the relay's back. There is no
+`--import` instrumentation hook, because there is no instrumentation.
+
+**A stranger cannot spend the quota.** Beyond the fatal handler, the relay reports from a closed
+list of five sites (the `/admin` data route, the history store disabling itself, runaway history
+compaction, a failed shutdown, and a crashed upgrade handler), each at most once an hour. Anything a
+client can trigger per connection, such as a socket error or a failed admission webhook call, stays
+in the log only. A request target that does not parse is answered with 400 before it can reach the
+upgrade handler's catch. Only the fatal handler is uncapped, because a process can only die once.
+
+**It does not change how the relay dies.** Docker's `restart: unless-stopped` and the monitor's
+uptime check both depend on a crashed relay actually exiting. The SDK's uncaught-exception handler
+reports, waits at most 2 seconds for the report to send, and exits 1, which is the code Node's own
+handler uses. The SDK's unhandled-rejection integration is deliberately not installed: in its
+default mode it kept a relay alive after a rejection that kills one without a DSN, and in strict
+mode it still swallowed an `AbortError` silently. Without it, Node's default turns every unhandled
+rejection into an uncaught exception, which the handler above reports. The process test compares
+real deaths with and without a DSN, including against an ingest that accepts and never answers.
+
 ## Admission control
 
 `AdmissionPolicy` (`src/admission.ts`) is the seam a separate, private control plane uses to gate

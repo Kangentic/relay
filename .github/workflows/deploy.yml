@@ -131,6 +131,7 @@ jobs:
           RELAY_HOSTNAME_ALIAS: ${{ vars.RELAY_PUBLIC_HOSTNAME_ALIAS }}
           METRICS_TOKEN: ${{ secrets.RELAY_METRICS_TOKEN }}
           SLOT_LOG_SALT: ${{ secrets.RELAY_SLOT_LOG_SALT }}
+          SENTRY_DSN: ${{ secrets.RELAY_SENTRY_DSN }}
           ORIGIN_CERT: ${{ secrets.CF_ORIGIN_CERT_PEM }}
           ORIGIN_KEY: ${{ secrets.CF_ORIGIN_KEY_PEM }}
         run: |
@@ -171,6 +172,12 @@ jobs:
           # deploy's relay recreate (if any) wipes it: export it first
           # (docs/latency.md, "Taking the after measurements"). Drop the
           # line to stop.
+          #
+          # SENTRY_DSN reports crashes and a few operator-actionable errors to
+          # the `relay` Sentry project. While the RELAY_SENTRY_DSN secret is
+          # unset this writes an empty value, which the relay reads as off:
+          # the SDK is never imported (docs/security-model.md, "Crash
+          # reporting").
           cat > "$RUNNER_TEMP/relay.env" <<EOF
           MAX_CONNECTIONS=4000
           MAX_CONNECTIONS_PER_IP=64
@@ -183,6 +190,7 @@ jobs:
           ADMIN_ENABLED=true
           METRICS_HISTORY_PATH=/var/lib/relay/history.ndjson
           CONNECTION_TRACE=true
+          SENTRY_DSN=$SENTRY_DSN
           EOF
           printf '%s' "$ORIGIN_CERT" > "$RUNNER_TEMP/origin.crt"
           printf '%s' "$ORIGIN_KEY" > "$RUNNER_TEMP/origin.key"
