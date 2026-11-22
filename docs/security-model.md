@@ -225,15 +225,15 @@ below already says an operator sees. When the client sent a `dial` id, the trace
 the temporary trace. Now a client that dials with a valid `dial` id gets exactly one line: `dial
 rejected` (reason, the HTTP status or admission close code, timings) or `dial closed` (close code,
 whether it paired, timings, and the relay's own teardown cause). Each carries the client's dial id,
-a random connection id, the reported role, and the validated `CF-Ray`; no slot id and no IP, built
-from an allowlist that `test/logging.test.ts` pins field by field. It is gated on the client's id,
-not on `CONNECTION_TRACE`, so a client that sends none, which includes every prober, writes nothing.
-The two rejects that come before the id is read (a wrong path, a malformed slot) write nothing either.
-Because a well-formed id costs an attacker nothing, the lines draw on one process-wide budget,
-`DIAL_LOG_MAX_PER_MIN`; past it a line is dropped and counted rather than queued. What that bounds
-is log volume, not disclosure. A flood at the ceiling can push older lines out of a size-rotated log
-sooner, and that is the residual cost of the feature: the record is advisory and recent-only by
-design.
+the reported role, and the validated `CF-Ray`, and the close line adds a random connection id; no
+slot id and no IP, built from an allowlist that `test/logging.test.ts` pins field by field. It is
+gated on the client's id, not on `CONNECTION_TRACE`, so a client that sends none, which includes
+every prober, writes nothing. The two rejects that come before the id is read (a wrong path, a
+malformed slot) write nothing either. Because a well-formed id costs an attacker nothing, the lines
+draw on one process-wide budget, `DIAL_LOG_MAX_PER_MIN`; past it a line is dropped and counted
+rather than queued. What that bounds is log volume, not disclosure. A flood at the ceiling can push
+older lines out of a size-rotated log sooner, and that is the residual cost of the feature: the
+record is advisory and recent-only by design.
 
 **The proxy in front logs the same way, by configuration.** Caddy's access and error logs would
 otherwise record every request URI, which carries the slot id in its query string, plus every
@@ -252,9 +252,9 @@ emits all three series from a frozen list rather than from values it has observe
 count is fixed at three whatever a client sends. That bound is the point. A raw value reaching a
 label would let a stranger mint unlimited label values and grow the registry without end, which is a
 denial of service against the process rather than a disclosure. That is also why the client's `dial`
-id appears in no metric at all, only in its log line: it has no closed set to collapse to. The metrics do still reveal
-operationally useful shape: how many pairings are live and when they
-form, and which guard rejected a connection. That is a feedback channel worth denying a stranger,
+id appears in no metric at all, only in its log line: it has no closed set to collapse to. The
+metrics do still reveal operationally useful shape: how many pairings are live and when they form,
+and which guard rejected a connection. That is a feedback channel worth denying a stranger,
 so `/metrics` and `/metricz` require `METRICS_TOKEN`; with none set they answer 404 rather than
 401, so an untokened deployment does not advertise that a gated surface exists. Serving them
 openly is available but has to be chosen explicitly with `METRICS_ALLOW_UNAUTHENTICATED`. The

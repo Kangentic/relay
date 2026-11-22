@@ -1,6 +1,5 @@
-import type { WebSocket } from 'ws';
 import { CLOSE_CODE } from './closeCodes.js';
-import type { GuardTeardownReason } from './closeCodes.js';
+import type { GuardTeardownReason, TeardownCause } from './closeCodes.js';
 import type { Conn, PairedSlotState, SlotState } from './types.js';
 import type { PeerRole } from './guards/peerRole.js';
 import type { Metrics } from './http/metrics.js';
@@ -26,13 +25,22 @@ export interface RendezvousDeps {
   readonly maxBufferedBytes: number;
 }
 
-function closeIfOpen(socket: WebSocket, code: number, reason: string): void {
-  if (socket.readyState === socket.OPEN || socket.readyState === socket.CONNECTING) {
-    try {
-      socket.close(code, reason);
-    } catch {
-      // best-effort; the socket may already be tearing down
-    }
+/**
+ * Closes a connection the relay is ending and records why, but only while its
+ * socket is still open. One that is already CLOSING is being ended by someone
+ * else: either the relay began it earlier and named its cause then, or its own
+ * client is mid-close, in which case the relay ended nothing and the dial close
+ * line must say so with a null cause. The cause doubles as the wire close
+ * reason, which is what every caller sent before.
+ */
+function closeIfOpen(conn: Conn, code: number, cause: TeardownCause): void {
+  const socket = conn.socket;
+  if (socket.readyState !== socket.OPEN && socket.readyState !== socket.CONNECTING) return;
+  recordTeardownCause(conn, cause);
+  try {
+    socket.close(code, cause);
+  } catch {
+    // best-effort; the socket may already be tearing down
   }
 }
 
@@ -159,10 +167,10 @@ export class SlotTable {
       }
       conn.pairState = null;
       partner.pairState = null;
-      // Ignored by recordTeardownCause when a guard teardown already named
-      // the partner's cause: that guard, not this echo of it, ended the pair.
-      recordTeardownCause(partner, 'peer_closed');
-      closeIfOpen(partner.socket, CLOSE_CODE.PEER_CLOSED, 'peer_closed');
+      // Records nothing when a guard teardown already named the partner's
+      // cause (that guard, not this echo of it, ended the pair), and nothing
+      // when the partner's own client was already closing it.
+      closeIfOpen(partner, CLOSE_CODE.PEER_CLOSED, 'peer_closed');
     }
   }
 
@@ -189,10 +197,8 @@ export class SlotTable {
     pairState.b.pairState = null;
     clearTimer(pairState.a, 'sessionTimer');
     clearTimer(pairState.b, 'sessionTimer');
-    recordTeardownCause(pairState.a, reason);
-    recordTeardownCause(pairState.b, reason);
-    closeIfOpen(pairState.a.socket, closeCode, reason);
-    closeIfOpen(pairState.b.socket, closeCode, reason);
+    closeIfOpen(pairState.a, closeCode, reason);
+    closeIfOpen(pairState.b, closeCode, reason);
   }
 
   /**
@@ -316,8 +322,7 @@ export class SlotTable {
         this.slots.delete(conn.slot);
       }
       this.deps.metrics.onReject('park_timeout');
-      recordTeardownCause(conn, 'park_timeout');
-      conn.socket.close(CLOSE_CODE.PARK_TIMEOUT, 'park_timeout');
+      closeIfOpen(conn, CLOSE_CODE.PARK_TIMEOUT, 'park_timeout');
     }, this.deps.parkTimeoutMs);
     timer.unref?.();
     conn.parkTimer = timer;
