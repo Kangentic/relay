@@ -53,6 +53,7 @@ interface AutomationRow {
   readonly type: string;
   readonly on?: string;
   readonly condition?: { text?: string | readonly string[]; agent?: string };
+  readonly filter?: { labels?: readonly string[]; priorities?: readonly string[] };
   readonly targetColumn?: string;
   readonly message?: string;
   readonly maxRuns?: number;
@@ -136,6 +137,7 @@ const PINNED_ROWS = new Set([
   'Code Review/Back for revisions',
   'Code Review/On to Testing',
   'Testing/On to Merge',
+  'Merge/Hold for a batch release',
   'Merge/On to Release',
   'Merge/Back to Testing',
   'Release/Finish',
@@ -226,6 +228,20 @@ describe('board turn-end contracts: Merge', () => {
     expect(turnEndRow('Merge', 'On to Release').targetColumn).toBe('Release');
   });
 
+  // The opt-out exists so a batch of tasks can land under one version. It reads the same line as
+  // On to Release, so only its label filter and its position above that row keep them apart.
+  it('holds a no-release task at Done instead of shipping it', () => {
+    const hold = turnEndRow('Merge', 'Hold for a batch release');
+    expect(hold.targetColumn).toBe('Done');
+    expect(hold.filter?.labels).toEqual(['no-release']);
+    expect(textMatchOf(hold)).toBe(finalLineOf('Merge', 'On to Release'));
+    expectTextIn(
+      sectionOf(readRepositoryFile(skillPath), skillPath, '## Outcome line'),
+      `${skillPath} Outcome line`,
+      'no-release',
+    );
+  });
+
   // Testing's onEnter already sends /pull-request, so a message here would be a second prompt.
   it('sends a red-CI stop back to Testing with no message of its own, a limited number of times', () => {
     const backToTesting = turnEndRow('Merge', 'Back to Testing');
@@ -284,15 +300,38 @@ describe('board turn-end contracts: row shape', () => {
     }
   });
 
-  it("never lets one row's line match another Text match row in its column", () => {
+  /**
+   * Two rows may share a line only when a task filter tells them apart, and then the filtered
+   * one has to come FIRST: a `move_to_column` ends the list, so an unfiltered row above a
+   * filtered one would swallow every task and the filter would never be reached.
+   */
+  it("never lets one row's line match another in its column, unless a filter separates them", () => {
     for (const { columnName, row, finalLine } of textMatchRows) {
       for (const other of textMatchRows) {
         if (other.columnName !== columnName || other.row === row) continue;
-        expect(
-          other.finalLine.toLowerCase(),
-          `${columnName}: "${finalLine}" also matches "${other.row.name}"`,
-        ).not.toBe(finalLine.toLowerCase());
+        if (other.finalLine.toLowerCase() !== finalLine.toLowerCase()) continue;
+        const oneIsFiltered = row.filter !== undefined || other.row.filter !== undefined;
+        expect(oneIsFiltered, `${columnName}: "${finalLine}" is on two rows with no filter between them`).toBe(true);
       }
+    }
+  });
+
+  it('puts a filtered row above the unfiltered row that shares its line', () => {
+    for (const column of board.columns) {
+      const rows = column.automations?.onTurnEnd ?? [];
+      rows.forEach((row, rowIndex) => {
+        if (row.filter === undefined) return;
+        const line = textMatchOf(row);
+        if (line === undefined) return;
+        const unfilteredIndex = rows.findIndex(
+          (other) => other.filter === undefined && textMatchOf(other)?.toLowerCase() === line.toLowerCase(),
+        );
+        if (unfilteredIndex === -1) return;
+        expect(
+          rowIndex,
+          `${column.name}: filtered "${row.name}" must sit above unfiltered "${rows[unfilteredIndex]?.name}"`,
+        ).toBeLessThan(unfilteredIndex);
+      });
     }
   });
 

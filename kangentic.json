@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "columns": [
     {
       "id": "0e54b2ab-1446-4e47-8fcc-d53076949c7c",
@@ -127,7 +127,7 @@
     {
       "id": "89d4eb55-77e9-4cc6-9c45-a8bdad88579a",
       "name": "Merge",
-      "description": "Merges the green PR one task at a time and fast-forwards local main. Every task that lands through a PR needs it. Ends on \"PR: merged\", which sends the card to Release and therefore ships it, or \"PR: checks red\" to send it back to Testing.",
+      "description": "Merges the green PR one task at a time and fast-forwards local main. Every task that lands through a PR needs it. Ends on \"PR: merged\", which sends the card to Release and therefore ships it, or \"PR: checks red\" to send it back to Testing. A task labelled no-release stops at Done instead, for work meant to ship in a later batch release.",
       "icon": "merge",
       "color": "#f97316",
       "autoSpawn": true,
@@ -145,6 +145,20 @@
           }
         ],
         "onTurnEnd": [
+          {
+            "name": "Hold for a batch release",
+            "type": "move_to_column",
+            "filter": {
+              "labels": [
+                "no-release"
+              ]
+            },
+            "condition": {
+              "text": "PR: merged"
+            },
+            "maxRuns": 1,
+            "targetColumn": "Done"
+          },
           {
             "name": "On to Release",
             "type": "move_to_column",

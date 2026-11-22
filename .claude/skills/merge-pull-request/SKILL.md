@@ -162,8 +162,10 @@ are a contract, so this section and those rows change together:
 `test/boardTurnEndContracts.test.ts` fails when they drift.
 
 **Releasing is now automatic, so `PR: merged` ships.** The card moves straight to Release, where
-`/release` promotes the changelog, tags `vX.Y.Z` and deploys to the hosted instance. Do not print
-the line to tidy up a run that did not fully land. All three must hold:
+`/release` promotes the changelog, tags `vX.Y.Z` and deploys to the hosted instance. The one
+exception is a task labelled `no-release`, which the "Hold for a batch release" row sends to Done
+instead, for work meant to ship inside a later batch version. Either way the line is the same, so
+do not print it to tidy up a run that did not fully land. All three must hold:
 
 - **The PR is merged.** `gh pr view <pr> --json state` reads `MERGED`. Read it; never infer it
   from `gh pr merge`'s exit code.

@@ -242,9 +242,17 @@ or `--no-file-parallelism`.
   that in mind, and keep every `Release: shipped` precondition in that skill honest, since they
   are now what stands between a bad deploy and an archived card. A deploy that is not a release
   (rollback, redeploy, rollback drill) runs `deploy.yml` via `workflow_dispatch`, not a new tag.
-- **To keep one task off the chain**, set `automationsDisabled` on it
+- **To land a task without releasing it**, label it `no-release`. The Merge column's "Hold for a
+  batch release" row reads the same `PR: merged` line but sends the card to Done instead, so a
+  set of related tasks can land under one version rather than cutting one each. That matters
+  more than it sounds: `/release` tags whatever `main` HEAD is at the time, so several tasks
+  releasing in parallel produce one tag that sweeps in its siblings and leaves the rest finding
+  an empty range. Batch them, then run one release task. Only the row's label filter and its
+  position above "On to Release" keep the two apart, since a `move_to_column` ends the list.
+- **To keep one task off the chain entirely**, set `automationsDisabled` on it
   (`kangentic_update_task`). An investigation or spike that should not end in a production
-  deploy wants that; task #14 carries it.
+  deploy wants that; task #14 carries it. Note that a workflow task's `routeLast` will NOT hold
+  a card back: an automation naming an explicit `targetColumn` never consults the task's route.
 - A plain **local commit** goes through `/commit`: stages and commits on the current branch
   only, no push, no rebase. A bare "commit" / "commit changes" means `/commit`.
 - `/commit`, `/pull-request`, `/merge-pull-request`, `/merge-back`, and `/release` all write
