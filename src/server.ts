@@ -4,6 +4,17 @@ import { performance } from 'node:perf_hooks';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Config, Conn } from './types.js';
 import { millisecondsSinceUpgrade, startConnectionTrace, type ConnectionTrace } from './connectionTrace.js';
+import {
+  createDialLog,
+  markDialOpened,
+  recordTeardownCause,
+  resolveClientDialId,
+  startDialCorrelation,
+  type DialCorrelation,
+  type DialRejectAnswer,
+  type DialRejectReason,
+} from './dialCorrelation.js';
+import type { RejectReason } from './closeCodes.js';
 import { createLogger, type Logger } from './logging.js';
 import type { CrashReporter } from './crashReporting.js';
 import {
@@ -116,6 +127,9 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
 
   const liveConnections = new Set<Conn>();
   const health: HealthState = { draining: false };
+
+  // Null when DIAL_LOG_MAX_PER_MIN is 0: then no dial id is even parsed.
+  const dialLog = createDialLog({ logger, metrics, maxLinesPerMinute: config.dialLogMaxPerMinute });
 
   /**
    * The relay's only latency-shaped signal. A socket's bufferedAmount is what
@@ -267,8 +281,9 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
     role: PeerRole,
     releaseCapReservation: () => void,
     trace: ConnectionTrace | null,
+    dial: DialCorrelation | null,
   ): void {
-    const conn = createConn(ws, slotId, ip, role, trace);
+    const conn = createConn(ws, slotId, ip, role, trace, dial);
     // The unpaired reservation taken during the upgrade now belongs to this
     // connection; the slot table releases it when the connection pairs or
     // closes, whichever comes first.
@@ -280,6 +295,7 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
       metrics,
       logger,
       config,
+      dialLog,
       onClosed: () => {
         releaseCapReservation();
         liveConnections.delete(conn);
@@ -291,9 +307,16 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
 
   async function handleUpgrade(request: IncomingMessage, socket: Socket, head: Buffer): Promise<void> {
     // First, so the clock starts when the upgrade arrived rather than after
-    // the guards. A rejected upgrade simply drops its trace unlogged.
+    // the guards. A rejected upgrade drops its trace unlogged; what records a
+    // rejection is the dial line below, for a client that sent a dial id.
     const trace =
       socketAcceptedAt === null ? null : startConnectionTrace(request.headers['cf-ray'], socketAcceptedAt.get(socket));
+    // The three rejects before the dial id is read (an unparseable request
+    // target, the wrong path, and the slot_format one below) write no dial
+    // line, and that is deliberate rather than an ordering accident: they
+    // cannot carry the id. A real client never sends a malformed target, the
+    // wrong path or a malformed slot, so these only ever answer probers, and
+    // reading the id earlier would buy a log line per probe and nothing else.
     const url = parseRequestTarget(request.url);
     if (url === null) {
       destroySocket(socket, 400);
@@ -319,33 +342,48 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
     // string never reaches a metric label.
     const role = parsePeerRole(url.searchParams.get('role'));
 
+    // The client's per-dial correlation id, on the same terms as role and
+    // after the slot check for the same reason: advisory, unauthenticated,
+    // and unable to reject, so it spends no rate-limit budget and adds no
+    // reject reason. Validated here to sixteen lowercase hex characters, and
+    // it goes only into log lines, never into a metric. Not read at all when
+    // the dial lines are off.
+    const clientDialId = dialLog === null ? null : resolveClientDialId(url.searchParams.get('dial'), slotId);
+    const dial = clientDialId === null ? null : startDialCorrelation(clientDialId, request.headers['cf-ray']);
+    const logDialRejection = (reason: DialRejectReason, answer: DialRejectAnswer | null): void => {
+      if (dial !== null) dialLog?.rejected(dial, role, reason, answer);
+    };
+    // Every pre-upgrade refusal from here on: counted, logged for a client
+    // that sent a dial id, and answered with a bare status.
+    const refuseUpgrade = (reason: RejectReason, statusCode: number): void => {
+      metrics.onReject(reason);
+      logDialRejection(reason, { httpStatus: statusCode });
+      destroySocket(socket, statusCode);
+    };
+
     const ip = resolveClientIp(request.headers, request.socket.remoteAddress, config);
     const ipBucket = bucketIp(ip, config.ipv6PrefixBits);
 
     if (!ipRateLimiter.tryConsume(ipBucket)) {
-      metrics.onReject('rate_limit_ip');
-      destroySocket(socket, 429);
+      refuseUpgrade('rate_limit_ip', 429);
       return;
     }
     if (!slotRateLimiter.tryConsume(slotId)) {
-      metrics.onReject('rate_limit_slot');
-      destroySocket(socket, 429);
+      refuseUpgrade('rate_limit_slot', 429);
       return;
     }
 
     const reservation = connectionCaps.reserve(ipBucket);
     if (!reservation.ok) {
-      metrics.onReject(reservation.reason);
-      destroySocket(socket, 503);
+      refuseUpgrade(reservation.reason, 503);
       return;
     }
 
     if (!unpairedConnectionCap.tryReserve()) {
       reservation.release();
-      metrics.onReject('unpaired_cap');
       // Same 503 as global-cap exhaustion: the wire must not tell a prober
       // which ceiling they hit. The reject counter distinguishes them.
-      destroySocket(socket, 503);
+      refuseUpgrade('unpaired_cap', 503);
       return;
     }
 
@@ -358,8 +396,7 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
 
     if (health.draining) {
       releaseReservations();
-      metrics.onReject('shutting_down');
-      destroySocket(socket, 503);
+      refuseUpgrade('shutting_down', 503);
       return;
     }
 
@@ -374,15 +411,16 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
       });
     } catch (error) {
       // A custom policy that throws must not leak the reservations it was
-      // holding; the outer handler turns this into a 503.
+      // holding; the outer handler turns this into a 503. The dial line is
+      // written here because the outer handler has no dial in scope.
       releaseReservations();
+      logDialRejection('admission_error', { httpStatus: 503 });
       throw error;
     }
 
     if (health.draining) {
       releaseReservations();
-      metrics.onReject('shutting_down');
-      destroySocket(socket, 503);
+      refuseUpgrade('shutting_down', 503);
       return;
     }
     if (trace !== null) trace.admittedAfterMs = millisecondsSinceUpgrade(trace);
@@ -393,9 +431,11 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
         handshakeCompleted = true;
         // ws invokes this after writing the 101, so this is "101 written".
         if (trace !== null) trace.handshakeCompletedAfterMs = millisecondsSinceUpgrade(trace);
+        if (dial !== null) markDialOpened(dial);
         if (!decision.allow) {
           metrics.onReject('admission');
           releaseReservations();
+          logDialRejection('admission', { closeCode: decision.closeCode });
           try {
             ws.close(decision.closeCode, decision.reason);
           } catch {
@@ -406,14 +446,19 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
           }
           return;
         }
-        onWebSocketConnection(ws, slotId, ip, role, reservation.release, trace);
+        onWebSocketConnection(ws, slotId, ip, role, reservation.release, trace, dial);
       });
     } finally {
       // ws aborts the handshake without ever invoking the callback for a
       // missing or bad Sec-WebSocket-Key/-Version, a non-GET method, or a
       // socket that died while the admission decision was awaited. No Conn
       // owns the reservations on those paths, so they are given back here.
-      if (!handshakeCompleted) releaseReservations();
+      // The last of those is a real client whose network dropped mid-dial,
+      // which is exactly the dial it cannot diagnose, so it gets a line too.
+      if (!handshakeCompleted) {
+        releaseReservations();
+        logDialRejection('handshake_aborted', null);
+      }
     }
   }
 
@@ -454,12 +499,19 @@ export function createRelay(config: Config, deps: RelayDeps = {}): Relay {
         // unhandled rejection, nor fail close().
         const historyStopped = (historyRecorder?.stop() ?? Promise.resolve()).catch(() => undefined);
 
+        // Every half is marked before any close event can fire, so a pair's
+        // second half reads shutting_down rather than its partner's peer_closed.
         for (const conn of liveConnections) {
-          if (conn.socket.readyState === conn.socket.OPEN) conn.socket.close(1001, 'shutting_down');
+          if (conn.socket.readyState !== conn.socket.OPEN) continue;
+          recordTeardownCause(conn, 'shutting_down');
+          conn.socket.close(1001, 'shutting_down');
         }
 
         const forceTimer = setTimeout(() => {
-          for (const conn of liveConnections) conn.socket.terminate();
+          for (const conn of liveConnections) {
+            recordTeardownCause(conn, 'shutting_down');
+            conn.socket.terminate();
+          }
         }, config.shutdownGraceMs);
         forceTimer.unref?.();
 

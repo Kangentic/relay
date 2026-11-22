@@ -98,6 +98,28 @@ stored, logged, or emitted; only the three-value enum is. Deliberately a paramet
 into rather than something inferred from `User-Agent`, which would add a fingerprinting surface to
 a relay that has carefully avoided one, and would be unreliable across native clients besides.
 
+**The optional `dial` parameter is a join key, not a credential, and not an identifier.** A client
+may send `dial=<16 lowercase hex>`, an id it mints from a CSPRNG for each dial attempt and records
+in its own error reports, so an operator can find the relay's line for the dial a client reported
+failing. It is held to the same terms as `role`. It reaches no decision, it cannot fail (anything but
+the exact shape collapses to "absent" at the parse, which spends no rate-limit budget and mints no
+reject reason), and anyone can send any value. Four properties make it safe to log:
+
+- **It is not derived from the slot**, so it discloses nothing about the rendezvous secret. The
+  relay cannot verify how a client minted it, but it does refuse the most plausible mistake: an id
+  that appears anywhere inside the dial's own slot id is dropped rather than logged, so a client
+  that truncated its slot cannot write half of a bearer secret into the log.
+- **It is per dial attempt, never per install, user, or session.** Every redial mints a new one, so
+  it does not link one user's connections over time, which is a tracking vector `role` never had.
+- **The two peers of a pairing mint different ids**, so it builds no pairing graph. That makes it
+  strictly weaker than a slot hash, which is the point.
+- **It never reaches a metric.** `role` is safe as a label only because it collapses to a closed
+  three-value enum. A dial id is unbounded by nature, so it is written to log lines and nowhere
+  else; a label made from it would be the same cardinality denial of service described below.
+
+Its fixed charset and length are also what make it safe to copy into a log line verbatim: nothing
+that passes the parse can carry a newline, a quote, or a JSON fragment.
+
 ## Why slot ids cannot be guessed
 
 The relay's default `SLOT_ID_PATTERN` accepts 32 or 64 lowercase hex characters, which is 128 or
@@ -178,8 +200,9 @@ client cannot rotate through its allocation to get a fresh budget per address.
 
 ## Logging and metrics
 
-**Logs contain no slot ids and no client IPs.** The relay logs very little, and no logger call
-site passes a slot id in any form. `test/logging.test.ts` enforces this, because the property is
+**Logs contain no slot ids and no client IPs.** The relay logs little: startup, errors, and at
+most one line per dial for a client that asked for one (below). No logger call site passes a slot
+id in any form. `test/logging.test.ts` enforces this, because the property is
 only worth documenting if it fails the build when someone adds `{ slot: conn.slot }` to a log
 line. `LOG_SLOT_HASHING` and `SLOT_LOG_SALT` configure the salted hash that any future slot
 logging would have to go through; nothing calls it today, so both are currently inert and exist to
@@ -194,7 +217,23 @@ also logs the `CF-Ray` request header, Cloudflare's per-request id, which links 
 Cloudflare's own records and to Caddy's access log for the same request. That header is
 client-controlled when the origin is reached directly, so anything that is not a well-formed ray id
 is dropped rather than copied into the log. Frame timings are metadata of the kind the section
-below already says an operator sees.
+below already says an operator sees. When the client sent a `dial` id, the trace line carries it as
+`clientDialId`, so the timings join to the client's report.
+
+**The per-dial correlation line keeps it too, and it is permanent rather than opt-in.** Until
+`dial` existed, a rejected upgrade wrote nothing at all and the only per-connection line belonged to
+the temporary trace. Now a client that dials with a valid `dial` id gets exactly one line: `dial
+rejected` (reason, the HTTP status or admission close code, timings) or `dial closed` (close code,
+whether it paired, timings, and the relay's own teardown cause). Each carries the client's dial id,
+a random connection id, the reported role, and the validated `CF-Ray`; no slot id and no IP, built
+from an allowlist that `test/logging.test.ts` pins field by field. It is gated on the client's id,
+not on `CONNECTION_TRACE`, so a client that sends none, which includes every prober, writes nothing.
+The two rejects that come before the id is read (a wrong path, a malformed slot) write nothing either.
+Because a well-formed id costs an attacker nothing, the lines draw on one process-wide budget,
+`DIAL_LOG_MAX_PER_MIN`; past it a line is dropped and counted rather than queued. What that bounds
+is log volume, not disclosure. A flood at the ceiling can push older lines out of a size-rotated log
+sooner, and that is the residual cost of the feature: the record is advisory and recent-only by
+design.
 
 **The proxy in front logs the same way, by configuration.** Caddy's access and error logs would
 otherwise record every request URI, which carries the slot id in its query string, plus every
@@ -212,7 +251,8 @@ per-slot label: it is validated to a closed three-value enum at the upgrade edge
 emits all three series from a frozen list rather than from values it has observed, so the series
 count is fixed at three whatever a client sends. That bound is the point. A raw value reaching a
 label would let a stranger mint unlimited label values and grow the registry without end, which is a
-denial of service against the process rather than a disclosure. The metrics do still reveal
+denial of service against the process rather than a disclosure. That is also why the client's `dial`
+id appears in no metric at all, only in its log line: it has no closed set to collapse to. The metrics do still reveal
 operationally useful shape: how many pairings are live and when they
 form, and which guard rejected a connection. That is a feedback channel worth denying a stranger,
 so `/metrics` and `/metricz` require `METRICS_TOKEN`; with none set they answer 404 rather than

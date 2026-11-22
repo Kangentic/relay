@@ -240,7 +240,33 @@ zero for a fresh dial, larger when a proxy reused a keep-alive connection), admi
 paired, closed. The first 8 frames add arrival time, length, and the partner queue each was written
 behind. Off is structural: no accept listener, no trace object, and the plain message listener. On,
 the extra listener swaps itself back to the plain one after the eighth frame, so a traced
-connection's long tail runs the same code as an untraced one.
+connection's long tail runs the same code as an untraced one. When the client sent a `dial` id, the
+trace line carries it as `clientDialId`.
+
+### Dial correlation (`src/dialCorrelation.ts`)
+
+A client may add `&dial=<16 lowercase hex>`, a random id it mints per dial attempt and records in
+its own error reports. The relay then writes exactly one line for that dial, so the two can be
+matched by searching the log for the id:
+
+- **`dial rejected`** at whichever refusal ended the upgrade after the id was read: the per-IP or
+  per-slot rate limit, the global, per-IP or unpaired cap, draining, an admission deny (with the
+  policy's close code), an admission policy that threw (`admission_error`), or a handshake `ws`
+  aborted itself (`handshake_aborted`, which includes a socket that died while admission was awaited).
+  The wrong-path and malformed-slot rejects come before the id is read and write nothing, which is
+  fine because only probers reach them.
+- **`dial closed`** when a connection that opened ends: the close code the `'close'` event reported,
+  whether it paired, the 101 and close offsets, and `teardownCause`. That last one is
+  `Conn.teardownCause`, recorded by whichever relay-initiated teardown started first: `slot_busy`,
+  `park_timeout`, `parked_overflow`, the three pair guards, `peer_closed`, `heartbeat`,
+  `probe_evicted`, `shutting_down`, or `socket_error`. It is null when the client or the network
+  ended it. It exists because the close code alone cannot separate them: a keepalive reap, a probe
+  eviction and a client that vanished all read 1006, and a 4431 the peer never echoed does too.
+
+Both are gated on the id rather than on `CONNECTION_TRACE`, and both draw on one process-wide token
+bucket of `DIAL_LOG_MAX_PER_MIN` lines (dropped and counted in `dialLogSuppressedTotal` past it).
+Nothing runs per frame: a clock read at the dial parse, a stamp at the 101, and the one line.
+`DIAL_LOG_MAX_PER_MIN=0` removes the parse as well.
 
 ## Configuration and shutdown
 

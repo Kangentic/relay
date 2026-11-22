@@ -70,3 +70,23 @@ export type RejectReason =
   | 'session_byte_cap'
   | 'session_time_cap'
   | 'idle_timeout';
+
+/** The three guards that tear down an established pair (both halves at once). */
+export type GuardTeardownReason = Extract<RejectReason, 'backpressure' | 'session_byte_cap' | 'session_time_cap'>;
+
+/**
+ * Why the relay itself ended an opened connection, recorded where the teardown
+ * starts. Not a close code and never on the wire: the 'close' event's code is
+ * whatever the peer echoed, or 1006 when no close frame came back, so it cannot
+ * tell a keepalive reap, a probe eviction, or an unechoed 4431 apart from a
+ * client that simply vanished. This can. A connection the relay never decided
+ * to end (the client or the network ended it) has none.
+ *
+ * `heartbeat` matches the closedByCause bucket of the same name.
+ */
+export type TeardownCause =
+  | GuardTeardownReason
+  | Extract<RejectReason, 'slot_busy' | 'park_timeout' | 'parked_overflow' | 'probe_evicted' | 'shutting_down'>
+  | 'peer_closed'
+  | 'heartbeat'
+  | 'socket_error';

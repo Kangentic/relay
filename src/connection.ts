@@ -7,6 +7,7 @@ import {
   TRACE_FRAME_LIMIT,
   type ConnectionTrace,
 } from './connectionTrace.js';
+import { recordTeardownCause, type DialCorrelation, type DialLog } from './dialCorrelation.js';
 import { EMPTY_OUTBOUND_QUEUE } from './keepalive.js';
 import type { Conn, Config } from './types.js';
 import type { PeerRole } from './guards/peerRole.js';
@@ -20,6 +21,8 @@ export interface ConnectionDeps {
   readonly metrics: Metrics;
   readonly logger: Logger;
   readonly config: Pick<Config, 'maxParkedBufferBytes' | 'maxBufferedBytes' | 'maxSessionBytes'>;
+  /** Writes the 'dial closed' line. Null when DIAL_LOG_MAX_PER_MIN is 0. */
+  readonly dialLog: DialLog | null;
   /** Releases this connection's per-IP/global cap reservation and drops it from the live-connection set. */
   readonly onClosed: () => void;
 }
@@ -30,6 +33,7 @@ export function createConn(
   ip: string,
   role: PeerRole,
   trace: ConnectionTrace | null = null,
+  dial: DialCorrelation | null = null,
 ): Conn {
   return {
     id: randomUUID(),
@@ -57,6 +61,8 @@ export function createConn(
     unpairedReserved: false,
     pairState: null,
     trace,
+    dial,
+    teardownCause: null,
   };
 }
 
@@ -111,10 +117,15 @@ export function attachConnectionHandlers(conn: Conn, deps: ConnectionDeps): void
     deps.onClosed();
     deps.slotTable.handleClose(conn);
     if (trace !== null) deps.logger.info('connection trace', describeConnectionTrace(conn, trace, closeCode));
+    // Independent of the trace: present whenever the client dialed with a
+    // valid id, and absent (no line at all) when it did not.
+    const dial = conn.dial;
+    if (dial !== null) deps.dialLog?.closed(conn, dial, closeCode);
   });
 
   conn.socket.on('error', (error: Error) => {
     deps.logger.debug('socket error', { connId: conn.id, error: error.message });
+    recordTeardownCause(conn, 'socket_error');
     conn.socket.terminate();
   });
 }
@@ -132,6 +143,7 @@ function onMessage(conn: Conn, data: RawData, isBinary: boolean, deps: Connectio
       // 'backpressure' (a pair teardown), so /metricz never mixes units.
       // The wire close code and reason are unchanged.
       deps.metrics.onReject('parked_overflow');
+      recordTeardownCause(conn, 'parked_overflow');
       conn.socket.close(CLOSE_CODE.BACKPRESSURE, 'backpressure');
       return;
     }

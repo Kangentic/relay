@@ -1,6 +1,7 @@
 import type { WebSocket } from 'ws';
 import type { Conn } from './types.js';
 import type { Metrics } from './http/metrics.js';
+import { recordTeardownCause } from './dialCorrelation.js';
 
 export interface KeepaliveDeps {
   readonly metrics: Metrics;
@@ -108,6 +109,7 @@ export function startKeepalive(connections: ReadonlySet<Conn>, deps: KeepaliveDe
           continue;
         }
         deps.metrics.onPongTimeout();
+        recordTeardownCause(conn, 'heartbeat');
         conn.socket.terminate();
         continue;
       }

@@ -44,14 +44,15 @@ src/
   crashReporting.ts   # DSN-gated Sentry: dynamic import, pinned options, allowlist scrub, per-site cap
   config.ts           # env-var parsing into a frozen Config; fails fast on bad values
   types.ts            # Conn, SlotState, Config, decision types
-  closeCodes.ts        # app-level WS close codes (4000-4999) + RejectReason union
+  closeCodes.ts        # app-level WS close codes (4000-4999) + RejectReason and TeardownCause unions
   server.ts           # createRelay(): http.Server + WebSocketServer(noServer); upgrade+connection wiring
   rendezvous.ts       # SlotTable: park/pair/reject/teardown - the core routing logic
   connection.ts       # Conn factory, per-message forwarding hot path
   connectionTrace.ts  # opt-in CONNECTION_TRACE: per-connection dial + first-frame timings, keyed by CF-Ray
+  dialCorrelation.ts  # `dial` id lines ('dial rejected' / 'dial closed'), their ceiling, teardown cause
   keepalive.ts        # WS ping/pong liveness + reaping; spares a socket still draining (readOutboundQueue)
   admission.ts        # AdmissionPolicy interface, allowAllPolicy, webhook policy
-  guards/             # slot-id format, rate limiting, connection caps
+  guards/             # slot-id format, rate limiting, connection caps, role and dial id parsing
   net/clientIp.ts     # real client IP behind a trusted proxy, IPv6 bucketing
   http/               # /healthz (+ build version), /readyz, /metrics (Prometheus), /metricz (JSON + RSS),
                       #   /admin dashboard + /admin/data (adminPage.ts holds the inline page)
@@ -102,14 +103,21 @@ A client dials `${relayUrl}?slot=<32-or-64-char-hex>` with no subprotocol, no he
 frame. The relay pairs exactly two connections presenting the same slot and forwards binary
 messages between them byte-for-byte. See `README.md`'s "The blind-relay guarantee" section.
 
-One optional parameter rides alongside: `&role=desktop|mobile`, parsed by `src/guards/peerRole.ts`.
-It is a self-declared hint that attributes the waiting-slots gauge and nothing else. It is
-unauthenticated, it never reaches a pairing, routing, cap, or rate-limit decision, and it **cannot
-reject**: absent, misspelled, or hostile all collapse to `unknown`, so every client that predates it
-keeps working unchanged. Validate at the edge and never let the raw string reach a metric label,
-or a stranger can mint unbounded Prometheus series. Because the contract is defined by the desktop
-client rather than here, the relay ships this ahead of the clients and reads `unknown` for everyone
-until they send it.
+Two optional parameters ride alongside, and both are unauthenticated, never reach a pairing,
+routing, cap, or rate-limit decision, and **cannot reject**, so every client that predates them
+keeps working unchanged. Because the contract is defined by the desktop client rather than here,
+the relay ships each ahead of the clients and reads nothing from anyone until they send it.
+
+- `&role=desktop|mobile`, parsed by `src/guards/peerRole.ts`: a self-declared hint that attributes
+  the waiting-slots gauge and nothing else. Absent, misspelled, or hostile all collapse to
+  `unknown`. Validate at the edge and never let the raw string reach a metric label, or a stranger
+  can mint unbounded Prometheus series.
+- `&dial=<16 lowercase hex>`, parsed by `src/guards/dialId.ts`: a per-dial-attempt id the client
+  mints from a CSPRNG, never per install or session, and records in its own error reports. It is
+  the join key for the relay's one log line per dial (`src/dialCorrelation.ts`). Anything but the
+  exact shape collapses to `null`, and so does an id found inside the slot. Unlike `role`, the
+  validated value is logged, because that is its job, but it **never reaches a metric**: it is
+  unbounded by nature, and no closed enum exists to collapse it to.
 
 ### The blindness guarantee (load-bearing, self-maintaining)
 
@@ -166,6 +174,16 @@ plain `message` listener), and on, a separate listener records only the first `T
 frames and then swaps itself for the plain one. Keep it that way; a trace that grows a branch in
 `onMessage` or records every frame is a redesign. Its log line is built from an allowlist and never
 carries a slot id or an IP.
+
+The **dial correlation lines** (`src/dialCorrelation.ts`) are the permanent per-connection log
+record, and they deliberately do not hang on `CONNECTION_TRACE`, which is an investigation flag
+meant to be switched off. They are gated on the client sending a valid `dial` id instead, so a
+prober that sends none writes nothing, and capped process-wide by `DIAL_LOG_MAX_PER_MIN`. Nothing
+in them runs per frame: one clock read at the dial parse, one stamp at the 101, and one line at the
+reject or the close. `Conn.teardownCause` is recorded where each relay-initiated teardown starts,
+first writer wins, because a 'close' event's code alone cannot tell a keepalive reap from a client
+that vanished. A new teardown site must record its cause. `test/logging.test.ts` pins the exact
+fields of all three per-connection lines.
 
 The keepalive spares a missed pong when the socket made delivery progress
 (`isDraining(readOutboundQueue(...))`). `readOutboundQueue` reads libuv's `writeQueueSize` off the

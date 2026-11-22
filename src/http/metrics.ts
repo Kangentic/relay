@@ -37,6 +37,12 @@ export interface MetricsSnapshot {
    * timeout then.
    */
   readonly pongOverdueDrainingTotal: number;
+  /**
+   * Dial correlation lines dropped because DIAL_LOG_MAX_PER_MIN was reached.
+   * Nonzero means the log is missing dials, not that none happened. The dial
+   * id itself is never a metric dimension: it is unbounded by nature.
+   */
+  readonly dialLogSuppressedTotal: number;
   readonly rejectsByReason: Readonly<Partial<Record<RejectReason, number>>>;
 }
 
@@ -57,6 +63,8 @@ export interface Metrics {
   onPongTimeout(): void;
   /** A liveness check found no pong but a falling outbound queue, and spared the socket. */
   onPongOverdueDraining(): void;
+  /** A dial correlation line was dropped by the DIAL_LOG_MAX_PER_MIN ceiling. */
+  onDialLogSuppressed(): void;
   /**
    * Points the waiting gauge at the slot table, which is the only thing that
    * knows who is parked. Late-bound because the slot table needs a Metrics to
@@ -121,6 +129,7 @@ export function createMetrics(): Metrics {
   let peerClosedTotal = 0;
   let pongTimeoutsTotal = 0;
   let pongOverdueDrainingTotal = 0;
+  let dialLogSuppressedTotal = 0;
 
   function waitingSlotsTotal(byRole: WaitingSlotsByRole): number {
     return byRole.desktop + byRole.mobile + byRole.unknown;
@@ -140,6 +149,7 @@ export function createMetrics(): Metrics {
       peerClosedTotal,
       pongTimeoutsTotal,
       pongOverdueDrainingTotal,
+      dialLogSuppressedTotal,
       rejectsByReason: Object.fromEntries(rejectsByReason) as Partial<Record<RejectReason, number>>,
     };
   }
@@ -174,6 +184,9 @@ export function createMetrics(): Metrics {
     },
     onPongOverdueDraining: () => {
       pongOverdueDrainingTotal += 1;
+    },
+    onDialLogSuppressed: () => {
+      dialLogSuppressedTotal += 1;
     },
     setWaitingSlotsSource: (source) => {
       waitingSlotsSource = source;
@@ -213,6 +226,9 @@ export function createMetrics(): Metrics {
         '# HELP relay_pong_overdue_draining_total Liveness checks a socket missed while its outbound queue was still draining, so it was spared rather than reaped.',
         '# TYPE relay_pong_overdue_draining_total counter',
         `relay_pong_overdue_draining_total ${pongOverdueDrainingTotal}`,
+        '# HELP relay_dial_log_suppressed_total Dial correlation log lines dropped by the DIAL_LOG_MAX_PER_MIN ceiling.',
+        '# TYPE relay_dial_log_suppressed_total counter',
+        `relay_dial_log_suppressed_total ${dialLogSuppressedTotal}`,
         '# TYPE relay_rejects_total counter',
       ];
       for (const [reason, count] of rejectsByReason) {
@@ -364,6 +380,7 @@ export function handleMetriczRequest(
     bytesForwardedTotal: currentSnapshot.bytesForwardedTotal,
     closedByCause: closedByCauseFromSnapshot(currentSnapshot),
     pongOverdueDrainingTotal: currentSnapshot.pongOverdueDrainingTotal,
+    dialLogSuppressedTotal: currentSnapshot.dialLogSuppressedTotal,
     rejectsByReason: currentSnapshot.rejectsByReason,
   };
   response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body));

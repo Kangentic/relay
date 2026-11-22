@@ -1,12 +1,13 @@
 import type { WebSocket } from 'ws';
 import { CLOSE_CODE } from './closeCodes.js';
-import type { RejectReason } from './closeCodes.js';
+import type { GuardTeardownReason } from './closeCodes.js';
 import type { Conn, PairedSlotState, SlotState } from './types.js';
 import type { PeerRole } from './guards/peerRole.js';
 import type { Metrics } from './http/metrics.js';
 import type { Logger } from './logging.js';
 import type { SlotConnectionCaps, UnpairedConnectionCap } from './guards/caps.js';
 import { markTracePaired } from './connectionTrace.js';
+import { recordTeardownCause } from './dialCorrelation.js';
 import { isDraining, readOutboundQueue } from './keepalive.js';
 import { byteLengthOfRawData, BINARY_SEND_OPTIONS, TEXT_SEND_OPTIONS } from './wireData.js';
 
@@ -158,6 +159,9 @@ export class SlotTable {
       }
       conn.pairState = null;
       partner.pairState = null;
+      // Ignored by recordTeardownCause when a guard teardown already named
+      // the partner's cause: that guard, not this echo of it, ended the pair.
+      recordTeardownCause(partner, 'peer_closed');
       closeIfOpen(partner.socket, CLOSE_CODE.PEER_CLOSED, 'peer_closed');
     }
   }
@@ -171,7 +175,7 @@ export class SlotTable {
    * black-hole the pair or tear down an innocent new pair on the same
    * slot. No-ops when the pair is already torn down.
    */
-  enforceGuardTeardown(conn: Conn, closeCode: number, reason: RejectReason): void {
+  enforceGuardTeardown(conn: Conn, closeCode: number, reason: GuardTeardownReason): void {
     const pairState = conn.pairState;
     if (!pairState) return;
 
@@ -185,6 +189,8 @@ export class SlotTable {
     pairState.b.pairState = null;
     clearTimer(pairState.a, 'sessionTimer');
     clearTimer(pairState.b, 'sessionTimer');
+    recordTeardownCause(pairState.a, reason);
+    recordTeardownCause(pairState.b, reason);
     closeIfOpen(pairState.a.socket, closeCode, reason);
     closeIfOpen(pairState.b.socket, closeCode, reason);
   }
@@ -273,6 +279,7 @@ export class SlotTable {
         // an operator tell contention-triggered reaps from routine ones.
         this.deps.metrics.onPongTimeout();
         this.deps.metrics.onReject('probe_evicted');
+        recordTeardownCause(half, 'probe_evicted');
         half.socket.terminate();
       }
     }, this.deps.contentionProbeTimeoutMs);
@@ -294,6 +301,7 @@ export class SlotTable {
 
   private rejectBusy(conn: Conn): void {
     this.deps.metrics.onReject('slot_busy');
+    recordTeardownCause(conn, 'slot_busy');
     conn.socket.close(CLOSE_CODE.SLOT_BUSY, 'slot_busy');
   }
 
@@ -308,6 +316,7 @@ export class SlotTable {
         this.slots.delete(conn.slot);
       }
       this.deps.metrics.onReject('park_timeout');
+      recordTeardownCause(conn, 'park_timeout');
       conn.socket.close(CLOSE_CODE.PARK_TIMEOUT, 'park_timeout');
     }, this.deps.parkTimeoutMs);
     timer.unref?.();

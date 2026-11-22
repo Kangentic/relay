@@ -92,8 +92,9 @@ export function startConnectionTrace(
   };
 }
 
-export function millisecondsSinceUpgrade(trace: ConnectionTrace): number {
-  return roundToHundredth(performance.now() - trace.upgradeReceivedAtMonotonicMs);
+/** Takes only the monotonic origin, so the dial correlation record measures on the same clock. */
+export function millisecondsSinceUpgrade(origin: Pick<ConnectionTrace, 'upgradeReceivedAtMonotonicMs'>): number {
+  return roundToHundredth(performance.now() - origin.upgradeReceivedAtMonotonicMs);
 }
 
 /** Stamps the pairing moment once. Called once per pairing, never per frame. */
@@ -105,10 +106,16 @@ export function markTracePaired(conn: Conn): void {
 /**
  * The one log line a traced connection produces, at close. Deliberately built
  * from an allowlist of fields: no slot id and no IP can reach it.
+ *
+ * clientDialId is the client's own per-dial id when it sent one (see
+ * src/dialCorrelation.ts), so these timings join to the client's report the
+ * same way the 'dial closed' line does. The relay's teardown cause stays off
+ * this line; it lives on that one.
  */
 export function describeConnectionTrace(conn: Conn, trace: ConnectionTrace, closeCode: number): Record<string, unknown> {
   return {
     connId: conn.id,
+    clientDialId: conn.dial?.clientDialId ?? null,
     role: conn.role,
     cfRay: trace.cfRay,
     upgradeReceivedAt: new Date(trace.upgradeReceivedAtEpochMs).toISOString(),
