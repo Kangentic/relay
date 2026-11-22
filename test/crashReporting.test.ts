@@ -184,12 +184,28 @@ describe('redactIdentifiers', () => {
     ['from 2001:db8:85a3::8a2e:370:7334', 'from [redacted-ip]'],
     ['from ::1', 'from [redacted-ip]'],
     ['from [2001:db8::1]:443', 'from [[redacted-ip]]:443'],
-    ['from ::ffff:203.0.113.7', 'from ::ffff:[redacted-ip]'],
+    // The mapped prefix goes with the address it maps.
+    ['from ::ffff:203.0.113.7', 'from [redacted-ip]'],
+    // A colon run that is not an address as a whole, with one inside it: the run reaches past the
+    // address into a label, a port or a separator, and the trimmed text is kept.
+    ['peer ip:2001:db8::1', 'peer ip:[redacted-ip]'],
+    ['connect 2001:db8::1: refused', 'connect [redacted-ip]: refused'],
+    ['peer ip:2001:db8:0:0:0:0:0:1:443', 'peer ip:[redacted-ip]:443'],
+    // Nine groups, where trimming either end leaves an address, so the whole run goes.
+    ['to 2001:db8:0:0:0:0:0:1:443', 'to [redacted-ip]'],
+    ['id:2001:db8:0:0:0:0:0:1', 'i[redacted-ip]'],
   ])('masks %j', (input, expected) => {
     expect(redactIdentifiers(input)).toBe(expected);
   });
 
-  it.each(['Invalid URL', 'read ECONNRESET', 'at 12:34:56', 'deadbeef is short', 'EACCES: permission denied'])(
+  it.each([
+    'Invalid URL',
+    'read ECONNRESET',
+    'at 12:34:56',
+    'at 12:34:56: timed out',
+    'deadbeef is short',
+    'EACCES: permission denied',
+  ])(
     'leaves %j alone',
     (input) => {
       expect(redactIdentifiers(input)).toBe(input);

@@ -57,10 +57,10 @@ Four further disclosures, because "blind to content" is easy to over-read:
   timing anyway. Sending it is entirely the client's choice, and a client that omits it discloses
   nothing new.
 - **With `SENTRY_DSN` set, error reports leave the box**, to Sentry. Kangentic's hosted instance
-  takes it from a deploy secret. A report is an error's type, message and stack frames plus the relay's release and
-  environment, rebuilt from an allowlist, so it carries no request URL, header, slot id, IP, or
-  frame content, and slot-shaped hex and IP addresses are masked out of the message too. Unset,
-  which is the default, the reporting SDK is not even loaded.
+  takes it from a deploy secret. A report is an error's type, message and stack frames plus the
+  relay's release and environment, rebuilt from an allowlist, so it carries no request URL, header,
+  slot id, IP, or frame content, and slot-shaped hex and IP addresses are masked out of the message
+  too. Unset, which is the default, the reporting SDK is not even loaded.
 
 This is inherent to operating any relay and is not specific to this implementation. Self-hosting
 removes Kangentic (or anyone else) from that observation entirely. As for the pairing graph itself,

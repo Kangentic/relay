@@ -57,6 +57,9 @@ await dial();
 await dial();
 await crashReporter.flush(FATAL_FLUSH_TIMEOUT_MS);
 
+// The fatal error carries both the way the captured one does, in its message, its cause and its own
+// properties, since it travels the SDK's uncaught-exception handler rather than captureException.
 setTimeout(() => {
-  throw new Error(`fatal with ${slotId} from ${clientIp}`, { cause: { slotId, clientIp } });
+  const error = new Error(`fatal with ${slotId} from ${clientIp}`, { cause: { slotId, clientIp } });
+  throw Object.assign(error, { slotId, ip: clientIp });
 }, 0);
