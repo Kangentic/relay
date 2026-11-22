@@ -290,6 +290,12 @@ Two layers, deliberately split by what a free-tier external uptime service can a
   through a real slot) — the only check that proves pairing actually works end to end, since
   `/healthz` says nothing about whether the WS upgrade routes correctly through Caddy and
   Cloudflare.
+- The same workflow's restart check turns `/metricz`'s uptime into a process start time and files
+  an issue when no `production` deployment explains it, once per restart. Without it a crash that
+  `restart: unless-stopped` recovered from read as a healthy relay with a small uptime, and so did
+  every deploy, so the only assertion was `uptimeSeconds > 0`. It does not depend on the schedule,
+  which GitHub runs far less often than the 30 minutes it asks for, and it does not depend on
+  Sentry, which never hears about an OOM kill.
 
 `monitor.yml` runs in a separate, **unprotected** `monitoring` GitHub environment, deliberately:
 putting it on the protected `production` environment would queue every scheduled run for approval

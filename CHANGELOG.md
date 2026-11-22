@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- **The monitor reports a relay restart that no deploy explains.** Until now it asserted only
+  `uptimeSeconds > 0`, so a crash, an OOM kill or a host reboot that `restart: unless-stopped`
+  recovered from read as a healthy relay. `scripts/deploy/restart-check.mjs` turns the uptime into
+  a start time and passes it only when it falls inside a `production` deployment's window (a
+  rollback included) or an earlier run already judged it. Anything else files a
+  `Relay restarted outside a deploy` issue, or comments on the open one, once per restart. It does
+  not lean on the schedule, which GitHub ran every 4 to 9 hours in November 2026 rather than every
+  30 minutes, and it does not lean on Sentry, which never hears about an OOM kill. Triage is in
+  `infra/README.md`, "Relay restarted outside a deploy". It lives in the workflow, so it took
+  effect on merge with no release.
+- **`scripts/deploy/sentry-verify.mjs`: proof that crash reporting works on the hosted box.** Piped
+  into a second process inside the serving container, it dies of an uncaught exception carrying
+  slot-shaped and IP-shaped canaries, so one real event travels the relay's own image, environment
+  and egress to Sentry without touching the relay process. The recipe, and what to check on the
+  stored event, is in `infra/README.md`, "Verifying crash reporting".
+
+### Fixed
+
+- **A `/metricz` missing a field the monitor checks passed it.** A missing `uptimeSeconds`,
+  `activeConnections` or `rssBytes` read as `null`, and the numeric shell test on it errored inside
+  an `if`, which counts as false. Each must now be a whole number or the run fails.
+
 ## [0.5.0] - 2026-11-21
 
 **Deploy note:** the release's version bump in `package.json` trips the deploy's skip gate, so the
