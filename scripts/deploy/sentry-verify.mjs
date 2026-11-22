@@ -11,8 +11,9 @@
 // (From PowerShell, which has no `<`: Get-Content -Raw scripts/deploy/sentry-verify.mjs | ssh ...)
 //
 // It plants canaries, a slot-shaped hex run and TEST-NET addresses, in the message, on the error,
-// and on every scope surface, then dies of an uncaught exception. That is the real fatal path: the SDK's onUncaughtException handler captures,
-// flushes for at most 2 s, and exits 1. The delivered event must carry none of the canaries.
+// and on every scope surface, then dies of an uncaught exception. That is the real fatal path: the
+// SDK's onUncaughtException handler captures, flushes for at most 2 s, and exits 1. The delivered
+// event must carry none of the canaries.
 //
 // What it does not prove: a crash in the relay process itself (test/crashReporting.process.test.ts
 // covers that path locally), or that the relay process initialized the SDK (its own startup log line,

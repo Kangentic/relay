@@ -369,10 +369,12 @@ Both are filtered: no slot id, no request headers, no client IP.
 started outside every `production` deployment. It cannot ask the box, so it asks the start time
 instead (`scripts/deploy/restart-check.mjs`):
 
-- A start inside a deployment's window, from its creation to its last status, is a deploy. A
-  rollback counts, since it recreates the container too.
-- A start an earlier run already judged passes, so each restart produces one issue, or one comment
-  on the open one, rather than a red run on every schedule until the next deploy.
+- A start inside a deployment's window, from its creation to its last status and never more than
+  30 minutes, is a deploy. A rollback counts, since it recreates the container too. The cap keeps a
+  hung deploy job, which GitHub lets run 6 hours, from explaining a crash long after it.
+- A start from before an earlier run read `/metricz` was judged by that run and passes, so each
+  restart produces one issue, or one comment on the open one, rather than a red run on every
+  schedule until the next deploy.
 - Anything else is a crash, an OOM kill, a host reboot, or someone restarting the container by
   hand. Docker runs with `live-restore`, so a daemon upgrade is not one of them.
 

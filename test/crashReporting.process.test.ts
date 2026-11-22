@@ -3,7 +3,7 @@
  * as much the point of crash reporting as the reports themselves:
  *
  * 1. A relay with SENTRY_DSN set dies exactly the way one without it does: same exit code, the same
- *    error on stderr, no hang. Docker's `restart: unless-stopped` and the monitor's uptime check
+ *    error on stderr, no hang. Docker's `restart: unless-stopped` and the monitor's restart check
  *    both depend on the process actually dying, so a reporter that kept a crashed relay alive, or
  *    held it up on an unreachable Sentry, would break the very recovery it exists to make visible.
  * 2. No byte that reaches the ingest endpoint carries the slot id or the client IP, through the real

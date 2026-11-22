@@ -13,10 +13,16 @@
 //
 // 1. A start inside a production deployment's window is a deploy restart.
 //    Every terminal state counts, because a rollback recreates the container
-//    inside a failed deployment.
-// 2. A start before the previous monitor run that ran this step was already
-//    judged by that run, so it passes here. That is what makes each restart
-//    reported once rather than on every run until the next deploy.
+//    inside a failed deployment. A window runs from the deployment's creation
+//    to its last status, but never past 30 minutes: deploys take seconds, and
+//    no deploy job sets timeout-minutes, so a hung one (or one that never posts
+//    a final status) would otherwise explain every crash for up to 6 hours.
+// 2. A start before the previous monitor run read /metricz was already judged
+//    by that run, so it passes here. That is what makes each restart reported
+//    once rather than on every run until the next deploy. The read is dated by
+//    that run's "Check /metricz" step start. Its run start is earlier, so it
+//    would report a restart in between twice; its Restart check step start is
+//    minutes later, so it would pass a restart in between that nobody reported.
 // 3. Anything else is an unexplained restart: a crash, an OOM kill (a SIGKILL,
 //    which never reaches Sentry), a host reboot or a manual restart. The script
 //    exits 1 and writes `unexplained_restart=true` to GITHUB_OUTPUT.
@@ -45,12 +51,21 @@ import { isEntrypoint } from '../lib/is-entrypoint.mjs';
  */
 export const RESTART_CHECK_STEP_NAME = 'Restart check';
 
+/**
+ * The name monitor.yml gives the step that reads /metricz. A later run dates this run's read by that
+ * step's start in the jobs API, so it is a contract too; test/restartCheck.test.ts pins both.
+ */
+export const METRICZ_STEP_NAME = 'Check /metricz';
+
 const MONITOR_WORKFLOW_FILE = 'monitor.yml';
 const DEPLOY_ENVIRONMENT = 'production';
 const DEPLOYMENTS_PAGE_SIZE = 30;
 const PREVIOUS_RUNS_PAGE_SIZE = 10;
-/** A deployment created longer than this before the start is not fetched: no deploy job runs that long. */
-const CANDIDATE_LOOKBACK_MS = 6 * 60 * 60 * 1000;
+/**
+ * The longest a deployment's window runs from its creation, whatever its statuses say. Production
+ * deploys took 20 to 90 seconds in 2026, so this leaves every real one whole, rollback included.
+ */
+const MAX_DEPLOY_WINDOW_MS = 30 * 60 * 1000;
 /** Covers the uptime's whole-second rounding and the gap between the /metricz read and the clock read. */
 const WINDOW_SLACK_BEFORE_MS = 60_000;
 const WINDOW_SLACK_AFTER_MS = 120_000;
@@ -69,7 +84,8 @@ function parseTimestamp(value, what) {
 
 /**
  * The decision, with no I/O. `deployWindows` carry `startMs` and `endMs` (an in-progress deployment's
- * end is the caller's now); `previousCheck` is null when no earlier run ran this step.
+ * end is the caller's now, both capped at MAX_DEPLOY_WINDOW_MS); `previousCheck` carries `runId` and
+ * `readAtMs`, when that run read /metricz, and is null when no earlier run ran this step.
  */
 export function judgeRestart({ startedAtMs, deployWindows, previousCheck }) {
   const window = deployWindows.find(
@@ -78,7 +94,7 @@ export function judgeRestart({ startedAtMs, deployWindows, previousCheck }) {
       startedAtMs <= candidate.endMs + WINDOW_SLACK_AFTER_MS,
   );
   if (window !== undefined) return { verdict: 'deploy', window };
-  if (previousCheck !== null && startedAtMs < previousCheck.startedAtMs) return { verdict: 'judged', previousCheck };
+  if (previousCheck !== null && startedAtMs < previousCheck.readAtMs) return { verdict: 'judged', previousCheck };
   return { verdict: 'unexplained', previousCheck };
 }
 
@@ -93,12 +109,12 @@ export function describeJudgement(startedAtMs, judgement) {
   }
   if (judgement.verdict === 'judged') {
     const { previousCheck } = judgement;
-    return `${started}, before run ${previousCheck.runId} started its check at ${isoSeconds(previousCheck.startedAtMs)}: already judged there`;
+    return `${started}, before run ${previousCheck.runId} read /metricz at ${isoSeconds(previousCheck.readAtMs)}: already judged there`;
   }
   const after =
     judgement.previousCheck === null
       ? 'and no earlier run has judged it'
-      : `and after run ${judgement.previousCheck.runId} started its check at ${isoSeconds(judgement.previousCheck.startedAtMs)}`;
+      : `and after run ${judgement.previousCheck.runId} read /metricz at ${isoSeconds(judgement.previousCheck.readAtMs)}`;
   return (
     `${started}, outside every ${DEPLOY_ENVIRONMENT} deployment ${after}: an unexplained restart ` +
     `(a crash, an OOM kill, a host reboot or a manual restart; see infra/README.md, "Relay restarted outside a deploy")`
@@ -128,9 +144,10 @@ async function collectDeployWindows(getJson, repository, startedAtMs, nowMs) {
   const windows = [];
   for (const deployment of deployments) {
     const createdAtMs = parseTimestamp(deployment.created_at, `deployment ${deployment.id} created_at`);
-    // Created after the start (plus slack) cannot contain it; created too long before cannot either.
+    // Created after the start (plus slack) cannot contain it. Created longer before it than the
+    // longest window (plus slack) cannot either, so its statuses are never fetched.
     if (createdAtMs > startedAtMs + WINDOW_SLACK_BEFORE_MS) continue;
-    if (createdAtMs < startedAtMs - CANDIDATE_LOOKBACK_MS) continue;
+    if (createdAtMs < startedAtMs - MAX_DEPLOY_WINDOW_MS - WINDOW_SLACK_AFTER_MS) continue;
     if (!Number.isSafeInteger(deployment.id)) throw new Error('deployment id is not an integer');
     const statuses = await getJson(`/repos/${repository}/deployments/${deployment.id}/statuses?per_page=100`);
     if (!Array.isArray(statuses)) throw new Error(`deployment ${deployment.id} statuses response is not a list`);
@@ -146,7 +163,9 @@ async function collectDeployWindows(getJson, repository, startedAtMs, nowMs) {
       id: deployment.id,
       ref: typeof deployment.ref === 'string' ? deployment.ref : 'unknown ref',
       startMs: createdAtMs,
-      endMs: terminal ? lastStatusMs : nowMs,
+      // Capped, so a job that hung for hours, or never posted a final status, stops explaining
+      // restarts once a real deploy would long have finished.
+      endMs: Math.min(terminal ? lastStatusMs : nowMs, createdAtMs + MAX_DEPLOY_WINDOW_MS),
       terminal,
     });
   }
@@ -166,13 +185,22 @@ async function findPreviousCheck(getJson, repository, currentRunId) {
     const jobs = jobsResponse?.jobs;
     if (!Array.isArray(jobs)) throw new Error(`run ${run.id} jobs response has no jobs list`);
     // Skipped means that run never read an uptime, so it judged nothing.
-    const judged = jobs.some((job) =>
+    const judgingJob = jobs.find((job) =>
       (job.steps ?? []).some(
         (step) =>
           step.name === RESTART_CHECK_STEP_NAME && (step.conclusion === 'success' || step.conclusion === 'failure'),
       ),
     );
-    if (judged) return { runId: run.id, startedAtMs: parseTimestamp(run.run_started_at, `run ${run.id} run_started_at`) };
+    if (judgingJob === undefined) continue;
+    // A process started before that run read /metricz is the one it judged. With no step start,
+    // fall back to the run's own start: it is earlier, so it can only report a restart twice, never
+    // pass one that nobody reported.
+    const metriczStep = judgingJob.steps.find((step) => step.name === METRICZ_STEP_NAME);
+    const readAtMs =
+      typeof metriczStep?.started_at === 'string'
+        ? parseTimestamp(metriczStep.started_at, `run ${run.id} ${METRICZ_STEP_NAME} started_at`)
+        : parseTimestamp(run.run_started_at, `run ${run.id} run_started_at`);
+    return { runId: run.id, readAtMs };
   }
   return null;
 }

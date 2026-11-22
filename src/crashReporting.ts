@@ -11,7 +11,7 @@ type SentryModule = typeof import('@sentry/node');
 /**
  * How long a dying process waits for its last report before it exits anyway, and the bound on the
  * shutdown path's flush. A Sentry outage must never be able to hang a crashed relay: Docker's
- * restart and the monitor's uptime check both depend on the process actually dying.
+ * restart and the monitor's restart check both depend on the process actually dying.
  */
 export const FATAL_FLUSH_TIMEOUT_MS = 2_000;
 

@@ -47,6 +47,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The step name is a contract, like the restart check's below: a later
+      # run dates this run's /metricz read by this step's start
+      # (METRICZ_STEP_NAME in scripts/deploy/restart-check.mjs).
       - name: Check /metricz
         id: metricz
         env:
