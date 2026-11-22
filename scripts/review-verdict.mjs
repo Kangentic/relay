@@ -13,7 +13,13 @@
  *             The skill pastes that output verbatim and makes the closing block the LAST thing in
  *             the pass's final message, so a person and an agent read the same signal: the line
  *             `Verdict: Ready`, or one numbered step per blocker followed by `Verdict: Blocked`.
- *             The verdict is always the LAST line, because the board routes the card on it.
+ *             The verdict is the block's LAST line, bar the exception below, because the board's
+ *             Code Review rows are Text matches read against that final line.
+ *             The one exception: a pass with a step only a person can do (`needsOwner`) adds a
+ *             `Needs owner: <step>` line BELOW the verdict. That is not a third verdict, only a
+ *             last line that matches neither row, so the card stops in Code Review on the first
+ *             report instead of taking an Executing turn that can do nothing about it. A Text
+ *             match sees only the last line, so a mark above the verdict could not park a card.
  *   --ledger  prints only the `Refuted:` and `Decisions:` lines for the review commit body. A later
  *             pass reads them back with `git log --grep="(review)" --format=%B <base>..HEAD`. Keyed
  *             by file, symbol and mechanism, never by line number, because line numbers drift
@@ -30,14 +36,20 @@
  *       "location": "src/rendezvous.ts:42", "file": "src/rendezvous.ts", "symbol": "handleConnection" (optional),
  *       "mechanism": "short phrase naming the defect", "status": "fixed|refuted|blocked",
  *       "reason": "required for refuted and blocked",
- *       "step": "required for a blocked finding: what a person or the task agent must do",
+ *       "step": "required for a blocked finding: what the task agent must do in this task",
+ *       "needsOwner": true (optional, blocked and not quick only: only a person can do the step),
  *       "decision": { "chosen": "...", "alternative": "..." } (optional, fixed and not quick only),
  *       "quick": true (optional; a quick fix never affects the verdict and carries no decision),
  *       "reRaise": { "of": "the ledger line", "newEvidence": "..." } (optional)
- *     }],
- *     "followUps": [{ "title": "...", "location": "...", "why": "..." }],
- *     "followUpTask": "the board id of the one grouped follow-up task; required with followUps"
+ *     }]
  *   }
+ *
+ * There is no followUps or followUpTask key, and the script refuses both. An item outside the diff
+ * is fixed in this pass, or recorded as a blocked finding whose step reaches the task agent. A
+ * review pass files no board task: this board carried the opposite rule briefly and a pass filed
+ * task #24 for a repo-wide item, which is a card nobody is working while the reviewed card moves
+ * on. A step only a person can do is that finding plus `needsOwner`, which parks the card here
+ * rather than sending it to an agent that cannot do it either.
  */
 import fs from 'node:fs';
 import { isEntrypoint } from './lib/is-entrypoint.mjs';
@@ -116,7 +128,15 @@ export function validateFindings(report) {
         problems.push(`${label}.reason is required for a ${finding.status} finding`);
       }
       if (finding.status === 'blocked' && finding.quick !== true && !isNonEmptyString(finding.step)) {
-        problems.push(`${label}.step is required for a blocked finding: name what a person or the task agent must do`);
+        problems.push(`${label}.step is required for a blocked finding: name what the task agent must do in this task`);
+      }
+      if (finding.needsOwner !== undefined) {
+        if (finding.needsOwner !== true) problems.push(`${label}.needsOwner must be true, or left out`);
+        if (finding.status !== 'blocked') problems.push(`${label}.needsOwner is only valid on a blocked finding`);
+        // A quick finding never decides the verdict, so it could not park the card either.
+        if (finding.quick === true) {
+          problems.push(`${label}.needsOwner is not valid on a quick finding: a person-only step is not mechanical`);
+        }
       }
       if (finding.decision !== undefined) {
         const decision = finding.decision;
@@ -148,22 +168,17 @@ export function validateFindings(report) {
       }
     });
   }
-  const followUps = report.followUps === undefined ? [] : report.followUps;
-  if (!Array.isArray(followUps)) {
-    problems.push('followUps must be an array when present');
-  } else {
-    followUps.forEach((followUp, followUpIndex) => {
-      for (const field of ['title', 'location', 'why']) {
-        if (followUp === null || typeof followUp !== 'object' || !isNonEmptyString(followUp[field])) {
-          problems.push(`followUps[${followUpIndex}].${field} is required`);
-        }
-      }
-    });
-    if (followUps.length > 0 && !isNonEmptyString(report.followUpTask)) {
-      problems.push(
-        'followUpTask is required with followUps: file the one grouped follow-up task first, then record its board id',
-      );
-    }
+  // Refused even when empty, so a driver on stale instructions fails here instead of filing a
+  // task. Each message says where the items go, so the fix is to convert them, never to drop them.
+  if (report.followUps !== undefined) {
+    problems.push(
+      'followUps is retired: fix each out-of-diff item in this pass, or record it as a blocked finding with a step for the task agent',
+    );
+  }
+  if (report.followUpTask !== undefined) {
+    problems.push(
+      'followUpTask is retired: a review pass files no board task; record the item as a blocked finding with a step for the task agent',
+    );
   }
   return problems;
 }
@@ -176,21 +191,22 @@ function ledgerKey(finding) {
 /** Ready unless a non-quick finding is blocked or a check failed. Assumes a validated report. */
 export function computeVerdict(report) {
   const blockers = [];
+  const ownerSteps = [];
   for (const finding of report.findings) {
     if (finding.status === 'blocked' && finding.quick !== true) {
       blockers.push({ location: oneLine(finding.location), step: oneLine(finding.step) });
+      if (finding.needsOwner === true) ownerSteps.push(oneLine(finding.step));
     }
   }
   for (const check of CHECKS) {
     if (report.checks[check.key] === 'fail') blockers.push({ location: check.label, step: check.step });
   }
-  return { verdict: blockers.length === 0 ? 'Ready' : 'Blocked', blockers };
+  return { verdict: blockers.length === 0 ? 'Ready' : 'Blocked', blockers, ownerSteps };
 }
 
 /** The Summary block, the Decisions made list, then the closing verdict block. */
 export function renderSummary(report) {
   const findings = report.findings;
-  const followUps = report.followUps === undefined ? [] : report.followUps;
   const countBySeverity = (severity) =>
     findings.filter((finding) => String(finding.severity).toLowerCase() === severity).length;
   const countByStatus = (status) =>
@@ -209,11 +225,6 @@ export function renderSummary(report) {
   lines.push(`- Re-raised with new evidence: ${reRaises.length}`);
   lines.push(
     `- Checks: ${CHECKS.map((check) => `${check.label.toLowerCase()} ${report.checks[check.key]}`).join(', ')}`,
-  );
-  lines.push(
-    followUps.length === 0
-      ? '- Follow-up task: none'
-      : `- Follow-up task: ${oneLine(report.followUpTask)} (${followUps.length} item${followUps.length === 1 ? '' : 's'})`,
   );
   lines.push('');
   lines.push(`### Decisions made (${decisions.length})`);
@@ -234,18 +245,23 @@ export function renderSummary(report) {
 }
 
 /**
- * The last block of the pass's final message: any blocking steps, then the verdict LAST.
+ * The last block of the pass's final message: any blocking steps, then the verdict.
  *
- * The verdict has to be the final line, not the first. The Code Review column's turn-end
- * automations are Text matches read against the last line of the agent's final message, so a
- * `Verdict: Blocked` printed above its numbered steps would never match and a blocked card
- * would sit in Code Review until someone moved it by hand.
- * `test/boardTurnEndContracts.test.ts` pins this ordering against the rows in `kangentic.json`.
+ * The last line is what decides, so the verdict goes below its numbered steps, not above them.
+ * The Code Review column's turn-end automations are Text matches read against the last line of
+ * the agent's final message, so a `Verdict: Blocked` printed above its steps would never match
+ * and a blocked card would sit in Code Review until someone moved it by hand.
+ *
+ * The one exception uses that same fact deliberately: a step only a person can do adds a
+ * `Needs owner:` line BELOW the verdict, which matches neither row, so the card parks in Code
+ * Review on this report rather than going round an Executing loop that cannot clear it.
+ * `test/boardTurnEndContracts.test.ts` pins both orderings against the rows in `kangentic.json`.
  */
 export function renderClosingBlock(report) {
-  const { verdict, blockers } = computeVerdict(report);
+  const { verdict, blockers, ownerSteps } = computeVerdict(report);
   const lines = blockers.map((blocker, blockerIndex) => `${blockerIndex + 1}. ${blocker.location}: ${blocker.step}`);
   lines.push(`Verdict: ${verdict}`);
+  if (ownerSteps.length > 0) lines.push(`Needs owner: ${ownerSteps.join('; ')}`);
   return lines.join('\n');
 }
 

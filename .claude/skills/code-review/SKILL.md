@@ -1,6 +1,6 @@
 ---
 description: Review git changes for quality and conventions via parallel reviewer subagents synthesized in the main agent (fixes everything it verifies, records the decisions it made, fills red-green test-coverage holes, commits that pass locally, and ends Ready or Blocked from a script)
-allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git:*), Bash(npm:*), Bash(npx:*), Bash(node:*), Agent, mcp__kangentic__kangentic_create_task
+allowed-tools: Read, Glob, Grep, Edit, Write, Bash(git:*), Bash(npm:*), Bash(npx:*), Bash(node:*), Agent
 argument-hint: [base-ref] [review-only]
 ---
 
@@ -147,21 +147,24 @@ worktree has none and `git diff --output=` will not.
    each existing test file that covers a module a fix touched. This repo maps `test/*.test.ts` to
    `src/` 1:1, so `Grep` `test/` for the touched module's path to find them. A fix can break a
    test it never mentions. When an existing file fails, revert that fix's edit and run the file
-   again: a file that still fails was broken before this pass, so add it to `followUps` and it
-   does not fail `scopedTests`; a file that passes without the fix means the fix is wrong, so try
-   once more and then mark the finding `blocked`. Finally write `.kangentic/findings.json` with
-   the `Write` tool, in the shape the header of `scripts/review-verdict.mjs` documents: every
-   finding with its final `status` (`fixed`, `refuted` or `blocked`), the three check results, and
-   any `followUps`. There is no `skipped` status and the script refuses one.
+   again: a file that still fails was broken before this pass and does not fail `scopedTests`, so
+   restore the fix, then fix that file here when you can and record it as a non-quick `blocked`
+   finding whose `step` is to fix it in this task when you cannot; a file that passes without the
+   fix means the fix is wrong, so try once more and then mark the finding `blocked`. Finally write
+   `.kangentic/findings.json` with the `Write` tool, in the shape the header of
+   `scripts/review-verdict.mjs` documents: every finding with its final `status` (`fixed`,
+   `refuted` or `blocked`) and the three check results. There is no `skipped` status and no
+   `followUps` or `followUpTask` key, and the script refuses all three.
 8. **Commit the pass** (skip in `review-only` mode). See "## Committing the pass".
 9. **Report.** In `review-only` mode, emit the Review-only-mode footer and run no script. In
    default mode, run `node scripts/review-verdict.mjs .kangentic/findings.json` and emit the
    **Output Format** below, ending with that command's output pasted verbatim. Its closing block
-   (`Verdict: Ready`, or the numbered steps followed by `Verdict: Blocked`) is the LAST thing in
-   your final message, and the verdict line itself is the last line of all: no closing prose after
-   it, no `Next:` line, and no offer of another pass. The board routes the card on that line.
-   A person reading the board and an agent reading the transcript both act on those lines, so
-   never relabel the verdict or soften it in your own words.
+   (`Verdict: Ready`, or the numbered steps followed by `Verdict: Blocked`, and a `Needs owner:`
+   line below the verdict when a step needs a person) is the LAST thing in your final message: no
+   closing prose after it, no `Next:` line, and no offer of another pass. The board routes the card
+   on that block's final line, which is the verdict unless a `Needs owner:` line deliberately parks
+   the card. A person reading the board and an agent reading the transcript both act on those
+   lines, so never relabel the verdict or soften it in your own words.
 
 ## Finders
 
@@ -291,21 +294,33 @@ reliably "fix the findings". Each finding ends in exactly one of these:
   option you recommend and record `decision: { chosen, alternative }`. The pass never stops to
   ask. The report's "Decisions made" list and the commit's `Decisions:` lines carry the
   alternative, so the call is visible and easy to reverse.
-- **Out of the diff.** If the issue relates to this change and you understand both the problem and
-  its fix in this pass, fix it here, including a type error in a file the diff did not touch. If
-  it is a larger item needing its own design, leave it out of `findings` and add it to `followUps`
-  (`title`, `location`, `why`). File ONE grouped To Do task per pass for all of them with
-  `kangentic_create_task`, titled "Follow-ups from code review: <task title>", one item per line
-  in the description, and record its board id in `followUpTask`. Missing tests for old code the
-  diff did not touch go here too. Follow-ups never affect the verdict.
+- **Out of the diff.** An item outside the diff resolves the same way as one inside it. When you
+  understand the problem, fix it here (`fixed`), with a `decision` when it has more than one valid
+  design. That includes a type error in a file the diff did not touch. A fix whose only unrun check
+  is a full test tier that CI owns counts as fixed, because `/pull-request` runs that tier behind
+  this pass; that never excuses the scoped run of a test this pass wrote. Whatever you cannot
+  finish here becomes a `blocked` finding with a `step`.
+  **A pass files no board task, and the script refuses `followUps` and `followUpTask`.** Those keys
+  were ported into this repo by mistake and a pass used them: task #24 on this board holds a
+  repo-wide item nobody is working, while the card it came from moved on. A blocked finding's step
+  reaches the task agent in the same task; a To Do card reaches no one.
 - **`refuted`.** The code does not bear it out, it cannot be stated falsifiably, or it matches the
   ledger with no new evidence. Give the reason; it becomes a `Refuted:` ledger line.
-- **`blocked`.** Only for work this session cannot do, and only **after** you tried what you can
-  run yourself. Try first: a scoped vitest run, a `npm run build`, a fixture you can generate. What
-  is left (a fix that broke typecheck twice, a measurement needing a deploy) is `blocked`. Give a
-  `reason` and a `step` naming exactly what a person or the task agent must do. Any non-quick
-  blocked finding makes the verdict Blocked, the one outcome that sends the card back to
-  Executing.
+- **`blocked`.** For work this pass did not finish, and only **after** you tried what you can run
+  yourself. Try first: a scoped vitest run, a `npm run build`, a fixture you can generate. What is
+  left is `blocked`: a fix that broke typecheck twice, an out-of-diff item too large to finish
+  here, a measurement needing a deploy. Give a `reason` and a `step` saying exactly what the task
+  agent must do in this task. Any non-quick blocked finding makes the verdict Blocked, the one
+  outcome that sends the card back to Executing. It is also the only route to the task agent: the
+  board's "Back for revisions" row sends it the whole report but tells it to do the numbered steps
+  above `Verdict: Blocked`, so an item that is not a step gets no work.
+- **`blocked` with `needsOwner: true`.** The step is one only a person can do: a secret or DSN this
+  machine cannot be given, a decision only the owner can make, access that does not exist here. The
+  task agent could not do it either, so the card must not go round the loop. The script prints
+  `Needs owner: <step>` BELOW `Verdict: Blocked`, which matches neither Code Review row, so the
+  card stops in Code Review on this report instead of taking an Executing turn that can do nothing.
+  One such step parks the card even with agent steps beside it: the person's answer may change
+  them, and this session can finish them once they answer.
 
 A finding is **`quick: true`** when its fix is mechanical, at one site, in a file the change
 touched, and needs no new test: a stale comment or doc line, a renamed local, a wrong path in a
@@ -315,8 +330,9 @@ the fix itself as a row in Changes Applied, and never decides the verdict, even 
 mechanical; the script refuses the pair.
 
 **An architectural refactor spanning several modules is not automatically out of scope.** Judge
-it on whether this pass can do it and verify it. If yes, fix it. If it needs its own design, it is
-a follow-up. Only a fix this session cannot complete or verify is `blocked`.
+it on whether this pass can do it and verify it. If yes, fix it. If it is too large to finish here,
+it is a `blocked` finding whose step names the work, so the task agent picks it up in this task.
+Nothing leaves this pass as a board card.
 
 ### Auto-adding missing tests (coverage holes)
 
@@ -391,8 +407,7 @@ The message is conventional and the scope is literally `review`: `fix(review):`,
 `refactor(review):`, or `test(review):`, picked by primary change type. The body lists what was
 fixed, one line per finding, then a blank line, then the `--ledger` output verbatim. The ledger is
 how a later pass knows what this one settled (Step 4 reads it back), so it is never trimmed or
-wrapped. Name a follow-up task in prose ("filed as a follow-up task on the board"), never as `#N`:
-GitHub turns `#N` into a link to an unrelated issue.
+wrapped. Never write a bare `#N` in the body: GitHub turns it into a link to an unrelated issue.
 
 **Use `review` as the scope even though scope usually names a code area.** A review pass is
 routinely spread across every area it reviewed, so no single area scope is honest, and the useful
@@ -511,10 +526,22 @@ The closing block reads, for example:
 Verdict: Blocked
 ```
 
-The verdict is the LAST line, below its numbered steps. That is not cosmetic: the Code Review
+The verdict is below its numbered steps, not above them. That is not cosmetic: the Code Review
 column's turn-end automations are Text matches read against the final line of your message, so a
 verdict printed above its steps would match nothing and strand the card. The script emits this
 order on its own; never reorder it when pasting.
+
+When a step needs a person (`needsOwner`), the block puts that line last instead, which is the same
+mechanism used the other way round:
+
+```
+1. src/sentry.ts:0: set RELAY_SENTRY_DSN in the production environment
+Verdict: Blocked
+Needs owner: set RELAY_SENTRY_DSN in the production environment
+```
+
+Now the final line matches neither Code Review row, so the card stays in Code Review wearing this
+report rather than taking an Executing turn that cannot clear it.
 
 Edge cases the report must handle cleanly:
 - No diff at all -> short-circuit at Step 4 with "No changes to review."
@@ -550,10 +577,13 @@ otherwise give a verdict for findings this review never raised.
 ## Allowed Tools
 
 `Bash` (git/npm/npx/node only) for pre-flight, diff gathering, the scoped test runs, the commit,
-and the verdict script; the `Agent` tool to fan out the read-only `review-finder` subagents;
-`kangentic_create_task` for the one grouped follow-up task a pass may file; and `Read`, `Edit`,
-`Write`, `Glob`, `Grep` for verification and the Apply Phase. No chained commands. Never
-`cd <path> && git ...` - use `git -C <path>`.
+and the verdict script; the `Agent` tool to fan out the read-only `review-finder` subagents; and
+`Read`, `Edit`, `Write`, `Glob`, `Grep` for verification and the Apply Phase. No chained commands.
+Never `cd <path> && git ...` - use `git -C <path>`.
+
+**No board tools.** A pass files no task, so it holds no `kangentic_*` tool: an out-of-diff item is
+fixed here or becomes a `blocked` finding whose step reaches the task agent. Dropping the tool is
+what makes that structural rather than a rule to remember.
 
 **No headless `claude`, no `Workflow`.** All orchestration is in-session via the `Agent` tool.
 

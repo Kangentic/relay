@@ -172,6 +172,50 @@ describe('review-verdict: the verdict itself', () => {
     expect(lines.at(-1)).toBe('Verdict: Blocked');
     expect(result.stdout).not.toContain('Next:');
   });
+
+  // The same fact the routing relies on, used the other way round: a step only a person can do
+  // puts a line the rows cannot match last, so the card parks in Code Review instead of taking an
+  // Executing turn that could not clear it either.
+  it('puts a Needs owner line below the verdict, as the final line', () => {
+    const result = runVerdict({
+      checks: PASSING_CHECKS,
+      findings: [
+        finding({
+          status: 'blocked',
+          needsOwner: true,
+          reason: 'this machine cannot be given the production secret',
+          step: 'set RELAY_SENTRY_DSN in the production environment',
+        }),
+      ],
+    });
+
+    const lines = result.stdout.trimEnd().split('\n');
+    expect(lines.at(-2)).toBe('Verdict: Blocked');
+    expect(lines.at(-1)).toBe('Needs owner: set RELAY_SENTRY_DSN in the production environment');
+  });
+
+  it('joins several owner steps onto the one final line', () => {
+    const result = runVerdict({
+      checks: PASSING_CHECKS,
+      findings: [
+        finding({ id: 1, status: 'blocked', needsOwner: true, reason: 'no access here', step: 'first owner step' }),
+        finding({ id: 2, status: 'blocked', needsOwner: true, reason: 'no access here', step: 'second owner step' }),
+      ],
+    });
+
+    const lines = result.stdout.trimEnd().split('\n');
+    expect(lines.at(-1)).toBe('Needs owner: first owner step; second owner step');
+  });
+
+  it('leaves the verdict last when a blocked finding is for the task agent', () => {
+    const result = runVerdict({
+      checks: PASSING_CHECKS,
+      findings: [finding({ status: 'blocked', reason: 'typecheck broke twice', step: 'narrow the return type' })],
+    });
+
+    expect(result.stdout.trimEnd().split('\n').at(-1)).toBe('Verdict: Blocked');
+    expect(result.stdout).not.toContain('Needs owner:');
+  });
 });
 
 describe('review-verdict: validation', () => {
@@ -224,15 +268,57 @@ describe('review-verdict: validation', () => {
     expect(result.stderr).toContain('decision needs both chosen and alternative');
   });
 
-  it('refuses follow-ups with no filed task id', () => {
+  // A review pass files no board task. Both keys were ported into this repo by mistake and a pass
+  // used them, which put a repo-wide item on a To Do card nobody was working while the reviewed
+  // card moved on. They are refused even when empty, so a driver on stale instructions fails here
+  // instead of filing one, and the message says where the items go so the fix is to convert them.
+  it('refuses the retired followUps key, even when it is empty', () => {
+    const result = runVerdict({ checks: PASSING_CHECKS, findings: [], followUps: [] });
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain('followUps is retired');
+    expect(result.stderr).toContain('blocked finding with a step for the task agent');
+  });
+
+  it('refuses the retired followUpTask key', () => {
+    const result = runVerdict({ checks: PASSING_CHECKS, findings: [], followUpTask: '24' });
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain('followUpTask is retired');
+    expect(result.stderr).toContain('files no board task');
+  });
+
+  it('refuses needsOwner on a finding that is not blocked', () => {
     const result = runVerdict({
       checks: PASSING_CHECKS,
-      findings: [],
-      followUps: [{ title: 'Rework the cap accounting', location: 'src/guards/caps.ts', why: 'needs its own design' }],
+      findings: [finding({ status: 'fixed', needsOwner: true })],
     });
 
     expect(result.exitCode).toBe(2);
-    expect(result.stderr).toContain('followUpTask is required with followUps');
+    expect(result.stderr).toContain('needsOwner is only valid on a blocked finding');
+  });
+
+  // A quick finding never decides the verdict, so it could not park the card either.
+  it('refuses needsOwner on a quick finding', () => {
+    const result = runVerdict({
+      checks: PASSING_CHECKS,
+      findings: [
+        finding({ status: 'blocked', quick: true, needsOwner: true, reason: 'only a person can do it' }),
+      ],
+    });
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain('needsOwner is not valid on a quick finding');
+  });
+
+  it('refuses a needsOwner that is not literally true', () => {
+    const result = runVerdict({
+      checks: PASSING_CHECKS,
+      findings: [finding({ status: 'blocked', needsOwner: 'yes', reason: 'no access', step: 'ask the owner' })],
+    });
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain('needsOwner must be true, or left out');
   });
 
   it('refuses a missing check key', () => {

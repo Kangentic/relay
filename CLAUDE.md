@@ -286,9 +286,10 @@ or `--no-file-parallelism`.
   `Findings: applied`, `Verdict: Ready` / `Verdict: Blocked`, `PR: ready to merge`, `PR: merged`,
   `PR: checks red`, and `Release: shipped`. `test/boardTurnEndContracts.test.ts` fails when a
   skill and the row that reads it drift apart, because nothing else would: a drifted card simply
-  waits in its column forever. **The verdict line must be the LAST line**, below its numbered
-  steps, which is why `scripts/review-verdict.mjs` prints the blockers first. Printing no
-  outcome line is how a skill deliberately leaves a card where it is for a person.
+  waits in its column forever. **Only the last line decides**, which is why
+  `scripts/review-verdict.mjs` prints the blockers above the verdict. Printing no outcome line,
+  or deliberately ending on a line no row matches, is how a skill leaves a card where it is for
+  a person: `/code-review` does the latter with its `Needs owner:` line.
 - **Planning approves its own plans.** The Planning column carries
   `"planApproval": "automatic"`, so a card that finishes planning moves itself to Executing
   (`planExitTarget`) instead of waiting on someone in the agent's terminal. That is the one
@@ -324,7 +325,14 @@ or `--no-file-parallelism`.
   verifies (Lows included), applies its recommended option on a decision and records the
   alternative, and ends with the **Ready** or **Blocked** verdict `scripts/review-verdict.mjs`
   computes from its `findings.json`. There is no "skipped" status: only work this session
-  genuinely cannot do is `blocked`, and only Blocked sends a card back to Executing. It commits
+  genuinely cannot do is `blocked`, and only Blocked sends a card back to Executing. **A pass
+  files no board task.** An item outside the diff is fixed in the pass or becomes a `blocked`
+  finding whose step reaches the task agent in the same task, and the verdict script refuses
+  `followUps` and `followUpTask` outright. Both keys were ported here by mistake and a pass used
+  them, which is what put task #24 on the board: a card nobody is working, while the card it came
+  from moved on. A step only a person can do is that same finding plus `needsOwner`, which prints
+  `Needs owner:` below the verdict and parks the card in Code Review rather than sending it to an
+  agent that cannot clear it either. It commits
   its own pass locally under the `review` scope, never pushes, and never `git add -A` (it
   commits only what became dirty during the pass, so the task agent's unfinished work in the
   same worktree is left alone). Each review commit body carries a `Refuted:`/`Decisions:`

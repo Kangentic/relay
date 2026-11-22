@@ -168,7 +168,46 @@ describe('board turn-end contracts: Code Review', () => {
 
   it('names the ordering in the skill, since the agent pastes the output by hand', () => {
     const skillPath = '.claude/skills/code-review/SKILL.md';
-    expectTextIn(readRepositoryFile(skillPath), skillPath, 'The verdict is the LAST line');
+    expectTextIn(readRepositoryFile(skillPath), skillPath, 'The verdict is below its numbered steps');
+  });
+
+  /**
+   * The parking case, which is the routing rule used in reverse. A step only a person can do adds
+   * a `Needs owner:` line BELOW the verdict, so the final line matches neither row and the card
+   * stays in Code Review wearing the report. Compared case-insensitively, the way the rows are,
+   * so a step whose own text happened to read like a verdict could not route the card by accident.
+   */
+  it('ends a needs-owner pass on a line that matches neither Code Review row', () => {
+    const output = runVerdict({
+      checks: PASSING_CHECKS,
+      findings: [
+        {
+          id: 1,
+          severity: 'high',
+          category: 'Correctness',
+          location: 'src/sentry.ts:1',
+          file: 'src/sentry.ts',
+          mechanism: 'the production secret is not set',
+          status: 'blocked',
+          needsOwner: true,
+          reason: 'this machine cannot be given the production secret',
+          step: 'set RELAY_SENTRY_DSN in the production environment',
+        },
+      ],
+    })
+      .trimEnd()
+      .split('\n');
+
+    const finalLine = output[output.length - 1] ?? '';
+    expect(finalLine).toBe('Needs owner: set RELAY_SENTRY_DSN in the production environment');
+    // The verdict is still printed, directly above, so a person reads the same Blocked state.
+    expect(output[output.length - 2]).toBe(finalLineOf('Code Review', 'Back for revisions'));
+    for (const rowName of ['On to Testing', 'Back for revisions']) {
+      expect(
+        finalLine.toLowerCase(),
+        `a needs-owner pass must not match the "${rowName}" row`,
+      ).not.toBe(finalLineOf('Code Review', rowName).toLowerCase());
+    }
   });
 });
 
