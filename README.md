@@ -349,7 +349,7 @@ stays separate and private.
 
 Two practical notes for anyone wiring this up:
 
-- **The shipped binary does not construct the webhook policy.** `src/index.ts` builds the relay
+- **The shipped binary does not construct the webhook policy.** `src/main.ts` builds the relay
   with the default allow-all policy, so the open-source relay is free and accountless as advertised
   and setting `ADMISSION_WEBHOOK_URL` on a stock `docker compose up` gates nothing. The seam is for
   an embedder calling `createRelay(config, { admissionPolicy })`.
@@ -370,6 +370,19 @@ the first place.
 it) is itself open source, also AGPL-3.0-only, in the main
 [Kangentic/kangentic](https://github.com/Kangentic/kangentic) repository. An auditable crypto core is
 a feature for a security product.
+
+**One third-party component in the image is source-available rather than open source.**
+`@sentry/node` 11, the crash reporter, depends on `@sentry/bundler-plugins`, which brings in the
+`sentry` CLI package under the [Functional Source License](https://fsl.software/)
+(`FSL-1.1-Apache-2.0`, not OSI-approved; its text ships beside it in
+`node_modules/sentry/LICENSE.md`). The relay never loads it: the SDK's runtime entry does not
+import the bundler plugins, and with `SENTRY_DSN` unset the SDK is not loaded at all. It is there
+because npm installs a package's declared dependencies whether or not they run. The SDK and its
+dependency tree also account for most of the image's size, about 100 MB more than without it
+(327 MB to 425 MB measured on 2026-11-21). A redistributor who needs an OSI-only image can delete
+`node_modules/sentry` from it: its only importer is the bundler plugins' CLI module, which nothing
+the relay runs loads, and crash reporting still worked end to end with it removed (checked on
+2026-11-21 with `@sentry/node` 11.16.0; recheck after an SDK upgrade).
 
 ## Documentation
 

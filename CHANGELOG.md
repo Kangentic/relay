@@ -22,7 +22,10 @@ All notable changes to this project are documented in this file. The format is b
 ### Changed
 
 - **`@sentry/node` is the relay's second runtime dependency**, alongside `ws`, chosen over a
-  hand-rolled envelope client so reporting tracks upstream fixes. It is loaded only with a DSN.
+  hand-rolled envelope client so reporting tracks upstream fixes. It is loaded only with a DSN, but
+  its tree ships in the image either way: the image grows from 327 MB to 425 MB, and it includes the
+  `sentry` CLI package under the source-available `FSL-1.1-Apache-2.0`, pulled in by
+  `@sentry/bundler-plugins` and never loaded by the relay (README, "Open-core and licensing").
 - **Supported Node narrowed to `^20.19.0 || ^22.13.0`**, from `>=20 <23`. `.npmrc` makes the
   range a hard install failure, and `@sentry/node` refuses Node below 20.19, Node 21, and 22.0 to
   22.11, so the old range let an install start and then fail on the dependency. A dev dependency

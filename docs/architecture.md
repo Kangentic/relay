@@ -246,7 +246,11 @@ connection's long tail runs the same code as an untraced one.
 
 `src/config.ts` parses every environment variable into a single frozen `Config` object, failing
 fast (throwing `ConfigError`) on any malformed value rather than falling back to a silent default.
-`src/index.ts` wires `SIGTERM`/`SIGINT` to `relay.close()`, which flips `health.draining` (so
+`src/main.ts` runs startup in order (config, crash reporting, the relay, signal handlers, listen;
+`src/index.ts` only calls it). Crash reporting comes first so its fatal handler is in place before
+anything else can throw, and with no `SENTRY_DSN` it is nothing at all: `src/crashReporting.ts`
+never imports the SDK (see `docs/security-model.md`, "Crash reporting").
+`src/main.ts` wires `SIGTERM`/`SIGINT` to `relay.close()`, which flips `health.draining` (so
 `/readyz` starts returning 503 and new upgrades are refused with an HTTP 503 before the handshake,
 not a WebSocket close code), closes every live connection with code `1001`, and force-terminates
 anything still open after `SHUTDOWN_GRACE_MS`.
